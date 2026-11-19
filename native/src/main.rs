@@ -981,7 +981,10 @@ impl App {
                         if ui.checkbox(&mut en, "Показывать, что я слушаю, в профиле Discord").changed() { acts.push(Act::Settings(json!({"discord": {"enabled": en}}))); }
                         ui.label(RichText::new("APPLICATION ID").size(11.0).color(MUTED));
                         let r = ui.add(egui::TextEdit::singleline(client_id).hint_text("например 1234567890123456789").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 7)));
-                        if r.lost_focus() { acts.push(Act::Settings(json!({"discord": {"clientId": client_id.trim()}}))); }
+                        if r.changed() { client_id.retain(|c| c.is_ascii_digit()); } // вставили с пробелами/мусором — оставляем цифры
+                        // сохраняем, когда ID похож на полный (Discord ID — 17–20 цифр) или при уходе из поля
+                        let full = (17..=20).contains(&client_id.len());
+                        if (r.changed() && full) || r.lost_focus() { acts.push(Act::Settings(json!({"discord": {"clientId": client_id.as_str()}}))); }
                         ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new("Создай приложение на").color(MUTED).size(12.5));
                             if ui.link("discord.com/developers").clicked() { acts.push(Act::OpenUrl("https://discord.com/developers/applications".into())); }
