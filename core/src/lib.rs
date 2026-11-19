@@ -32,11 +32,18 @@ pub struct Track {
     pub cover: Option<String>,
     #[serde(default)]
     pub added_at: u64,
+    /// Локальный видеофайл (mp4/m4v/mov). У YouTube-треков видео есть всегда (по video_id).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub video: bool,
 }
 
 impl Track {
     pub fn is_local(&self) -> bool {
         self.kind == "local"
+    }
+    /// Можно ли показать видео для этого трека.
+    pub fn has_video(&self) -> bool {
+        self.video || self.video_id.is_some()
     }
     /// Маленькая обложка (для списков) — экономит память.
     pub fn thumb(&self) -> Option<String> {

@@ -38,6 +38,17 @@ impl Audio {
         let p = self.player.as_ref().ok_or_else(|| self.error.clone().unwrap_or_default())?;
         p.clear();
         self.loaded = false;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if wavy_core::local::VIDEO_EXT.contains(&ext.as_str()) {
+            // видеофайл: rodio взял бы первую дорожку (видео), поэтому выбираем звуковую сами
+            let src = AudioOfVideo::open(path)?;
+            self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            p.append(src);
+            p.set_volume(volume);
+            p.play();
+            self.loaded = true;
+            return Ok(());
+        }
         let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
         let mut b = rodio::Decoder::builder().with_data(std::io::BufReader::new(f)).with_byte_len(len).with_seekable(true);
@@ -60,4 +71,91 @@ impl Audio {
     pub fn seek(&self, sec: f64) { if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(sec.max(0.0))); } }
     /// Трек доиграл до конца.
     pub fn finished(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| p.empty()) }
+}
+
+/// Звуковая дорожка из видеофайла (MP4/MOV) через symphonia — с явным выбором аудиодорожки.
+pub struct AudioOfVideo {
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    track: u32,
+    buf: Vec<f32>,
+    pos: usize,
+    channels: std::num::NonZero<u16>,
+    rate: std::num::NonZero<u32>,
+    pub duration: Option<Duration>,
+}
+
+impl AudioOfVideo {
+    pub fn open(path: &Path) -> Result<Self, String> {
+        use symphonia::core::{codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        if let Some(e) = path.extension().and_then(|e| e.to_str()) { hint.with_extension(e); }
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
+            .map_err(|e| format!("не удалось открыть файл: {e}"))?;
+        let format = probed.format;
+        let codecs = symphonia::default::get_codecs();
+        let track = format.tracks().iter()
+            .find(|t| t.codec_params.sample_rate.is_some() && codecs.get_codec(t.codec_params.codec).is_some())
+            .ok_or("в видео нет звуковой дорожки (или её формат не поддерживается)")?;
+        let decoder = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
+        let rate = track.codec_params.sample_rate.and_then(std::num::NonZero::new).ok_or("неизвестная частота")?;
+        let channels = track.codec_params.channels.map(|c| c.count() as u16).and_then(std::num::NonZero::new).unwrap_or(std::num::NonZero::new(2).unwrap());
+        let duration = match (track.codec_params.time_base, track.codec_params.n_frames) {
+            (Some(tb), Some(n)) => { let t = tb.calc_time(n); Some(Duration::from_secs_f64(t.seconds as f64 + t.frac)) }
+            _ => None,
+        };
+        let id = track.id;
+        let mut s = Self { format, decoder, track: id, buf: Vec::new(), pos: 0, channels, rate, duration };
+        s.refill();
+        Ok(s)
+    }
+
+    fn refill(&mut self) -> bool {
+        use symphonia::core::{audio::SampleBuffer, errors::Error};
+        loop {
+            let packet = match self.format.next_packet() { Ok(p) => p, Err(_) => return false };
+            if packet.track_id() != self.track { continue; }
+            match self.decoder.decode(&packet) {
+                Ok(audio) => {
+                    let mut sb = SampleBuffer::<f32>::new(audio.capacity() as u64, *audio.spec());
+                    sb.copy_interleaved_ref(audio);
+                    self.buf.clear();
+                    self.buf.extend_from_slice(sb.samples());
+                    self.pos = 0;
+                    if !self.buf.is_empty() { return true; }
+                }
+                Err(Error::DecodeError(_)) => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+impl Iterator for AudioOfVideo {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<rodio::Sample> {
+        if self.pos >= self.buf.len() && !self.refill() { return None; }
+        let v = self.buf[self.pos];
+        self.pos += 1;
+        Some(v as rodio::Sample)
+    }
+}
+
+impl rodio::Source for AudioOfVideo {
+    fn current_span_len(&self) -> Option<usize> { Some(self.buf.len().saturating_sub(self.pos).max(1)) }
+    fn channels(&self) -> rodio::ChannelCount { self.channels }
+    fn sample_rate(&self) -> rodio::SampleRate { self.rate }
+    fn total_duration(&self) -> Option<Duration> { self.duration }
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        use symphonia::core::{formats::{SeekMode, SeekTo}, units::Time};
+        let time = Time::new(pos.as_secs(), pos.subsec_nanos() as f64 / 1e9);
+        let _ = self.format.seek(SeekMode::Accurate, SeekTo::Time { time, track_id: Some(self.track) });
+        self.decoder.reset();
+        self.buf.clear();
+        self.pos = 0;
+        Ok(())
+    }
 }

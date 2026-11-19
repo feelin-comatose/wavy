@@ -3,7 +3,9 @@ use crate::{now_ms, sha16, Track};
 use lofty::prelude::*;
 use std::path::{Path, PathBuf};
 
-pub const AUDIO_EXT: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "webm", "weba", "wma", "aiff", "alac"];
+pub const AUDIO_EXT: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "webm", "weba", "wma", "aiff", "alac", "mp4", "m4v", "mov"];
+/// Видео, которое умеет показывать плеер (контейнер MP4/MOV, кодек H.264).
+pub const VIDEO_EXT: &[&str] = &["mp4", "m4v", "mov"];
 pub const PLAYLIST_EXT: &[&str] = &["m3u", "m3u8"];
 
 fn ext(p: &Path) -> String {
@@ -56,6 +58,7 @@ pub fn read_track(file: &Path, covers: &Path) -> Track {
         duration: 0.0,
         cover: None,
         added_at: now_ms(),
+        video: VIDEO_EXT.contains(&ext(file).as_str()),
     };
     if let Ok(tagged) = lofty::read_from_path(file) {
         t.duration = tagged.properties().duration().as_secs_f64();

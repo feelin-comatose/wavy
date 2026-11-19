@@ -21,6 +21,8 @@ jobs:
 
       - name: Build
         run: cargo build --release -p wavy-native
+        env:
+          WAVY_BUILD: ${{ github.run_number }}  # номер сборки вшивается в exe — по нему работает автообновление
 
       - name: Package
         shell: pwsh

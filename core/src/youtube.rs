@@ -217,6 +217,23 @@ fn is_live(e: &Value) -> bool {
     matches!(e.get("live_status").and_then(Value::as_str), Some("is_live" | "is_upcoming"))
 }
 
+impl YouTube {
+    /// Скачать видеодорожку (без звука) для показа клипа. H.264 в MP4 до 720p —
+    /// его умеет встроенный декодер, и он не грузит процессор.
+    pub fn download_video(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
+        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let _ = std::fs::create_dir_all(cache);
+        let path = cache.join(format!("{}.video.mp4", sha16(key.as_bytes())));
+        if path.exists() { return Ok(path); }
+        self.run(&[
+            "-f", "bestvideo[vcodec^=avc1][height<=720][ext=mp4]/bestvideo[vcodec^=avc1][ext=mp4]",
+            "--no-playlist", "--no-warnings", "--no-progress", "--match-filter", "!is_live",
+            "-o", &path.to_string_lossy(), &key,
+        ])?;
+        if path.exists() { Ok(path) } else { Err("YouTube не отдал видео в формате H.264".into()) }
+    }
+}
+
 fn s(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string).filter(|x| !x.is_empty())
 }
@@ -237,7 +254,7 @@ fn to_track(e: &Value, parent: &Value, is_music: bool) -> Track {
             url: Some(format!("{host}/watch?v={id}")),
             cover: Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
             video_id: Some(id), title, artist: if artist.is_empty() { "YouTube".into() } else { artist },
-            album, duration, added_at: now_ms(),
+            album, duration, added_at: now_ms(), video: false,
         };
     }
     let url = s(e, "webpage_url").or_else(|| s(e, "url")).or_else(|| s(parent, "webpage_url")).unwrap_or_default();
@@ -246,7 +263,7 @@ fn to_track(e: &Value, parent: &Value, is_music: bool) -> Track {
         id: format!("ext_{}", sha16(url.as_bytes())), kind: "stream".into(), path: None, video_id: None,
         title: if title.is_empty() { url.clone() } else { title }, url: Some(url),
         artist: if artist.is_empty() { s(e, "extractor_key").unwrap_or_else(|| "Stream".into()) } else { artist },
-        album, duration, cover, added_at: now_ms(),
+        album, duration, cover, added_at: now_ms(), video: false,
     }
 }
 

@@ -46,10 +46,12 @@ pub struct Settings {
     pub discord: DiscordSettings,
     pub overlay: OverlaySettings,
     pub overlay_window: OverlayWindowSettings,
+    /// Сам скачивать и ставить новые версии с GitHub Releases.
+    pub auto_update: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true }
     }
 }
 

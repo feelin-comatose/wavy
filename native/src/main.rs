@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod media;
+mod update;
+mod video;
 mod player;
 mod thumbs;
 
@@ -29,10 +31,13 @@ const ACCENT_SOFT: Color32 = Color32::from_rgb(0xa1, 0xa1, 0xaa);
 const BAD: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
 const OK: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 
-const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "m3u", "m3u8"];
+const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "m3u", "m3u8"];
 
 #[derive(Clone, PartialEq)]
 enum View { Library, Playlist(String), Search }
+
+#[derive(Clone)]
+enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
     Status(String),
@@ -42,6 +47,9 @@ enum Bg {
     LoadFailed { token: u64, err: String },
     Discord(DiscordStatus),
     YtVersion(Result<String, String>),
+    VideoReady { id: String, path: PathBuf },
+    VideoFailed { id: String, err: String },
+    Update(UpdState),
     ImportDone(Result<(), String>),
 }
 
@@ -61,7 +69,7 @@ enum Act {
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
     CreatePlaylist(String, Vec<String>), Rename(String, String), DeletePlaylist(String), Sync(String),
     Reveal(String), OpenUrl(String), Settings(serde_json::Value), ToggleOverlay, ToggleLock, JumpQueue(usize),
-    Modal(Modal), YtUpdate,
+    Modal(Modal), YtUpdate, ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
 }
 
 struct App {
@@ -108,6 +116,14 @@ struct App {
     resume: Option<(String, f64, bool)>, // (id трека, позиция, автоплей) — продолжить с того же места
     session_saved: Instant,
     spin: f32,
+    show_video: bool,
+    fullscreen: bool,
+    video: Option<(String, video::Video)>,
+    video_loading: Option<String>,
+    video_error: Option<(String, String)>,
+    upd: Option<UpdState>,
+    upd_checked: Option<Instant>,
+    started: Instant,
     _hotkeys: Option<GlobalHotKeyManager>,
     hk_rx: Receiver<u32>,
     hk_ids: (u32, u32),
@@ -160,6 +176,7 @@ impl App {
             last_pushed: (None, false), shown_at: Instant::now(),
             modal: None, toast, show_queue: false, yt_version: None,
             media, media_rx, resume: None, session_saved: Instant::now(), spin: 0.0,
+            show_video: false, fullscreen: false, video: None, video_loading: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(),
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
         };
         app.overlay_open = s.overlay_window.visible;
@@ -343,7 +360,7 @@ impl App {
             }
             Act::Next => self.next(false, ctx),
             Act::Prev => self.prev(ctx),
-            Act::Seek(s) => { self.audio.seek(s); self.push_state(); }
+            Act::Seek(s) => { self.audio.seek(s); if let Some((_, v)) = &mut self.video { v.seek(s); } self.push_state(); }
             Act::Volume(v) => { self.audio.set_volume(v); self.store.lock().unwrap().lib.settings.volume = v; }
             Act::SaveVolume => { let v = self.settings().volume; self.store.lock().unwrap().patch_settings(&json!({"volume": v})); }
             Act::Shuffle => {
@@ -472,6 +489,21 @@ impl App {
                 }
                 self.modal = Some(m);
             }
+            Act::ToggleVideo => {
+                self.show_video = !self.show_video;
+                if !self.show_video && self.fullscreen { self.apply(Act::Fullscreen(false), ctx); }
+            }
+            Act::Fullscreen(on) => {
+                self.fullscreen = on;
+                if on { self.show_video = true; }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+            }
+            Act::CheckUpdate => { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
+            Act::Restart => {
+                self.save_session();
+                update::restart();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             Act::YtUpdate => {
                 let yt = self.yt.clone();
                 self.yt_version = None;
@@ -505,6 +537,23 @@ impl App {
                 Bg::LoadFailed { token, err } => if token == self.token { self.track_failed(err); },
                 Bg::Discord(s) => self.discord_status = s,
                 Bg::YtVersion(v) => self.yt_version = Some(v),
+                Bg::VideoReady { id, path } => {
+                    if self.video_loading.as_deref() == Some(id.as_str()) { self.video_loading = None; }
+                    let cur = self.current.as_ref().map(|t| t.id.clone());
+                    if cur.as_deref() == Some(id.as_str()) && (self.show_video || self.fullscreen) {
+                        let pos = self.audio.position();
+                        self.video = Some((id, video::Video::open(path, pos, ctx)));
+                    }
+                }
+                Bg::VideoFailed { id, err } => {
+                    if self.video_loading.as_deref() == Some(id.as_str()) { self.video_loading = None; }
+                    self.video_error = Some((id, err));
+                }
+                Bg::Update(st) => {
+                    if let UpdState::Ready(n) = &st { self.toast(format!("Новая версия (сборка {n}) установлена — перезапусти плеер"), false); }
+                    if let UpdState::Error(e) = &st { wavy_core::log(&format!("обновление: {e}")); }
+                    self.upd = Some(st);
+                }
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
                         if let Some(Modal::ImportUrl { busy, err, .. }) = &mut self.modal { *busy = false; *err = Some(e); } else { self.toast(e, true); }
@@ -539,6 +588,66 @@ impl App {
             self.apply(Act::ImportPaths(dropped, pid), ctx);
         }
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
+        self.video_tick(ctx);
+        // автообновление: через 5 с после запуска и потом раз в 6 часов
+        if self.settings().auto_update && update::current_build().is_some() {
+            let due = match self.upd_checked { None => self.started.elapsed() > Duration::from_secs(5), Some(t) => t.elapsed() > Duration::from_secs(6 * 3600) };
+            let busy = matches!(self.upd, Some(UpdState::Checking | UpdState::Downloading(_) | UpdState::Ready(_)));
+            if due && !busy { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
+            // окно может простаивать без перерисовок — просим разбудить к следующей проверке
+            let next = match self.upd_checked { None => Duration::from_secs(5).saturating_sub(self.started.elapsed()), Some(t) => Duration::from_secs(6 * 3600).saturating_sub(t.elapsed()) };
+            ctx.request_repaint_after(next + Duration::from_millis(100));
+        }
+    }
+
+    fn start_update(&mut self, ctx: &egui::Context) {
+        let (tx, c) = (self.tx.clone(), ctx.clone());
+        self.upd = Some(UpdState::Checking);
+        std::thread::spawn(move || {
+            let send = |s: UpdState| { let _ = tx.send(Bg::Update(s)); c.request_repaint(); };
+            match update::check() {
+                Ok(Some(rel)) => {
+                    send(UpdState::Downloading(rel.build));
+                    send(match update::install(&rel) { Ok(()) => UpdState::Ready(rel.build), Err(e) => UpdState::Error(e) });
+                }
+                Ok(None) => send(UpdState::UpToDate),
+                Err(e) => send(UpdState::Error(e)),
+            }
+        });
+    }
+
+    /// Видео для текущего трека: открываем, когда открыт просмотр, и выгружаем, когда закрыт (память).
+    fn video_tick(&mut self, ctx: &egui::Context) {
+        let want = if self.show_video || self.fullscreen { self.current.clone().filter(|t| t.has_video()) } else { None };
+        let want_id = want.as_ref().map(|t| t.id.clone());
+        if self.video.as_ref().map(|v| &v.0) != want_id.as_ref() { self.video = None; }
+        let Some(t) = want else { return };
+        let failed = self.video_error.as_ref().is_some_and(|e| e.0 == t.id);
+        if self.video.is_none() && !failed {
+            if t.is_local() {
+                let path = PathBuf::from(t.path.clone().unwrap_or_default());
+                let pos = self.audio.position();
+                self.video = Some((t.id.clone(), video::Video::open(path, pos, ctx)));
+            } else if self.video_loading.as_deref() != Some(t.id.as_str()) {
+                self.video_loading = Some(t.id.clone());
+                let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let msg = match yt.download_video(&t, &cache) {
+                        Ok(path) => Bg::VideoReady { id: t.id.clone(), path },
+                        Err(err) => Bg::VideoFailed { id: t.id.clone(), err },
+                    };
+                    let _ = tx.send(msg);
+                    c.request_repaint();
+                });
+            }
+        }
+        let clock = self.resume.as_ref().map(|r| r.1).unwrap_or_else(|| self.audio.position());
+        let playing = self.audio.is_playing();
+        if let Some((id, v)) = &mut self.video {
+            v.update(clock, ctx);
+            if let Some(e) = v.error.take() { self.video_error = Some((id.clone(), e)); self.video = None; }
+            else if playing { ctx.request_repaint_after(Duration::from_millis(15)); }
+        }
     }
 }
 
@@ -554,6 +663,14 @@ impl eframe::App for App {
         let mut acts = Vec::new();
         self.keys(&ctx, &mut acts);
 
+        if self.fullscreen {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::BLACK)).show(ui, |ui| self.video_view(ui, &mut acts));
+            self.modal_ui(&ctx, &mut acts);
+            self.toast_ui(&ctx);
+            if self.overlay_open { self.overlay_window(&ctx, &mut acts); }
+            for a in acts { self.apply(a, &ctx); }
+            return;
+        }
         egui::Panel::bottom("player").exact_size(84.0).frame(egui::Frame::new().fill(BG2).stroke(Stroke::new(1.0, LINE)).inner_margin(egui::Margin::symmetric(18, 10)))
             .show(ui, |ui| self.player_bar(ui, &mut acts));
         egui::Panel::left("side").exact_size(232.0).resizable(false).frame(egui::Frame::new().fill(BG2).inner_margin(egui::Margin::symmetric(12, 16)))
@@ -563,7 +680,7 @@ impl eframe::App for App {
                 .show(ui, |ui| self.queue_ui(ui, &mut acts));
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin { left: 28, right: 20, top: 24, bottom: 0 }))
-            .show(ui, |ui| self.main_view(ui, &mut acts));
+            .show(ui, |ui| if self.show_video { self.video_view(ui, &mut acts) } else { self.main_view(ui, &mut acts) });
 
         self.modal_ui(&ctx, &mut acts);
         self.toast_ui(&ctx);
@@ -682,6 +799,15 @@ impl App {
     }
 
     fn main_view(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        if let Some(UpdState::Ready(n)) = self.upd.clone() {
+            egui::Frame::new().fill(BG3).stroke(Stroke::new(1.0, LINE)).corner_radius(12).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("\u{E036}  Новая версия Wavy (сборка {n}) уже скачана")).color(TEXT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Перезапустить", true).clicked() { acts.push(Act::Restart); } });
+                });
+            });
+            ui.add_space(12.0);
+        }
         let ids = self.list_ids();
         self.header(ui, &ids, acts);
         if self.view == View::Search {
@@ -830,8 +956,8 @@ impl App {
         let w = ui.available_width();
         let s = self.settings();
         ui.columns_const(|[left, mid, right]| {
-            // сейчас играет
-            left.horizontal(|ui| {
+            // сейчас играет — клик открывает/закрывает просмотр видео (или большой обложки)
+            let np = left.horizontal(|ui| {
                 ui.set_max_width(w * 0.3);
                 match self.current.clone() {
                     Some(t) => {
@@ -845,7 +971,16 @@ impl App {
                     }
                     None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new("Ничего не играет").family(semi())); ui.label(RichText::new("Закинь музыку — и погнали").color(MUTED).size(12.5)); }); }
                 }
-            });
+            }).response;
+            if self.current.is_some() {
+                let has_video = self.current.as_ref().is_some_and(|t| t.has_video());
+                let r = left.interact(np.rect.expand(4.0), Id::unique("now-playing"), Sense::click());
+                if r.hovered() || self.show_video {
+                    left.painter().rect_stroke(np.rect.expand(4.0), 10, Stroke::new(1.0, if self.show_video { TEXT } else { LINE }), egui::StrokeKind::Outside);
+                }
+                let hint = match (self.show_video, has_video) { (true, _) => "Скрыть", (false, true) => "Смотреть видео", (false, false) => "Показать обложку" };
+                if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hint).clicked() { acts.push(Act::ToggleVideo); }
+            }
             // кнопки + перемотка
             mid.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
@@ -887,6 +1022,66 @@ impl App {
                 if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь").clicked() { self.show_queue = !self.show_queue; }
             });
         });
+    }
+
+    /// Просмотр: видео (клип с YouTube или локальный файл) либо большая обложка.
+    fn video_view(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let rect = ui.available_rect_before_wrap();
+        let resp = ui.allocate_rect(rect, Sense::click());
+        let p = ui.painter().clone();
+        let area = if self.fullscreen { rect } else { rect.shrink2(Vec2::new(0.0, 4.0)).with_max_y(rect.bottom() - 16.0) };
+        if !self.fullscreen { p.rect_filled(area, 14, Color32::BLACK); }
+        let Some(t) = self.current.clone() else {
+            p.text(area.center(), Align2::CENTER_CENTER, "Ничего не играет", FontId::new(18.0, semi()), MUTED);
+            return;
+        };
+        let fit = |size: Vec2| { let k = (area.width() / size.x).min(area.height() / size.y); Rect::from_center_size(area.center(), size * k) };
+        let tex = self.video.as_ref().and_then(|(_, v)| v.texture.clone());
+        let err = self.video_error.as_ref().filter(|e| e.0 == t.id).map(|e| e.1.clone());
+        if let Some(tex) = tex {
+            p.image(tex.id(), fit(tex.size_vec2()), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        } else {
+            // большая обложка (пока видео грузится, при ошибке или если видео нет)
+            let side = (area.height() * 0.62).min(area.width() * 0.6).max(80.0);
+            let cr = Rect::from_center_size(area.center() - Vec2::new(0.0, 36.0), Vec2::splat(side));
+            match t.cover.clone().and_then(|c| self.thumbs.get(&c, 512)) {
+                Some(tx) => { egui::Image::new(&tx).corner_radius(14).paint_at(ui, cr); }
+                None => { p.rect_filled(cr, 14, BG3); p.text(cr.center(), Align2::CENTER_CENTER, "\u{E340}", FontId::proportional(side * 0.35), MUTED); }
+            }
+            let y = cr.bottom() + 16.0;
+            p.text(Pos2::new(area.center().x, y), Align2::CENTER_TOP, ellipsize(&t.title, area.width() - 40.0, 20.0), FontId::new(20.0, bold()), TEXT);
+            p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(&t.artist, area.width() - 40.0, 14.0), FontId::proportional(14.0), MUTED);
+            let note = if let Some(e) = &err { Some((format!("Видео не открылось: {e}"), BAD)) }
+                else if t.has_video() { Some(("Загружаю видео…".to_string(), MUTED)) }
+                else { None };
+            if let Some((n, c)) = note {
+                p.text(Pos2::new(area.center().x, y + 54.0), Align2::CENTER_TOP, ellipsize(&n, area.width() - 40.0, 13.0), FontId::proportional(13.0), c);
+                if err.is_none() { ui.ctx().request_repaint_after(Duration::from_millis(200)); }
+            }
+        }
+        // кнопка «во весь экран» и подсказка
+        let btn = Rect::from_min_size(area.right_top() + Vec2::new(-46.0, 12.0), Vec2::splat(34.0));
+        let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
+        p.circle_filled(btn.center(), 17.0, Color32::from_black_alpha(if b.hovered() { 200 } else { 120 }));
+        p.text(btn.center(), Align2::CENTER_CENTER, if self.fullscreen { "\u{E1CE}" } else { "\u{E1D0}" }, FontId::proportional(17.0), Color32::WHITE);
+        if b.on_hover_text(if self.fullscreen { "Выйти из полноэкранного (Esc)" } else { "Во весь экран (двойной клик)" }).clicked() || resp.double_clicked() {
+            acts.push(Act::Fullscreen(!self.fullscreen));
+        }
+        if self.fullscreen {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) { acts.push(Act::Fullscreen(false)); }
+            // название и прогресс — только когда двигали мышью
+            if ui.input(|i| i.pointer.time_since_last_movement()) < 2.5 {
+                let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+                let pos = self.audio.position();
+                let bar = Rect::from_min_size(Pos2::new(area.left() + 24.0, area.bottom() - 28.0), Vec2::new(area.width() - 48.0, 4.0));
+                p.rect_filled(Rect::from_min_max(Pos2::new(area.left(), area.bottom() - 90.0), area.right_bottom()), 0, Color32::from_black_alpha(140));
+                p.text(bar.left_top() - Vec2::new(0.0, 34.0), Align2::LEFT_TOP, format!("{} — {}", t.title, t.artist), FontId::new(16.0, semi()), Color32::WHITE);
+                p.rect_filled(bar, 2, Color32::from_white_alpha(50));
+                if dur > 0.0 { p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * (pos / dur).clamp(0.0, 1.0) as f32, 4.0)), 2, Color32::WHITE); }
+                p.text(bar.right_top() - Vec2::new(0.0, 22.0), Align2::RIGHT_TOP, format!("{} / {}", fmt_time(pos), fmt_time(dur)), FontId::proportional(12.0), Color32::from_white_alpha(200));
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+        }
     }
 
     fn queue_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -1054,6 +1249,27 @@ impl App {
                             }
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
+
+                        section(ui, "\u{E036}  Обновления");
+                        match update::current_build() {
+                            Some(b) => { ui.label(RichText::new(format!("Версия: сборка {b}")).color(TEXT)); }
+                            None => { ui.label(RichText::new("Локальная сборка — обновляется только exe из GitHub Releases").color(MUTED)); }
+                        }
+                        let mut au = s.auto_update;
+                        if ui.checkbox(&mut au, "Обновляться автоматически").changed() { acts.push(Act::Settings(json!({"autoUpdate": au}))); }
+                        match &self.upd {
+                            Some(UpdState::Checking) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Проверяю…").color(MUTED)); }); }
+                            Some(UpdState::Downloading(n)) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(format!("Скачиваю сборку {n}…")).color(MUTED)); }); }
+                            Some(UpdState::Ready(n)) => { ui.label(RichText::new(format!("Сборка {n} установлена, осталось перезапустить")).color(OK)); }
+                            Some(UpdState::UpToDate) => { ui.label(RichText::new("У тебя последняя версия").color(OK)); }
+                            Some(UpdState::Error(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
+                            None => {}
+                        }
+                        ui.horizontal(|ui| {
+                            let busy = matches!(self.upd, Some(UpdState::Checking | UpdState::Downloading(_)));
+                            if ui.add_enabled(update::current_build().is_some() && !busy, pill_btn("Проверить обновления", false)).clicked() { acts.push(Act::CheckUpdate); }
+                            if matches!(self.upd, Some(UpdState::Ready(_))) && pill(ui, "Перезапустить", true).clicked() { acts.push(Act::Restart); }
+                        });
                     });
                     ui.add_space(8.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Готово", true).clicked() { close = true; } });
@@ -1358,13 +1574,15 @@ fn open_url(url: &str) {
 }
 
 fn main() -> eframe::Result {
+    // запуск после автообновления: даём старому процессу закрыться (порт оверлея, файлы)
+    if std::env::args().any(|a| a == "--restarted") { std::thread::sleep(Duration::from_millis(1500)); }
     // паника → в лог (в Windows-сборке нет консоли)
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         wavy_core::log(&format!("ПАДЕНИЕ: {info}\n{}", std::backtrace::Backtrace::force_capture()));
         default_hook(info);
     }));
-    wavy_core::log(&format!("запуск Wavy {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH));
+    wavy_core::log(&format!("запуск Wavy {} сборка {:?} ({} {})", env!("CARGO_PKG_VERSION"), update::current_build(), std::env::consts::OS, std::env::consts::ARCH));
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("Wavy").with_inner_size([1200.0, 780.0]).with_min_inner_size([860.0, 560.0]).with_drag_and_drop(true)
             .with_icon(Arc::new(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default())),
