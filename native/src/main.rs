@@ -58,7 +58,7 @@ enum Modal {
     NewPlaylist { name: String, ids: Vec<String> },
     Rename { id: String, name: String },
     Delete { id: String },
-    Settings { client_id: String, port: String },
+    Settings { client_id: String, port: String, sp_id: String, sp_secret: String },
 }
 
 enum Act {
@@ -397,15 +397,14 @@ impl App {
             Act::ImportUrl(url, pid) => {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
-                    let t2 = tx.clone();
-                    let res = yt.import_url(url.trim(), &move |m| { let _ = t2.send(Bg::Status(m.into())); })?;
-                    let ids: Vec<String> = res.tracks.iter().map(|t| t.id.clone()).collect();
+                    let (name, source, tracks, note) = fetch_url(&url, &yt, &store, tx)?;
+                    let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
                     let n = ids.len();
                     let mut s = store.lock().unwrap();
-                    s.add_tracks(res.tracks);
+                    s.add_tracks(tracks);
                     let target = if let Some(pid) = pid { s.add_to_playlist(&pid, &ids); Some(pid) }
-                        else { res.name.map(|name| s.create_playlist(&name, ids, Some(res.source)).id) };
-                    let _ = tx.send(Bg::Status(format!("Добавлено {n} трек(ов)")));
+                        else { name.map(|name| s.create_playlist(&name, ids, Some(source)).id) };
+                    let _ = tx.send(Bg::Status(format!("Добавлено {n} трек(ов){note}")));
                     if let Some(t) = target { let _ = tx.send(Bg::OpenPlaylist(t)); }
                     Ok(())
                 });
@@ -450,14 +449,13 @@ impl App {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
                     let src = store.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.source.clone()).filter(|s| s.starts_with("http")).ok_or("У плейлиста нет ссылки")?;
-                    let t2 = tx.clone();
-                    let res = yt.import_url(&src, &move |m| { let _ = t2.send(Bg::Status(m.into())); })?;
-                    let ids: Vec<String> = res.tracks.iter().map(|t| t.id.clone()).collect();
+                    let (_, _, tracks, note) = fetch_url(&src, &yt, &store, tx)?;
+                    let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
                     let n = ids.len();
                     let mut s = store.lock().unwrap();
-                    s.add_tracks(res.tracks);
+                    s.add_tracks(tracks);
                     s.set_playlist_tracks(&id, ids);
-                    let _ = tx.send(Bg::Status(format!("Синхронизировано: {n} треков")));
+                    let _ = tx.send(Bg::Status(format!("Синхронизировано: {n} треков{note}")));
                     Ok(())
                 });
             }
@@ -739,12 +737,12 @@ impl App {
             let d = if self.discord_status.connected { "\u{E61A}" } else { "" };
             if nav(ui, &format!("\u{E272}  Настройки  {d}"), false, None).clicked() {
                 let s = self.settings();
-                acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id, port: s.overlay.port.to_string() }));
+                acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id, port: s.overlay.port.to_string(), sp_id: s.spotify.client_id, sp_secret: s.spotify.client_secret }));
             }
             let s = self.settings();
             let st = if !self.overlay_open { "выкл" } else if s.overlay_window.locked { "вкл" } else { "двигай" };
             if nav(ui, &format!("\u{E466}  Оверлей · {st}"), self.overlay_open, None).clicked() {
-                acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id.clone(), port: s.overlay.port.to_string() }));
+                acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id.clone(), port: s.overlay.port.to_string(), sp_id: s.spotify.client_id.clone(), sp_secret: s.spotify.client_secret.clone() }));
             }
             ui.separator();
         });
@@ -1119,7 +1117,7 @@ impl App {
             match &mut m {
                 Modal::ImportUrl { url, into, busy, err } => {
                     ui.label(RichText::new("Импорт по ссылке").size(20.0).family(bold()));
-                    ui.label(RichText::new("YouTube Music, YouTube (плейлист, альбом, видео), SoundCloud, Bandcamp — всё, что умеет yt-dlp.").color(MUTED));
+                    ui.label(RichText::new("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp — всё, что умеет yt-dlp.").color(MUTED));
                     ui.add_space(10.0);
                     let r = ui.add(egui::TextEdit::singleline(url).hint_text("https://music.youtube.com/playlist?list=...").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
                     if url.is_empty() { r.request_focus(); }
@@ -1128,7 +1126,7 @@ impl App {
                     if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)); // Enter запускает импорт, даже если ссылку вставили без фокуса на поле
                         if ui.add_enabled(!*busy, pill_btn("Импортировать", true)).clicked() || (enter && !*busy) {
                             if url.trim().starts_with("http") { *busy = true; *err = None; acts.push(Act::ImportUrl(url.clone(), if *into { cur_pl.clone() } else { None })); }
                             else { *err = Some("Нужна ссылка, начинающаяся с https://".into()); }
@@ -1168,7 +1166,7 @@ impl App {
                         if pill(ui, "Отмена", false).clicked() { close = true; }
                     });
                 }
-                Modal::Settings { client_id, port } => {
+                Modal::Settings { client_id, port, sp_id, sp_secret } => {
                     ui.label(RichText::new("Настройки").size(20.0).family(bold()));
                     egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
                         section(ui, "\u{E61A}  Discord Rich Presence");
@@ -1249,6 +1247,22 @@ impl App {
                             }
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
+
+                        section(ui, "\u{E340}  Spotify");
+                        ui.label(RichText::new("Ссылки на плейлисты, альбомы и треки Spotify импортируются без настроек: каждый трек находится на YouTube. Без ключа — до 100 треков из плейлиста.").color(MUTED).size(12.5));
+                        ui.label(RichText::new("Для больших плейлистов: developer.spotify.com → Create app → скопируй Client ID и Client Secret.").color(MUTED).size(12.5));
+                        ui.horizontal(|ui| {
+                            ui.label("Client ID");
+                            let r = ui.add(egui::TextEdit::singleline(sp_id).desired_width(300.0).margin(egui::Margin::symmetric(8, 6)));
+                            if r.changed() { sp_id.retain(|c| c.is_ascii_alphanumeric()); }
+                            if r.lost_focus() || (r.changed() && sp_id.len() == 32) { acts.push(Act::Settings(json!({"spotify": {"clientId": sp_id.as_str()}}))); }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Secret   ");
+                            let r = ui.add(egui::TextEdit::singleline(sp_secret).password(true).desired_width(300.0).margin(egui::Margin::symmetric(8, 6)));
+                            if r.changed() { sp_secret.retain(|c| c.is_ascii_alphanumeric()); }
+                            if r.lost_focus() || (r.changed() && sp_secret.len() == 32) { acts.push(Act::Settings(json!({"spotify": {"clientSecret": sp_secret.as_str()}}))); }
+                        });
 
                         section(ui, "\u{E036}  Обновления");
                         match update::current_build() {
@@ -1377,6 +1391,24 @@ impl App {
             }
             if hide_after > 0 && fade > 0.0 { ctx.request_repaint_after(Duration::from_millis(100)); }
         });
+    }
+}
+
+/// Ссылка → треки: Spotify (через поиск на YouTube) или всё, что умеет yt-dlp.
+/// Возвращает (название плейлиста, источник, треки, примечание для пользователя).
+fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>) -> Result<(Option<String>, String, Vec<Track>, String), String> {
+    let t2 = tx.clone();
+    let status = move |m: &str| { let _ = t2.send(Bg::Status(m.into())); };
+    if let Some((kind, _)) = wavy_core::spotify::parse_url(url) {
+        let sp = store.lock().unwrap().lib.settings.spotify.clone();
+        let r = wavy_core::spotify::import(url, yt, Some((&sp.client_id, &sp.client_secret)), &status)?;
+        let mut note = String::new();
+        if !r.not_found.is_empty() { note += &format!(", не нашлось на YouTube: {} (список — в wavy.log)", r.not_found.len()); }
+        if r.truncated { note += ". Spotify без ключа отдаёт только первые 100 треков — ключ добавляется в Настройках"; }
+        Ok(((kind != "track").then_some(r.name), r.source, r.tracks, note))
+    } else {
+        let r = yt.import_url(url.trim(), &status)?;
+        Ok((r.name, r.source, r.tracks, String::new()))
     }
 }
 

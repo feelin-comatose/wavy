@@ -27,6 +27,11 @@ impl Playlist {
 pub struct DiscordSettings { pub enabled: bool, pub client_id: String, pub show_buttons: bool }
 impl Default for DiscordSettings { fn default() -> Self { Self { enabled: false, client_id: String::new(), show_buttons: true } } }
 
+/// Необязательный ключ Spotify Web API — нужен только для плейлистов больше 100 треков.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SpotifySettings { pub client_id: String, pub client_secret: String }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OverlaySettings { pub port: u16, pub theme: String, pub position: String, pub auto_hide_sec: u32 }
@@ -48,10 +53,11 @@ pub struct Settings {
     pub overlay_window: OverlayWindowSettings,
     /// Сам скачивать и ставить новые версии с GitHub Releases.
     pub auto_update: bool,
+    pub spotify: SpotifySettings,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default() }
     }
 }
 

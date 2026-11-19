@@ -3,6 +3,7 @@
 pub mod discord;
 pub mod local;
 pub mod overlay;
+pub mod spotify;
 pub mod store;
 pub mod youtube;
 
