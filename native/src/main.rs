@@ -372,7 +372,7 @@ impl App {
                 let r = match self.settings().repeat.as_str() { "off" => "all", "all" => "one", _ => "off" };
                 self.store.lock().unwrap().patch_settings(&json!({"repeat": r}));
             }
-            Act::View(v) => { self.view = v; self.selected.clear(); self.filter.clear(); }
+            Act::View(v) => { self.view = v; self.selected.clear(); self.filter.clear(); self.show_video = false; } // переход в раздел сворачивает видео
             Act::ImportFiles | Act::ImportFolder => {
                 let pid = self.cur_playlist();
                 let dlg = rfd::FileDialog::new();

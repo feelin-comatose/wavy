@@ -120,7 +120,11 @@ impl AudioOfVideo {
             if packet.track_id() != self.track { continue; }
             match self.decoder.decode(&packet) {
                 Ok(audio) => {
-                    let mut sb = SampleBuffer::<f32>::new(audio.capacity() as u64, *audio.spec());
+                    // число каналов и частоту берём из декодированного звука: в MP4 их часто не указывают
+                    let spec = *audio.spec();
+                    if let Some(c) = std::num::NonZero::new(spec.channels.count() as u16) { self.channels = c; }
+                    if let Some(r) = std::num::NonZero::new(spec.rate) { self.rate = r; }
+                    let mut sb = SampleBuffer::<f32>::new(audio.capacity() as u64, spec);
                     sb.copy_interleaved_ref(audio);
                     self.buf.clear();
                     self.buf.extend_from_slice(sb.samples());

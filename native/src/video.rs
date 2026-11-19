@@ -29,6 +29,8 @@ pub struct Video {
     queue: VecDeque<Frame>,
     gen: u32,
     shown_pts: Option<f64>,
+    /// после перемотки показать первый же готовый кадр (даже на паузе)
+    fresh: bool,
     pub texture: Option<TextureHandle>,
     pub error: Option<String>,
 }
@@ -48,13 +50,16 @@ impl Video {
                 }
             })
             .ok();
-        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, texture: None, error: None }
+        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None }
     }
 
     /// Перемотка: декодер начинает с ближайшего ключевого кадра.
     pub fn seek(&mut self, t: f64) {
         self.gen += 1;
         self.queue.clear();
+        // иначе старый (более поздний) кадр выглядит как «видео убежало вперёд» → бесконечная перемотка
+        self.shown_pts = None;
+        self.fresh = true;
         let _ = self.ctrl.send(Ctrl::Seek(t.max(0.0), self.gen));
     }
 
@@ -80,7 +85,7 @@ impl Video {
         let mut pick = None;
         while self.queue.front().is_some_and(|f| f.pts <= clock + 0.015) { pick = self.queue.pop_front(); }
         // до старта воспроизведения показываем первый кадр, чтобы не было чёрного экрана
-        if pick.is_none() && self.texture.is_none() { pick = self.queue.pop_front(); }
+        if pick.is_none() && (self.texture.is_none() || self.fresh) { pick = self.queue.pop_front(); }
         if let Some(f) = pick {
             let img = ColorImage::from_rgba_unmultiplied(f.size, &f.rgba);
             match &mut self.texture {
@@ -88,6 +93,7 @@ impl Video {
                 _ => self.texture = Some(ctx.load_texture("video", img, TextureOptions::LINEAR)),
             }
             self.shown_pts = Some(f.pts);
+            self.fresh = false;
         }
     }
 }
