@@ -52,6 +52,24 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Signing key (created on first run)
+        if: env.HAS_KEY == 'true'
+        working-directory: android
+        env:
+          PW: ${{ secrets.WAVY_KEYSTORE_PASSWORD }}
+        run: |
+          # Ключ создаётся один раз, шифруется паролем из секрета и сохраняется в репозиторий.
+          # Пароль знает только владелец репозитория — его никуда передавать не нужно.
+          if [ ! -f release.p12 ]; then
+            keytool -genkeypair -storetype PKCS12 -keystore release.p12 -alias wavy -keyalg RSA -keysize 3072 \
+              -validity 11000 -storepass "$PW" -keypass "$PW" -dname "CN=Wavy, O=Wavy"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add release.p12
+            git commit -m "Android signing key (encrypted with WAVY_KEYSTORE_PASSWORD)"
+            git pull --rebase origin main && git push origin HEAD:main
+          fi
+
       - name: Tests
         working-directory: android
         run: ./gradlew --no-daemon testDebugUnitTest --tests '*LogicTest*'

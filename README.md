@@ -43,7 +43,7 @@
 
 Discord Rich Presence и оверлей для OBS есть только на ПК: Discord не даёт такого API на телефонах.
 
-Сборка: `cd android && ./gradlew assembleRelease`. APK подписывается ключом `android/release.p12`, пароль берётся из секрета `WAVY_KEYSTORE_PASSWORD`.
+Сборка: `cd android && ./gradlew assembleRelease`. APK подписывается ключом `android/release.p12`. Его создаёт CI при первой сборке и шифрует паролем из секрета `WAVY_KEYSTORE_PASSWORD`, который владелец репозитория придумывает сам.
 
 ## Горячие клавиши
 
