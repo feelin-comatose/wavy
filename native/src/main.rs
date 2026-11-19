@@ -69,7 +69,7 @@ enum Act {
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
     CreatePlaylist(String, Vec<String>), Rename(String, String), DeletePlaylist(String), Sync(String),
     Reveal(String), OpenUrl(String), Settings(serde_json::Value), ToggleOverlay, ToggleLock, JumpQueue(usize),
-    Modal(Modal), YtUpdate, ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
+    Modal(Modal), YtUpdate, SyncExport, SyncImport(Option<PathBuf>), ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
 }
 
 struct App {
@@ -487,6 +487,27 @@ impl App {
                 }
                 self.modal = Some(m);
             }
+            Act::SyncExport => {
+                let text = wavy_core::sync::export(&self.store.lock().unwrap());
+                if let Some(path) = rfd::FileDialog::new().set_title("Экспорт плейлистов для телефона").set_file_name("wavy-export.json").add_filter("Wavy", &["json"]).save_file() {
+                    match std::fs::write(&path, text) {
+                        Ok(()) => self.toast("Готово: открой этот файл в Wavy на телефоне (Настройки → Синхронизация → Импорт)", false),
+                        Err(e) => self.toast(format!("Не удалось сохранить: {e}"), true),
+                    }
+                }
+            }
+            Act::SyncImport(path) => {
+                let path = path.or_else(|| rfd::FileDialog::new().set_title("Импорт плейлистов с телефона").add_filter("Wavy", &["json"]).pick_file());
+                if let Some(path) = path {
+                    let res = std::fs::read_to_string(&path).map_err(|e| e.to_string())
+                        .and_then(|t| wavy_core::sync::import(&mut self.store.lock().unwrap(), &t));
+                    match res {
+                        Ok(r) => self.toast(format!("Импортировано: {} треков, новых плейлистов {}, обновлено {}{}", r.tracks, r.new_playlists, r.updated_playlists,
+                            if r.skipped_local > 0 { format!(" (файлы с телефона не переносятся: {})", r.skipped_local) } else { String::new() }), false),
+                        Err(e) => self.toast(e, true),
+                    }
+                }
+            }
             Act::ToggleVideo => {
                 self.show_video = !self.show_video;
                 if !self.show_video && self.fullscreen { self.apply(Act::Fullscreen(false), ctx); }
@@ -580,7 +601,11 @@ impl App {
         while let Ok(id) = self.hk_rx.try_recv() {
             if id == self.hk_ids.0 { self.apply(Act::ToggleOverlay, ctx); } else if id == self.hk_ids.1 { self.apply(Act::ToggleLock, ctx); }
         }
-        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        let mut dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        // wavy-export.json с телефона — это синхронизация, а не музыка
+        let exports: Vec<PathBuf> = dropped.iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))).cloned().collect();
+        dropped.retain(|p| !exports.contains(p));
+        for e in exports { self.apply(Act::SyncImport(Some(e)), ctx); }
         if !dropped.is_empty() {
             let pid = self.cur_playlist();
             self.apply(Act::ImportPaths(dropped, pid), ctx);
@@ -1247,6 +1272,13 @@ impl App {
                             }
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
+
+                        section(ui, "\u{E58C}  Синхронизация с телефоном");
+                        ui.label(RichText::new("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны. Файл с телефона можно просто перетащить в окно. Локальные файлы не переносятся.").color(MUTED).size(12.5));
+                        ui.horizontal(|ui| {
+                            if pill(ui, "Экспорт для телефона", true).clicked() { acts.push(Act::SyncExport); }
+                            if pill(ui, "Импорт с телефона", false).clicked() { acts.push(Act::SyncImport(None)); }
+                        });
 
                         section(ui, "\u{E340}  Spotify");
                         ui.label(RichText::new("Ссылки на плейлисты, альбомы и треки Spotify импортируются без настроек: каждый трек находится на YouTube. Без ключа — до 100 треков из плейлиста.").color(MUTED).size(12.5));

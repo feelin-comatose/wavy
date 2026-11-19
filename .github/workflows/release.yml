@@ -1,5 +1,6 @@
-# Собирает Wavy.exe на Windows при каждом пуше в main и выкладывает его в Releases.
-name: Windows build
+# При каждом пуше в main: Wavy.exe (Windows) + Wavy.apk (Android) → один релиз build-N.
+# Номер N вшивается в обе сборки — по нему работает автообновление.
+name: Build & release
 
 on:
   push:
@@ -22,19 +23,71 @@ jobs:
       - name: Build
         run: cargo build --release -p wavy-native
         env:
-          WAVY_BUILD: ${{ github.run_number }}  # номер сборки вшивается в exe — по нему работает автообновление
+          WAVY_BUILD: ${{ github.run_number }}
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/wavy-native.exe dist/Wavy.exe
-          (Get-Item dist/Wavy.exe).Length / 1MB
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Wavy-windows-x64
+          name: Wavy-windows
           path: dist/Wavy.exe
+
+  android:
+    runs-on: ubuntu-latest
+    env:
+      # пароль от android/release.p12 (Settings → Secrets → Actions). Без него APK не публикуется:
+      # иначе следующая версия не встанет поверх (другая подпись).
+      HAS_KEY: ${{ secrets.WAVY_KEYSTORE_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Tests
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest --tests '*LogicTest*'
+
+      - name: Build APK
+        working-directory: android
+        env:
+          WAVY_KEYSTORE_PASSWORD: ${{ secrets.WAVY_KEYSTORE_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease -PwavyBuild=${{ github.run_number }}
+
+      - name: Package
+        if: env.HAS_KEY == 'true'
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/Wavy.apk
+
+      - name: No signing key
+        if: env.HAS_KEY != 'true'
+        run: echo "::warning::Секрет WAVY_KEYSTORE_PASSWORD не задан — APK собран, но в релиз не попадёт"
+
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          name: Wavy-android
+          path: dist/Wavy.apk
+
+  release:
+    needs: [windows, android]
+    # exe выходит, даже если Android-сборка сломалась — чтобы не блокировать обновления на ПК
+    if: always() && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -43,8 +96,8 @@ jobs:
           name: Wavy (сборка ${{ github.run_number }})
           make_latest: true
           body: |
-            Windows 10/11 x64. Установка не нужна — скачай `Wavy.exe` и запусти.
-            При первом запуске SmartScreen может предупредить (exe не подписан): «Подробнее» → «Выполнить в любом случае».
+            **Windows 10/11:** `Wavy.exe` — установка не нужна. SmartScreen может предупредить (exe не подписан): «Подробнее» → «Выполнить в любом случае».
+            **Android 8+:** `Wavy.apk` — разреши установку из браузера/файлового менеджера. Дальше обе версии обновляются сами.
 
             Коммит: ${{ github.sha }}
-          files: dist/Wavy.exe
+          files: dist/*

@@ -1,0 +1,187 @@
+package app.wavy.android
+
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import app.wavy.android.data.Store
+import app.wavy.android.data.Sync
+import app.wavy.android.player.PlayerConn
+import app.wavy.android.ui.AddToPlaylistDialog
+import app.wavy.android.ui.AppState
+import app.wavy.android.ui.Bg
+import app.wavy.android.ui.Bg3
+import app.wavy.android.ui.FullPlayer
+import app.wavy.android.ui.ImportDialog
+import app.wavy.android.ui.LibraryScreen
+import app.wavy.android.ui.MiniPlayer
+import app.wavy.android.ui.Muted
+import app.wavy.android.ui.PlaylistsScreen
+import app.wavy.android.ui.SearchScreen
+import app.wavy.android.ui.SettingsScreen
+import app.wavy.android.ui.TextC
+import app.wavy.android.ui.WavyTheme
+import app.wavy.android.update.Updater
+import java.io.File
+
+class MainActivity : ComponentActivity() {
+    /** Ссылка, пришедшая через «Поделиться» (YouTube, Spotify…) — откроет окно импорта. */
+    private val sharedUrl = mutableStateOf<String?>(null)
+
+    private val askMedia = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+        if (res.values.any { it }) AppState.scanLocal(this) else AppState.say("Без доступа к файлам музыку с телефона не найти")
+    }
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    private val pickImport = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::importFile) }
+    private val saveExport = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let { runCatching { contentResolver.openOutputStream(it)?.use { o -> o.write(Sync.export().toByteArray()) } }.onSuccess { AppState.say("Экспорт сохранён — открой этот файл в Wavy на ПК") } }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+        Store.init(this)
+        PlayerConn.connect(this)
+        if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        if (Store.lib.value.settings.autoUpdate) AppState.checkUpdate(manual = false)
+        handleIntent(intent)
+        setContent { WavyTheme { Root() } }
+    }
+
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handleIntent(intent) }
+
+    override fun onStop() { PlayerConn.saveSession(); Store.flush(); super.onStop() }
+
+    private fun handleIntent(i: Intent?) {
+        when (i?.action) {
+            Intent.ACTION_SEND -> {
+                (i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { importFile(it); return }
+                val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+                // приложения шлют «Название https://…» — берём саму ссылку
+                Regex("""(https?://\S+|spotify:\S+)""").find(text)?.value?.let { sharedUrl.value = it }
+            }
+            Intent.ACTION_VIEW -> i.data?.let { u -> if (u.scheme == "content" || u.scheme == "file") importFile(u) else sharedUrl.value = u.toString() }
+        }
+    }
+
+    private fun importFile(uri: Uri) {
+        val text = runCatching { contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()
+        if (text != null && Sync.isExport(text)) AppState.importExport(text) else AppState.say("Это не файл экспорта Wavy")
+    }
+
+    private fun scan() {
+        val perms = if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
+        else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        askMedia.launch(perms)
+    }
+
+    private fun setFloating(on: Boolean) {
+        if (on && !Settings.canDrawOverlays(this)) {
+            AppState.say("Разреши Wavy «Поверх других приложений» и включи снова")
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        Store.settings { it.copy(floatingPlayer = on) }
+        if (on) AppState.say("Мини-плеер появится, когда свернёшь Wavy")
+    }
+
+    private fun installUpdate() {
+        when (val u = AppState.update.value) {
+            is AppState.Upd.Available -> AppState.downloadUpdate(this, u.rel)
+            is AppState.Upd.Ready -> if (Updater.canInstall(this)) Updater.install(this, u.file) else { AppState.say("Разреши установку из Wavy и нажми «Установить» ещё раз"); Updater.openInstallPermission(this) }
+            else -> {}
+        }
+    }
+
+    @Composable
+    private fun Root() {
+        var tab by rememberSaveable { mutableStateOf(0) }
+        var openPlaylist by rememberSaveable { mutableStateOf<String?>(null) }
+        var full by rememberSaveable { mutableStateOf(false) }
+        var importFor by remember { mutableStateOf<Pair<String, String?>?>(null) } // (ссылка, плейлист)
+        var addTo by remember { mutableStateOf<List<String>?>(null) }
+        val snack = remember { SnackbarHostState() }
+        val msg by AppState.message.collectAsState()
+        val busy by AppState.busy.collectAsState()
+        val shared by sharedUrl
+        val upd by AppState.update.collectAsState()
+
+        LaunchedEffect(msg) { msg?.let { snack.showSnackbar(it); AppState.message.value = null } }
+        LaunchedEffect(shared) { shared?.let { importFor = it to null; sharedUrl.value = null } }
+        LaunchedEffect(upd) { if (upd is AppState.Upd.Available) AppState.say("Вышла новая версия Wavy — Настройки → Обновления") }
+        BackHandler(full || openPlaylist != null) { if (full) full = false else openPlaylist = null }
+
+        Box(Modifier.fillMaxSize().background(Bg)) {
+            Scaffold(
+                containerColor = Bg,
+                snackbarHost = { SnackbarHost(snack) },
+                bottomBar = {
+                    Column {
+                        MiniPlayer { full = true }
+                        NavigationBar(containerColor = Bg3) {
+                            val items = listOf("Библиотека" to Icons.Rounded.LibraryMusic, "Плейлисты" to Icons.AutoMirrored.Rounded.QueueMusic, "Поиск" to Icons.Rounded.Search, "Настройки" to Icons.Rounded.Settings)
+                            items.forEachIndexed { i, (label, icon) ->
+                                NavigationBarItem(tab == i, { tab = i; if (i == 1) openPlaylist = null }, { Icon(icon, label) }, label = { Text(label) },
+                                    colors = NavigationBarItemDefaults.colors(selectedIconColor = Bg, indicatorColor = TextC, unselectedIconColor = Muted, unselectedTextColor = Muted))
+                            }
+                        }
+                    }
+                },
+            ) { pad ->
+                Column(Modifier.padding(pad).statusBarsPadding()) {
+                    busy?.let { Text(it, color = Muted, modifier = Modifier.padding(horizontal = 16.dp)); LinearProgressIndicator(Modifier.padding(16.dp, 4.dp)) }
+                    when (tab) {
+                        0 -> LibraryScreen(onImport = { importFor = "" to null }, onScan = ::scan, onAddToPlaylist = { addTo = it })
+                        1 -> PlaylistsScreen(openPlaylist, onOpen = { openPlaylist = it }, onImport = { importFor = "" to it }, onAddToPlaylist = { addTo = it })
+                        2 -> SearchScreen(onAddToPlaylist = { addTo = it })
+                        else -> SettingsScreen(::setFloating, onExport = { saveExport.launch("wavy-export.json") }, onImportFile = { pickImport.launch(arrayOf("application/json", "text/*", "*/*")) }, onInstallUpdate = ::installUpdate)
+                    }
+                }
+            }
+            AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { FullPlayer { full = false } }
+        }
+        importFor?.let { (url, pl) -> ImportDialog(url, pl, dismiss = { importFor = null }) { pid -> if (pid != null) { tab = 1; openPlaylist = pid } } }
+        addTo?.let { ids -> AddToPlaylistDialog(ids) { addTo = null } }
+    }
+}

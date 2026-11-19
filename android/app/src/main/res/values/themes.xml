@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Wavy" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF0A0A0C</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">#FF18181C</item>
+    </style>
+</resources>
