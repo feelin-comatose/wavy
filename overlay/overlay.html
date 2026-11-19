@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Wavy Overlay</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div class="edit-hint">Тяни, чтобы двигать · тяни за угол — ресайз · Ctrl+Shift+L — закрепить</div>
+  <div class="ov hidden" id="ov">
+    <div class="cover" id="cover"><div class="hole"></div></div>
+    <div class="info">
+      <div class="label"><span class="eq"><i></i><i></i><i></i><i></i></span><span id="label">Сейчас играет</span></div>
+      <div class="title"><span id="title"></span></div>
+      <div class="artist" id="artist"></div>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="times"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+    </div>
+  </div>
+  <div class="grip"></div>
+  <script src="overlay.js"></script>
+</body>
+</html>

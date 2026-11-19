@@ -1,0 +1,48 @@
+# Собирает Wavy.exe на Windows при каждом пуше в main и выкладывает его в Releases.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p wavy-native
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/wavy-native.exe dist/Wavy.exe
+          (Get-Item dist/Wavy.exe).Length / 1MB
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Wavy-windows-x64
+          path: dist/Wavy.exe
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Wavy (сборка ${{ github.run_number }})
+          make_latest: true
+          body: |
+            Windows 10/11 x64. Установка не нужна — скачай `Wavy.exe` и запусти.
+            При первом запуске SmartScreen может предупредить (exe не подписан): «Подробнее» → «Выполнить в любом случае».
+
+            Коммит: ${{ github.sha }}
+          files: dist/Wavy.exe

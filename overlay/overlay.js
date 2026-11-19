@@ -1,0 +1,93 @@
+// Оверлей: подписывается на /events (SSE) локального сервера Wavy.
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const $ = (id) => document.getElementById(id);
+  const ov = $('ov');
+  const base = qs.get('server') || window.__WAVY_SERVER__ || ''; // Tauri-окно грузит страницу локально и ходит на сервер Wavy
+  let st = null;
+  let lastId = null;
+  let hideTimer = null;
+
+  const fmt = (s) => {
+    if (!isFinite(s) || s <= 0) return '0:00';
+    s = Math.floor(s);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
+  };
+
+  function applyTheme(cfg) {
+    const theme = qs.get('theme') || cfg.theme || 'card';
+    document.body.className = 't-' + theme;
+  }
+
+  function marquee() {
+    const box = document.querySelector('.title');
+    const span = $('title');
+    box.classList.remove('marquee');
+    requestAnimationFrame(() => {
+      const over = span.scrollWidth - box.clientWidth;
+      if (over > 4) {
+        box.style.setProperty('--x', `-${span.scrollWidth + 60 - box.clientWidth}px`);
+        box.style.setProperty('--d', Math.max(8, span.scrollWidth / 25) + 's');
+        box.classList.add('marquee');
+      }
+    });
+  }
+
+  function show() {
+    ov.classList.remove('hidden');
+    clearTimeout(hideTimer);
+    const sec = Number(qs.get('hide') ?? st?.config?.autoHideSec ?? 0);
+    if (sec > 0) hideTimer = setTimeout(() => ov.classList.add('hidden'), sec * 1000);
+  }
+
+  function render(data) {
+    const prev = st;
+    st = data;
+    applyTheme(data.config || {});
+    const t = data.track;
+    if (!t) { ov.classList.add('hidden'); lastId = null; return; }
+    ov.classList.toggle('paused', !data.playing);
+    $('label').textContent = data.playing ? 'Сейчас играет' : 'Пауза';
+    if (t.id !== lastId) {
+      $('title').textContent = t.title;
+      $('artist').textContent = t.artist || '';
+      $('cover').style.backgroundImage = t.cover ? `url("${t.cover.startsWith('/') ? base + t.cover : t.cover}")` : '';
+      ov.classList.remove('swap'); void ov.offsetWidth; ov.classList.add('swap');
+      lastId = t.id;
+      marquee();
+      show();
+    } else if (!prev || prev.playing !== data.playing) {
+      show();
+    }
+  }
+
+  function tick() {
+    if (st && st.track) {
+      const pos = Math.min(st.duration || Infinity, st.position + (st.playing ? (Date.now() - st.at) / 1000 : 0));
+      $('fill').style.width = st.duration ? (pos / st.duration) * 100 + '%' : '0%';
+      $('cur').textContent = fmt(pos);
+      $('dur').textContent = fmt(st.duration);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function connect() {
+    const es = new EventSource(base + '/events');
+    es.onmessage = (e) => render(JSON.parse(e.data));
+    es.onerror = () => { es.close(); setTimeout(connect, 2000); };
+  }
+  connect();
+
+  // Tauri: перемещение и ресайз окна в режиме редактирования
+  const T = window.__TAURI__;
+  if (T && T.window) {
+    const w = T.window.getCurrentWindow();
+    document.addEventListener('mousedown', (e) => {
+      if (!document.documentElement.classList.contains('edit') || e.button !== 0) return;
+      if (e.target.classList.contains('grip')) w.startResizeDragging('SouthEast');
+      else w.startDragging();
+    });
+  }
+})();
