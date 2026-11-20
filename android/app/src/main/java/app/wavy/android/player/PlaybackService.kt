@@ -11,6 +11,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -27,6 +28,7 @@ import com.google.common.util.concurrent.ListenableFuture
  * Фоновое воспроизведение: ExoPlayer + MediaSession. Даёт уведомление с кнопками, управление
  * с экрана блокировки, наушников и часов. Пока играет музыка, сервис работает на переднем плане.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     private var bubble: FloatingBubble? = null
@@ -36,9 +38,15 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         Store.init(this)
         val http = OkHttpDataSource.Factory(Http.client).setUserAgent(Http.UA)
-        val resolving = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http)) { spec -> Media.resolve(spec) }
+        val base = DefaultDataSource.Factory(this, http)
+        val resolving = ResolvingDataSource.Factory(base) { spec -> Media.resolve(spec) }
+        // старт быстрее: начинаем играть, набрав 1 с звука (по умолчанию 2.5 с)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 120_000, 1_000, 2_000)
+            .build()
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(resolving))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCache.Factory(this, base, resolving)))
+            .setLoadControl(loadControl)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             .setHandleAudioBecomingNoisy(true) // выдернули наушники — пауза
             .setWakeMode(C.WAKE_MODE_NETWORK)

@@ -44,6 +44,8 @@ enum Bg {
     OpenPlaylist(String),
     Search(Result<Vec<Track>, String>),
     Ready { token: u64, path: PathBuf },
+    ReadyStream { token: u64, dl: wavy_core::stream::Download },
+    VideoDownloading { id: String, dl: wavy_core::stream::Download },
     LoadFailed { token: u64, err: String },
     Discord(DiscordStatus),
     YtVersion(Result<String, String>),
@@ -120,10 +122,14 @@ struct App {
     fullscreen: bool,
     video: Option<(String, video::Video)>,
     video_loading: Option<String>,
+    video_dl: Option<(String, wavy_core::stream::Download)>,
     video_error: Option<(String, String)>,
     upd: Option<UpdState>,
     upd_checked: Option<Instant>,
     started: Instant,
+    /// положение и размер окна до полного экрана — чтобы вернуть их после
+    pre_fullscreen: Option<(Pos2, Vec2, bool)>,
+    restore_window: Option<(Pos2, Vec2, bool, u8)>,
     _hotkeys: Option<GlobalHotKeyManager>,
     hk_rx: Receiver<u32>,
     hk_ids: (u32, u32),
@@ -176,7 +182,7 @@ impl App {
             last_pushed: (None, false), shown_at: Instant::now(),
             modal: None, toast, show_queue: false, yt_version: None,
             media, media_rx, resume: None, session_saved: Instant::now(), spin: 0.0,
-            show_video: false, fullscreen: false, video: None, video_loading: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(),
+            show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
         };
         app.overlay_open = s.overlay_window.visible;
@@ -269,12 +275,38 @@ impl App {
             let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
             let next = self.queue.get(self.qi + 1).and_then(|n| self.track(n)).filter(|n| !n.is_local());
             std::thread::spawn(move || {
-                let r = yt.download_audio(&t, &cache);
-                let _ = tx.send(match r { Ok(path) => Bg::Ready { token, path }, Err(err) => Bg::LoadFailed { token, err } });
+                let t0 = Instant::now();
+                let msg = match fetch_audio(&yt, &t, &cache) {
+                    Ok(AudioSrc::File(path)) => Bg::Ready { token, path },
+                    Ok(AudioSrc::Stream(dl)) => Bg::ReadyStream { token, dl },
+                    Err(err) => Bg::LoadFailed { token, err },
+                };
+                wavy_core::log(&format!("трек «{}»: старт через {:.1} с", t.title, t0.elapsed().as_secs_f32()));
+                let _ = tx.send(msg);
                 c.request_repaint();
-                if let Some(n) = next { let _ = yt.download_audio(&n, &cache); } // предзагрузка следующего
+                // предзагрузка следующего трека целиком — переключение будет мгновенным
+                if let Some(n) = next { if let Ok(AudioSrc::Stream(dl)) = fetch_audio(&yt, &n, &cache) { dl.wait_for(u64::MAX, Duration::from_secs(600)); } }
             });
         }
+    }
+
+    fn start_stream(&mut self, dl: wavy_core::stream::Download) {
+        let vol = self.settings().volume;
+        match self.audio.load_stream(dl, vol * vol) {
+            Ok(()) => {
+                self.errors_in_row = 0;
+                let cur = self.current.as_ref().map(|t| t.id.clone());
+                if let Some((id, pos, autoplay)) = self.resume.take() {
+                    if Some(&id) == cur.as_ref() {
+                        if pos > 1.0 { self.audio.seek(pos); } // прыгнет, когда этот кусок докачается
+                        if !autoplay { self.audio.pause(); }
+                    }
+                }
+            }
+            Err(e) => self.track_failed(e),
+        }
+        self.loading = false;
+        self.push_state();
     }
 
     fn start_file(&mut self, path: &Path) {
@@ -513,8 +545,18 @@ impl App {
                 if !self.show_video && self.fullscreen { self.apply(Act::Fullscreen(false), ctx); }
             }
             Act::Fullscreen(on) => {
+                if on == self.fullscreen { return; }
+                if on {
+                    // запоминаем окно: после выхода из полного экрана система ставит размер по умолчанию
+                    self.pre_fullscreen = ctx.input(|i| {
+                        let v = i.viewport();
+                        Some((v.outer_rect?.min, v.inner_rect?.size(), v.maximized.unwrap_or(false)))
+                    });
+                    self.show_video = true;
+                } else if let Some((pos, size, max)) = self.pre_fullscreen.take() {
+                    self.restore_window = Some((pos, size, max, 3)); // применяем несколько кадров подряд, пока окно не «устаканится»
+                }
                 self.fullscreen = on;
-                if on { self.show_video = true; }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
             }
             Act::CheckUpdate => { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
@@ -553,6 +595,10 @@ impl App {
                     match r { Ok(v) => self.results = v, Err(e) => self.toast(e, true) }
                 }
                 Bg::Ready { token, path } => if token == self.token { self.start_file(&path); },
+                Bg::ReadyStream { token, dl } => if token == self.token { self.start_stream(dl); } else if !dl.done() { dl.cancel(); },
+                Bg::VideoDownloading { id, dl } => {
+                    if self.video_loading.as_deref() == Some(id.as_str()) { self.video_dl = Some((id, dl)); }
+                }
                 Bg::LoadFailed { token, err } => if token == self.token { self.track_failed(err); },
                 Bg::Discord(s) => self.discord_status = s,
                 Bg::YtVersion(v) => self.yt_version = Some(v),
@@ -611,7 +657,37 @@ impl App {
             self.apply(Act::ImportPaths(dropped, pid), ctx);
         }
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
+        self.audio.poll();
+        if self.audio.buffering() { ctx.request_repaint_after(Duration::from_millis(200)); }
+        // загрузка видео: показываем проценты, по готовности — открываем
+        if let Some((id, dl)) = self.video_dl.clone() {
+            if dl.done() {
+                self.video_dl = None;
+                let _ = self.tx.send(Bg::VideoReady { id, path: dl.path.clone() });
+                ctx.request_repaint();
+            } else if let Some(e) = dl.error() {
+                self.video_dl = None;
+                let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
+                if let Some(t) = self.track(&id) {
+                    wavy_core::log(&format!("видео: быстрая загрузка не вышла ({e}), пробую yt-dlp"));
+                    std::thread::spawn(move || {
+                        let msg = match yt.download_video(&t, &cache) { Ok(path) => Bg::VideoReady { id: t.id.clone(), path }, Err(err) => Bg::VideoFailed { id: t.id.clone(), err } };
+                        let _ = tx.send(msg); c.request_repaint();
+                    });
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+        }
         self.video_tick(ctx);
+        if let Some((pos, size, max, left)) = self.restore_window.take() {
+            if max { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)); }
+            else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            }
+            if left > 1 { self.restore_window = Some((pos, size, max, left - 1)); ctx.request_repaint_after(Duration::from_millis(60)); }
+        }
         // автообновление: через 5 с после запуска и потом раз в 6 часов
         if self.settings().auto_update && update::current_build().is_some() {
             let due = match self.upd_checked { None => self.started.elapsed() > Duration::from_secs(5), Some(t) => t.elapsed() > Duration::from_secs(6 * 3600) };
@@ -655,6 +731,17 @@ impl App {
                 self.video_loading = Some(t.id.clone());
                 let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
                 std::thread::spawn(move || {
+                    // быстрый путь: прямая ссылка + загрузка кусками с процентами
+                    if let Some(vid) = t.video_id.clone() {
+                        let path = cache.join(format!("{}.v.mp4", wavy_core::sha16(t.url.clone().unwrap_or_default().as_bytes())));
+                        if wavy_core::stream::is_complete(&path) { let _ = tx.send(Bg::VideoReady { id: t.id.clone(), path }); c.request_repaint(); return; }
+                        if let Ok(d) = yt.direct(&vid, true) {
+                            let dl = wavy_core::stream::Download::start(d.url, path, d.size);
+                            let _ = tx.send(Bg::VideoDownloading { id: t.id.clone(), dl });
+                            c.request_repaint();
+                            return;
+                        }
+                    }
                     let msg = match yt.download_video(&t, &cache) {
                         Ok(path) => Bg::VideoReady { id: t.id.clone(), path },
                         Err(err) => Bg::VideoFailed { id: t.id.clone(), err },
@@ -989,7 +1076,7 @@ impl App {
                         ui.vertical(|ui| {
                             ui.add_space(8.0);
                             ui.add(egui::Label::new(RichText::new(&t.title).family(semi()).color(TEXT)).truncate());
-                            ui.add(egui::Label::new(RichText::new(if self.loading { "загрузка…".to_string() } else { t.artist.clone() }).color(MUTED).size(12.5)).truncate());
+                            ui.add(egui::Label::new(RichText::new(if self.loading { "загрузка…".to_string() } else if self.audio.buffering() { "буферизация…".to_string() } else { t.artist.clone() }).color(MUTED).size(12.5)).truncate());
                         });
                     }
                     None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new("Ничего не играет").family(semi())); ui.label(RichText::new("Закинь музыку — и погнали").color(MUTED).size(12.5)); }); }
@@ -1075,7 +1162,10 @@ impl App {
             p.text(Pos2::new(area.center().x, y), Align2::CENTER_TOP, ellipsize(&t.title, area.width() - 40.0, 20.0), FontId::new(20.0, bold()), TEXT);
             p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(&t.artist, area.width() - 40.0, 14.0), FontId::proportional(14.0), MUTED);
             let note = if let Some(e) = &err { Some((format!("Видео не открылось: {e}"), BAD)) }
-                else if t.has_video() { Some(("Загружаю видео…".to_string(), MUTED)) }
+                else if t.has_video() {
+                    let pct = self.video_dl.as_ref().filter(|v| v.0 == t.id).and_then(|v| v.1.progress());
+                    Some((pct.map(|p| format!("Загружаю видео… {p}%")).unwrap_or_else(|| "Загружаю видео…".into()), MUTED))
+                }
                 else { None };
             if let Some((n, c)) = note {
                 p.text(Pos2::new(area.center().x, y + 54.0), Align2::CENTER_TOP, ellipsize(&n, area.width() - 40.0, 13.0), FontId::proportional(13.0), c);
@@ -1087,9 +1177,17 @@ impl App {
         let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
         p.circle_filled(btn.center(), 17.0, Color32::from_black_alpha(if b.hovered() { 200 } else { 120 }));
         p.text(btn.center(), Align2::CENTER_CENTER, if self.fullscreen { "\u{E1CE}" } else { "\u{E1D0}" }, FontId::proportional(17.0), Color32::WHITE);
-        if b.on_hover_text(if self.fullscreen { "Выйти из полноэкранного (Esc)" } else { "Во весь экран (двойной клик)" }).clicked() || resp.double_clicked() {
+        if b.on_hover_text(if self.fullscreen { "Выйти из полноэкранного (Esc)" } else { "Во весь экран (двойной клик)" }).clicked() {
             acts.push(Act::Fullscreen(!self.fullscreen));
+        } else if resp.double_clicked() {
+            // первый клик двойного уже переключил паузу — возвращаем как было
+            acts.push(Act::TogglePlay);
+            acts.push(Act::Fullscreen(!self.fullscreen));
+        } else if resp.clicked() {
+            acts.push(Act::TogglePlay);
         }
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let _ = resp;
         if self.fullscreen {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) { acts.push(Act::Fullscreen(false)); }
             // название и прогресс — только когда двигали мышью
@@ -1424,6 +1522,30 @@ impl App {
             if hide_after > 0 && fade > 0.0 { ctx.request_repaint_after(Duration::from_millis(100)); }
         });
     }
+}
+
+enum AudioSrc { File(PathBuf), Stream(wavy_core::stream::Download) }
+
+/// Звук YouTube-трека: готовый файл из кэша → поток через rustypipe (играет с первых КБ) → yt-dlp.
+fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
+    let _ = std::fs::create_dir_all(cache);
+    let key = t.url.clone().unwrap_or_default();
+    let path = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
+    if wavy_core::stream::is_complete(&path) { return Ok(AudioSrc::File(path)); }
+    if let Some(vid) = &t.video_id {
+        match yt.direct(vid, false) {
+            Ok(d) => {
+                let dl = wavy_core::stream::Download::start(d.url, path.clone(), d.size);
+                // ~200 КБ хватает декодеру, чтобы начать
+                if dl.wait_for(200 * 1024, Duration::from_secs(20)) { return Ok(AudioSrc::Stream(dl)); }
+                wavy_core::log(&format!("поток «{}» не пошёл: {:?} — пробую yt-dlp", t.title, dl.error()));
+                dl.cancel();
+                yt.forget(vid);
+            }
+            Err(e) => wavy_core::log(&format!("rustypipe «{}»: {e} — пробую yt-dlp", t.title)),
+        }
+    }
+    yt.download_audio(t, cache).map(AudioSrc::File)
 }
 
 /// Ссылка → треки: Spotify (через поиск на YouTube) или всё, что умеет yt-dlp.

@@ -4,6 +4,7 @@ pub mod discord;
 pub mod local;
 pub mod overlay;
 pub mod spotify;
+pub mod stream;
 pub mod sync;
 pub mod store;
 pub mod youtube;

@@ -8,11 +8,14 @@ pub struct Audio {
     pub duration: f64,
     pub loaded: bool,
     pub error: Option<String>,
+    /// играем из потока, который ещё догружается: (загрузка, отложенная перемотка)
+    stream: Option<(wavy_core::stream::Download, Option<f64>)>,
+    volume: f32,
 }
 
 impl Audio {
     pub fn new() -> Self {
-        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None };
+        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0 };
         a.open();
         a
     }
@@ -33,8 +36,51 @@ impl Audio {
     /// Есть ли куда выводить звук.
     pub fn has_device(&self) -> bool { self.player.is_some() }
 
+    /// Играть, пока файл ещё качается: декодер читает фрагменты по порядку (без перемотки),
+    /// звук начинается с первых килобайт. Перемотка — когда нужный кусок докачается.
+    pub fn load_stream(&mut self, dl: wavy_core::stream::Download, volume: f32) -> Result<(), String> {
+        if self.player.is_none() { self.open(); }
+        let p = self.player.as_ref().ok_or_else(|| self.error.clone().unwrap_or_default())?;
+        p.clear();
+        self.loaded = false;
+        self.volume = volume;
+        let reader = dl.reader().map_err(|e| e.to_string())?;
+        let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint("m4a")
+            .build().map_err(|e| format!("не удалось декодировать поток: {e}"))?;
+        self.duration = 0.0; // у потока длительность неизвестна — берём из трека
+        p.append(dec);
+        p.set_volume(volume);
+        p.play();
+        self.loaded = true;
+        self.stream = Some((dl, None));
+        Ok(())
+    }
+
+    /// Перемотка, ждущая докачки (для индикации «буферизация…»).
+    pub fn buffering(&self) -> bool { self.stream.as_ref().is_some_and(|s| s.1.is_some()) }
+
+    /// Вызывать каждый кадр: когда поток докачался, выполнить отложенную перемотку.
+    pub fn poll(&mut self) {
+        let ready = match &self.stream { Some((dl, Some(_))) => dl.done(), _ => false };
+        if ready {
+            let (dl, pending) = self.stream.take().unwrap();
+            if let Some(sec) = pending { self.reopen_at(&dl.path, sec); }
+        }
+    }
+
+    /// Открыть докачанный файл (уже с перемоткой) и встать на позицию, сохранив паузу/игру.
+    fn reopen_at(&mut self, path: &Path, sec: f64) {
+        let was_playing = self.is_playing() || self.player.as_ref().is_some_and(|p| !p.is_paused());
+        let vol = self.volume;
+        if self.load(path, vol).is_ok() {
+            if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(sec.max(0.0))); if !was_playing { p.pause(); } }
+        }
+    }
+
     pub fn load(&mut self, path: &Path, volume: f32) -> Result<(), String> {
         if self.player.is_none() { self.open(); }
+        self.stream = None;
+        self.volume = volume;
         let p = self.player.as_ref().ok_or_else(|| self.error.clone().unwrap_or_default())?;
         p.clear();
         self.loaded = false;
@@ -62,13 +108,30 @@ impl Audio {
         Ok(())
     }
 
-    pub fn stop(&mut self) { if let Some(p) = &self.player { p.clear(); } self.loaded = false; }
+    pub fn stop(&mut self) {
+        if let Some(p) = &self.player { p.clear(); }
+        self.loaded = false;
+        // недокачанный поток прошлого трека больше не нужен
+        if let Some((dl, _)) = self.stream.take() { if !dl.done() { dl.cancel(); } }
+    }
     pub fn play(&self) { if let Some(p) = &self.player { p.play() } }
     pub fn pause(&self) { if let Some(p) = &self.player { p.pause() } }
     pub fn is_playing(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| !p.is_paused() && !p.empty()) }
     pub fn position(&self) -> f64 { self.player.as_ref().map(|p| p.get_pos().as_secs_f64()).unwrap_or(0.0) }
-    pub fn set_volume(&self, v: f32) { if let Some(p) = &self.player { p.set_volume(v * v) } } // квадратичная кривая — естественнее на слух
-    pub fn seek(&self, sec: f64) { if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(sec.max(0.0))); } }
+    pub fn set_volume(&mut self, v: f32) { self.volume = v * v; if let Some(p) = &self.player { p.set_volume(v * v) } } // квадратичная кривая — естественнее на слух
+    pub fn seek(&mut self, sec: f64) {
+        if let Some((dl, pending)) = &mut self.stream {
+            if dl.done() {
+                let path = dl.path.clone();
+                self.stream = None;
+                self.reopen_at(&path, sec);
+            } else {
+                *pending = Some(sec); // перемотаем, когда докачается
+            }
+            return;
+        }
+        if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(sec.max(0.0))); }
+    }
     /// Трек доиграл до конца.
     pub fn finished(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| p.empty()) }
 }

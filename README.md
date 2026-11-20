@@ -93,3 +93,7 @@ overlay/   страница оверлея для OBS
 ```
 
 Шрифты: Inter (OFL), иконки: Phosphor (MIT). Подробности в `native/assets/README.md`.
+
+## Лицензия
+
+GPL-3.0 (см. `LICENSE`): обе версии используют библиотеки под GPL-3.0 — rustypipe (ПК) и NewPipeExtractor (Android).

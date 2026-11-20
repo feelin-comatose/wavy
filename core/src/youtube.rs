@@ -15,6 +15,20 @@ pub struct YouTube {
     bin: Mutex<Option<String>>,
     streams: Mutex<HashMap<String, (String, u64)>>, // url -> (stream, expires_ms)
     deno: Arc<Mutex<Deno>>,
+    rp: std::sync::OnceLock<Option<rustypipe::client::RustyPipe>>,
+}
+
+/// Прямая ссылка на поток (без скачивания): адрес и размер, если известен.
+#[derive(Clone, Debug)]
+pub struct Direct {
+    pub url: String,
+    pub size: Option<u64>,
+}
+
+/// Общий tokio-рантайм для rustypipe (один рабочий поток — экономим память).
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(1).thread_name("rustypipe").enable_all().build().expect("tokio"))
 }
 
 /// JS-движок для yt-dlp: без него YouTube постепенно перестаёт отдавать форматы.
@@ -34,10 +48,57 @@ pub struct UrlImport {
 
 impl YouTube {
     pub fn new(bin_dir: PathBuf) -> Self {
-        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)) }
+        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)), rp: std::sync::OnceLock::new() }
     }
 
     pub fn deno_status(&self) -> Deno { self.deno.lock().unwrap().clone() }
+
+    fn rustypipe(&self) -> Result<&rustypipe::client::RustyPipe, String> {
+        self.rp.get_or_init(|| {
+            let dir = self.bin_dir.parent().unwrap_or(&self.bin_dir).join("rustypipe");
+            let _ = std::fs::create_dir_all(&dir);
+            match rustypipe::client::RustyPipe::builder().storage_dir(dir).build() {
+                Ok(c) => Some(c),
+                Err(e) => { crate::log(&format!("rustypipe: {e}")); None }
+            }
+        }).as_ref().ok_or_else(|| "rustypipe недоступен".to_string())
+    }
+
+    /// Быстрый путь без yt-dlp: прямая ссылка через rustypipe (0.2–1 с).
+    /// video=false — звук m4a (AAC), video=true — видео без звука H.264 до 720p.
+    pub fn direct(&self, video_id: &str, video: bool) -> Result<Direct, String> {
+        use rustypipe::model::{AudioFormat, VideoCodec, VideoFormat};
+        use rustypipe::param::StreamFilter;
+        let key = format!("{}:{video_id}", if video { "v" } else { "a" });
+        if let Some((u, exp)) = self.streams.lock().unwrap().get(&key) {
+            if *exp > now_ms() + 60_000 { return Ok(serde_json::from_str::<(String, Option<u64>)>(u).map(|(url, size)| Direct { url, size }).map_err(|e| e.to_string())?); }
+        }
+        let rp = self.rustypipe()?;
+        let t = std::time::Instant::now();
+        let player = rt().block_on(rp.query().player(video_id)).map_err(|e| format!("rustypipe: {e}"))?;
+        let d = if video {
+            let f = StreamFilter::new().video_formats(vec![VideoFormat::Mp4]).video_codecs(vec![VideoCodec::Avc1]).video_max_res(720);
+            let v = player.select_video_only_stream(&f).ok_or("нет видео H.264")?;
+            Direct { url: v.url.clone(), size: v.size }
+        } else {
+            let f = StreamFilter::new().audio_formats(vec![AudioFormat::M4a]);
+            let a = player.select_audio_stream(&f).ok_or("нет звука m4a")?;
+            Direct { url: a.url.clone(), size: Some(a.size) }
+        };
+        crate::log(&format!("rustypipe {key}: ссылка за {:.2} с", t.elapsed().as_secs_f32()));
+        let exp = url::Url::parse(&d.url).ok()
+            .and_then(|u| u.query_pairs().find(|(k, _)| k == "expire").and_then(|(_, v)| v.parse::<u64>().ok()))
+            .map(|e| e * 1000).unwrap_or(now_ms() + 3_600_000);
+        self.streams.lock().unwrap().insert(key, (serde_json::to_string(&(d.url.clone(), d.size)).unwrap_or_default(), exp));
+        Ok(d)
+    }
+
+    /// Забыть закэшированные ссылки трека (протухли / 403).
+    pub fn forget(&self, video_id: &str) {
+        let mut s = self.streams.lock().unwrap();
+        s.remove(&format!("a:{video_id}"));
+        s.remove(&format!("v:{video_id}"));
+    }
 
     /// Найти deno (PATH или data_dir/bin); если нет — скачать в фоне. Не блокирует.
     pub fn ensure_deno_background(&self) {
