@@ -128,10 +128,31 @@ pub fn fetch_api(kind: &str, id: &str, client_id: &str, secret: &str) -> Result<
 }
 
 /// Найти трек на YouTube: из 5 результатов берём лучший по длительности и «официальности».
-pub fn match_on_youtube(yt: &YouTube, t: &SpTrack) -> Result<Option<Track>, String> {
+pub fn match_on_youtube(yt: &YouTube, t: &SpTrack) -> Result<Option<Track>, String> { match_excluding(yt, t, None) }
+
+/// Видео трека пропало с YouTube (удалено, закрыто, недоступно в стране) — найти такой же трек в другом видео.
+/// Возвращает трек с тем же id (плейлисты не ломаются), но с новым видео.
+pub fn find_replacement(yt: &YouTube, old: &Track) -> Result<Option<Track>, String> {
+    // «Artist - Title» в названии видео без исполнителя (часто у загрузок с обычных каналов)
+    let (artist, title) = match old.title.split_once(" - ") {
+        Some((a, t)) if old.artist.is_empty() || old.artist == "YouTube" => (a.trim().to_string(), t.trim().to_string()),
+        _ => (old.artist.trim_end_matches(" - Topic").to_string(), old.title.clone()),
+    };
+    let sp = SpTrack { title, artists: artist, album: old.album.clone(), duration: old.duration };
+    Ok(match_excluding(yt, &sp, old.video_id.as_deref())?.map(|mut t| {
+        t.id = old.id.clone();
+        t.title = old.title.clone();
+        t.artist = old.artist.clone();
+        t.added_at = old.added_at;
+        t
+    }))
+}
+
+fn match_excluding(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Option<Track>, String> {
     let main_artist = t.artists.split(',').next().unwrap_or("").trim().to_string();
-    let q = format!("{main_artist} - {}", t.title);
-    let cands = yt.search(&q, 5)?;
+    let q = if main_artist.is_empty() { t.title.clone() } else { format!("{main_artist} - {}", t.title) };
+    let mut cands = yt.search(&q, 6)?;
+    cands.retain(|c| c.video_id.is_some() && c.video_id.as_deref() != exclude);
     let norm = |s: &str| s.to_lowercase();
     let title_l = norm(&t.title);
     let best = cands.into_iter().map(|c| {

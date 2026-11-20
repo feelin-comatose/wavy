@@ -49,6 +49,8 @@ enum Bg {
     OpenPlaylist(String),
     Search(Result<Vec<Track>, String>),
     Ready { token: u64, path: PathBuf },
+    /// видео трека пропало с YouTube — нашли такой же трек в другом видео
+    Replaced(Track),
     ReadyStream { token: u64, dl: wavy_core::stream::Download },
     VideoDownloading { id: String, dl: wavy_core::stream::Download },
     LoadFailed { token: u64, err: String },
@@ -329,7 +331,21 @@ impl App {
             let next = self.queue.get(self.qi + 1).and_then(|n| self.track(n)).filter(|n| !n.is_local());
             std::thread::spawn(move || {
                 let t0 = Instant::now();
-                let msg = match fetch_audio(&yt, &t, &cache) {
+                let mut res = fetch_audio(&yt, &t, &cache);
+                // видео удалено / закрыто / недоступно в стране — ищем этот же трек в другом видео
+                if let Err(e) = &res {
+                    if gone_from_youtube(e) && t.video_id.is_some() {
+                        wavy_core::log(&format!("«{}»: видео недоступно ({e}) — ищу замену", t.title));
+                        let _ = tx.send(Bg::Status(format!("«{}» больше нет на YouTube — ищу такой же трек…", t.title)));
+                        c.request_repaint();
+                        if let Ok(Some(n)) = wavy_core::spotify::find_replacement(&yt, &t) {
+                            wavy_core::log(&format!("«{}»: замена {:?}", t.title, n.video_id));
+                            let r2 = fetch_audio(&yt, &n, &cache);
+                            if r2.is_ok() { let _ = tx.send(Bg::Replaced(n)); res = r2; }
+                        }
+                    }
+                }
+                let msg = match res {
                     Ok(AudioSrc::File(path)) => Bg::Ready { token, path },
                     Ok(AudioSrc::Stream(dl)) => Bg::ReadyStream { token, dl },
                     Err(err) => Bg::LoadFailed { token, err },
@@ -821,6 +837,15 @@ impl App {
                 Bg::Search(r) => {
                     self.searching = false;
                     match r { Ok(v) => self.results = v, Err(e) => self.toast(e, true) }
+                }
+                Bg::Replaced(t) => {
+                    // запоминаем новое видео в библиотеке (id тот же — плейлисты не трогаем)
+                    let mut s = self.store.lock().unwrap();
+                    if s.lib.tracks.contains_key(&t.id) { s.add_tracks(vec![t.clone()]); }
+                    drop(s);
+                    if self.current.as_ref().is_some_and(|c| c.id == t.id) { self.current = Some(t.clone()); }
+                    self.video_error = None;
+                    self.toast(format!("«{}»: старое видео пропало с YouTube, нашёл замену", t.title), false);
                 }
                 Bg::Ready { token, path } => if token == self.token { self.start_file(&path); },
                 Bg::ReadyStream { token, dl } => if token == self.token { self.start_stream(dl); } else if !dl.done() { dl.cancel(); },
@@ -2122,6 +2147,12 @@ impl App {
 }
 
 enum AudioSrc { File(PathBuf), Stream(wavy_core::stream::Download) }
+
+/// Ошибка «видео больше нет»: удалено, закрыто, заблокировано в стране или по жалобе.
+fn gone_from_youtube(err: &str) -> bool {
+    let e = err.to_lowercase();
+    ["video unavailable", "not available", "private video", "has been removed", "been terminated", "copyright", "unavailable"].iter().any(|m| e.contains(m))
+}
 
 /// Звук YouTube-трека: готовый файл из кэша → поток через rustypipe (играет с первых КБ) → yt-dlp.
 fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
