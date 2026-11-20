@@ -28,9 +28,18 @@ pub struct Ffmpeg {
 fn exe() -> &'static str { if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" } }
 
 impl Ffmpeg {
-    /// Ищет готовый ffmpeg: data_dir/bin, затем PATH. Ничего не качает.
+    /// Ищет готовый ffmpeg: data_dir/bin/codecs/, затем PATH. Ничего не качает.
+    ///
+    /// Отдельная папка — не прихоть: yt-dlp ищет ffmpeg рядом с собой (в bin/) и, найдя нашу урезанную
+    /// сборку, пытается ей перепаковывать скачанное — и падает («Error splitting the argument list»).
     pub fn new(bin_dir: PathBuf) -> Self {
+        let bin_dir = bin_dir.join("codecs");
         let local = bin_dir.join(exe());
+        // сборки 16–17 клали ffmpeg прямо в bin/ — переносим
+        if let Some(old) = bin_dir.parent().map(|d| d.join(exe())).filter(|p| p.exists()) {
+            let _ = std::fs::create_dir_all(&bin_dir);
+            if std::fs::rename(&old, &local).is_err() { let _ = std::fs::remove_file(&old); }
+        }
         let state = if local.exists() { State::Ready(local) }
             else if !cfg!(windows) && cmd(Path::new("ffmpeg")).arg("-version").output().is_ok_and(|o| o.status.success()) { State::Ready("ffmpeg".into()) }
             else { State::Missing };
@@ -115,5 +124,18 @@ mod tests {
         let l = "[Parsed_showinfo_2 @ 0x7f] n:   1 pts:   2042 pts_time:2.042   duration:     41 duration_time:0.041   fmt:rgba cl:left sar:1/1 s:640x360 i:P iskey:0 type:P";
         assert_eq!(super::parse_showinfo(l), Some((2.042, 640, 360)));
         assert_eq!(super::parse_showinfo("Input #0, matroska"), None);
+    }
+
+    /// ffmpeg из bin/ переезжает в bin/codecs/ — там его не найдёт yt-dlp.
+    #[test]
+    fn moves_out_of_ytdlp_dir() {
+        let bin = std::env::temp_dir().join(format!("wavy-ff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bin);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(super::exe()), b"x").unwrap();
+        let ff = super::Ffmpeg::new(bin.clone());
+        assert!(!bin.join(super::exe()).exists());
+        assert_eq!(ff.path(), Some(bin.join("codecs").join(super::exe())));
+        let _ = std::fs::remove_dir_all(&bin);
     }
 }
