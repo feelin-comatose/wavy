@@ -2,6 +2,7 @@
 //! Используется нативной версией (egui).
 pub mod anime;
 pub mod discord;
+pub mod ffmpeg;
 pub mod local;
 pub mod media;
 pub mod overlay;

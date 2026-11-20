@@ -36,6 +36,30 @@ jobs:
           name: Wavy-windows
           path: dist/Wavy.exe
 
+  # Маленький ffmpeg.exe для HEVC/10 бит/VP9/AV1 и звука Opus/AC3/DTS (плеер качает его сам, когда понадобится).
+  # Собирается заново только при изменении скрипта — иначе берётся из кэша.
+  ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: dist-ffmpeg
+          key: ffmpeg-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 nasm
+          bash scripts/build-ffmpeg.sh windows dist-ffmpeg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: dist-ffmpeg/ffmpeg.exe
+
   android:
     runs-on: ubuntu-latest
     env:
@@ -97,7 +121,7 @@ jobs:
           path: dist/Wavy.apk
 
   release:
-    needs: [windows, android]
+    needs: [windows, android, ffmpeg]
     # exe выходит, даже если Android-сборка сломалась — чтобы не блокировать обновления на ПК
     if: always() && needs.windows.result == 'success'
     runs-on: ubuntu-latest
@@ -116,6 +140,7 @@ jobs:
           body: |
             **Windows 10/11:** `Wavy.exe` — установка не нужна. SmartScreen может предупредить (exe не подписан): «Подробнее» → «Выполнить в любом случае».
             **Android 8+:** `Wavy.apk` — разреши установку из браузера/файлового менеджера. Дальше обе версии обновляются сами.
+            `ffmpeg.exe` скачивать не нужно — Wavy возьмёт его сам, когда встретится видео в HEVC/VP9/AV1 или звук Opus/AC3/DTS.
 
             Коммит: ${{ github.sha }}
           files: dist/*

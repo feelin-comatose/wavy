@@ -152,6 +152,10 @@ struct App {
     sub_sel: Option<usize>,
     /// серия, уже отмеченная просмотренной (чтобы не писать на диск каждый кадр)
     watched_mark: Option<String>,
+    /// ffmpeg для HEVC/10 бит/VP9/AV1 и звука Opus/AC3/DTS (качается по требованию)
+    ff: wavy_core::ffmpeg::Ffmpeg,
+    /// звук не открылся без ffmpeg — переоткрыть трек, когда он скачается
+    reload_after_ff: bool,
 }
 
 impl App {
@@ -185,7 +189,9 @@ impl App {
 
         let (media_tx, media_rx) = channel();
         let media = media::Media::new(cc, media_tx);
-        let audio = player::Audio::new();
+        let ff = wavy_core::ffmpeg::Ffmpeg::new(dir.join("bin"));
+        let mut audio = player::Audio::new();
+        audio.ffmpeg = ff.path();
         if let Some(e) = &audio.error { wavy_core::log(e); toast = Some((e.clone(), true, Instant::now())); }
         let mut app = Self {
             overlay_open: false,
@@ -204,13 +210,37 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
+            ff, reload_after_ff: false,
         };
+        app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
         app.restore_session(&ctx);
         // «Открыть с помощью Wavy»
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
         if !args.is_empty() { app.apply(Act::ImportPaths(args, None), &ctx); }
         app
+    }
+
+    /// Серии, у которых раньше не распознался номер (например, «Title_[01]_[AniLibria_TV]»), — разобрать заново.
+    fn fix_episode_numbers(&mut self) {
+        let mut s = self.store.lock().unwrap();
+        let fix: Vec<(String, anime::Parsed)> = s.lib.tracks.values().filter(|t| t.anime.is_some() && t.episode.is_none())
+            .filter_map(|t| { let p = anime::parse_path(Path::new(t.path.as_deref()?)); p.episode.map(|_| (t.id.clone(), p)) }).collect();
+        if fix.is_empty() { return; }
+        let mut ids = HashSet::new();
+        for (id, p) in &fix {
+            let path = PathBuf::from(s.lib.tracks[id].path.clone().unwrap_or_default());
+            let fresh = anime::episode_track(&path, p, "");
+            if let Some(t) = s.lib.tracks.get_mut(id) { t.title = fresh.title; t.episode = fresh.episode; ids.extend(t.anime.clone()); }
+        }
+        for a in ids { s.sort_anime(&a); }
+        s.save();
+    }
+
+    /// Нужен ffmpeg: скачать (один раз), по готовности — перерисовать.
+    fn need_ffmpeg(&mut self, ctx: &egui::Context) {
+        let c = ctx.clone();
+        self.ff.install_background(move || c.request_repaint());
     }
 
     fn session_file() -> PathBuf { wavy_core::data_dir().join("session.json") }
@@ -371,6 +401,14 @@ impl App {
     }
 
     fn track_failed(&mut self, err: String) {
+        if err.starts_with(wavy_core::ffmpeg::NEED) && matches!(self.ff.state(), wavy_core::ffmpeg::State::Missing | wavy_core::ffmpeg::State::Downloading(_)) {
+            // звук в Opus/AC3/DTS… — качаем декодер и переоткроем трек с того же места
+            self.reload_after_ff = true;
+            self.loading = false;
+            self.toast("Скачиваю декодер для этого формата (≈6 МБ, один раз)…", false);
+            return;
+        }
+        let err = wavy_core::ffmpeg::human(&err).to_string();
         let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
         self.toast(format!("Не получилось воспроизвести «{title}»: {err}"), true);
         self.errors_in_row += 1;
@@ -697,7 +735,7 @@ impl App {
             Act::AudioTrack(i) => {
                 let Some(t) = self.current.clone() else { return };
                 self.audio_sel = i;
-                if let Err(e) = self.audio.switch_track(Path::new(t.path.as_deref().unwrap_or_default()), i) { self.toast(e, true); }
+                if let Err(e) = self.audio.switch_track(Path::new(t.path.as_deref().unwrap_or_default()), i) { self.track_failed(e); }
                 if let Some(aid) = &t.anime { if let Some(a) = self.store.lock().unwrap().anime_mut(aid) { a.audio = Some(i); } self.store.lock().unwrap().save(); }
                 self.push_state();
             }
@@ -718,12 +756,12 @@ impl App {
                     None => self.cache.join(format!("{}.s.m4a", wavy_core::sha16(t.url.clone().unwrap_or_default().as_bytes()))),
                 };
                 if !path.exists() { self.toast("Shazam работает с файлами на компьютере (и уже загруженными треками)", true); return; }
-                let (pos, track) = (self.audio.position(), self.audio_sel);
+                let (pos, track, ff) = (self.audio.position(), self.audio_sel, self.ff.path());
                 self.modal = Some(Modal::Shazam { state: ShazamState::Listening, to_openings: t.anime.is_some() });
                 let (tx, c) = (self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
                     // берём чуть до текущего места и вперёд — нажимают обычно, когда опенинг уже идёт
-                    let r = player::sample_for_shazam(&path, (pos - 3.0).max(0.0), wavy_core::shazam::SECONDS as f64, track).and_then(|s| wavy_core::shazam::recognize(&s));
+                    let r = player::sample_for_shazam(&path, (pos - 3.0).max(0.0), wavy_core::shazam::SECONDS as f64, track, ff.as_deref()).and_then(|s| wavy_core::shazam::recognize(&s));
                     if let Err(e) = &r { wavy_core::log(&format!("Shazam: {e}")); }
                     let _ = tx.send(Bg::Shazam(r));
                     c.request_repaint();
@@ -797,7 +835,7 @@ impl App {
                     let cur = self.current.as_ref().map(|t| t.id.clone());
                     if cur.as_deref() == Some(id.as_str()) && (self.show_video || self.fullscreen) {
                         let pos = self.audio.position();
-                        self.video = Some((id, video::Video::open(path, pos, ctx, None)));
+                        self.video = Some((id, video::Video::open(path, pos, ctx, None, self.ff.path())));
                     }
                 }
                 Bg::VideoFailed { id, err } => {
@@ -895,6 +933,7 @@ impl App {
                 ctx.request_repaint_after(Duration::from_millis(250));
             }
         }
+        self.ffmpeg_tick(ctx);
         self.video_tick(ctx);
         if let Some((pos, size, max, left)) = self.restore_window.take() {
             if max { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)); }
@@ -931,6 +970,30 @@ impl App {
         });
     }
 
+    /// Декодер ffmpeg: качаем, если он понадобился, и повторяем то, что без него не открылось.
+    fn ffmpeg_tick(&mut self, ctx: &egui::Context) {
+        use wavy_core::ffmpeg::{State, NEED};
+        let need_video = self.video_error.as_ref().is_some_and(|e| e.1.starts_with(NEED));
+        if !(need_video || self.reload_after_ff) { return; }
+        match self.ff.state() {
+            State::Missing => self.need_ffmpeg(ctx),
+            State::Downloading(_) => ctx.request_repaint_after(Duration::from_millis(300)),
+            State::Ready(p) => {
+                self.audio.ffmpeg = Some(p);
+                if need_video { self.video_error = None; self.video = None; } // video_tick откроет заново
+                if std::mem::take(&mut self.reload_after_ff) {
+                    let pos = self.audio.position();
+                    if let (Some(t), None) = (self.current.clone(), &self.resume) { self.resume = Some((t.id, pos, true)); }
+                    self.load_current(ctx);
+                }
+            }
+            State::Failed(e) => {
+                if need_video { if let Some(v) = &mut self.video_error { v.1 = format!("{} — не скачался декодер: {e}", wavy_core::ffmpeg::human(&v.1)); } }
+                if std::mem::take(&mut self.reload_after_ff) { self.toast(format!("Не скачался декодер: {e}"), true); }
+            }
+        }
+    }
+
     /// Видео для текущего трека: открываем, когда открыт просмотр, и выгружаем, когда закрыт (память).
     fn video_tick(&mut self, ctx: &egui::Context) {
         let want = if self.show_video || self.fullscreen { self.current.clone().filter(|t| t.has_video()) } else { None };
@@ -943,7 +1006,7 @@ impl App {
                 let path = PathBuf::from(t.path.clone().unwrap_or_default());
                 let pos = self.resume.as_ref().map(|r| r.1).unwrap_or_else(|| self.audio.position());
                 let sub = self.sub_src();
-                self.video = Some((t.id.clone(), video::Video::open(path, pos, ctx, sub)));
+                self.video = Some((t.id.clone(), video::Video::open(path, pos, ctx, sub, self.ff.path())));
             } else if self.video_loading.as_deref() != Some(t.id.as_str()) {
                 self.video_loading = Some(t.id.clone());
                 let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
@@ -1548,7 +1611,15 @@ impl App {
             let y = cr.bottom() + 16.0;
             p.text(Pos2::new(area.center().x, y), Align2::CENTER_TOP, ellipsize(&t.title, area.width() - 40.0, 20.0), FontId::new(20.0, bold()), TEXT);
             p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(&t.artist, area.width() - 40.0, 14.0), FontId::proportional(14.0), MUTED);
-            let note = if let Some(e) = &err { Some((format!("Видео не открылось: {e}"), BAD)) }
+            let note = if let Some(e) = err.as_ref().filter(|e| e.starts_with(wavy_core::ffmpeg::NEED)) {
+                let what = wavy_core::ffmpeg::human(e);
+                match self.ff.state() {
+                    wavy_core::ffmpeg::State::Downloading(p) => Some((format!("{what}: скачиваю декодер (≈6 МБ, один раз)… {p}%"), MUTED)),
+                    wavy_core::ffmpeg::State::Failed(_) => Some((format!("Видео не открылось: {what}"), BAD)),
+                    _ => Some((format!("{what}: готовлю декодер…"), MUTED)),
+                }
+            }
+            else if let Some(e) = &err { Some((format!("Видео не открылось: {e}"), BAD)) }
                 else if t.has_video() {
                     let pct = self.video_dl.as_ref().filter(|v| v.0 == t.id).and_then(|v| v.1.progress());
                     Some((pct.map(|p| format!("Загружаю видео… {p}%")).unwrap_or_else(|| "Загружаю видео…".into()), MUTED))
@@ -1556,7 +1627,7 @@ impl App {
                 else { None };
             if let Some((n, c)) = note {
                 p.text(Pos2::new(area.center().x, y + 54.0), Align2::CENTER_TOP, ellipsize(&n, area.width() - 40.0, 13.0), FontId::proportional(13.0), c);
-                if err.is_none() { ui.ctx().request_repaint_after(Duration::from_millis(200)); }
+                if err.as_ref().is_none_or(|e| e.starts_with(wavy_core::ffmpeg::NEED)) { ui.ctx().request_repaint_after(Duration::from_millis(200)); }
             }
         }
         // озвучка / субтитры / Shazam — в оконном режиме всегда, в полноэкранном — когда двигали мышью
@@ -1611,7 +1682,7 @@ impl App {
                     ui.set_min_width(220.0);
                     for (i, a) in info.audio.iter().enumerate() {
                         let txt = if i == self.audio_sel { format!("\u{E182}  {}", a.label) } else { format!("      {}", a.label) };
-                        if ui.add_enabled(a.supported, egui::Button::new(txt).frame(false)).clicked() { acts.push(Act::AudioTrack(i)); ui.close(); }
+                        if ui.add(egui::Button::new(txt).frame(false)).clicked() { acts.push(Act::AudioTrack(i)); ui.close(); }
                     }
                 });
             }
@@ -1885,6 +1956,17 @@ impl App {
                             }
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
+
+                        section(ui, "\u{E58C}  Видео");
+                        ui.label(RichText::new("H.264 показывается встроенным декодером. Для HEVC (H.265), 10-битного видео, VP9, AV1 и звука Opus/AC3/DTS Wavy один раз скачивает свой маленький ffmpeg (≈6 МБ) — сам, когда такое видео встретится. Если видеокарта умеет этот формат, декодирует она.").color(MUTED).size(12.5));
+                        match self.ff.state() {
+                            wavy_core::ffmpeg::State::Ready(_) => { ui.label(RichText::new("Декодер ffmpeg: готов").color(OK)); }
+                            wavy_core::ffmpeg::State::Downloading(p) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(format!("Скачиваю декодер… {p}%")).color(MUTED)); }); }
+                            wavy_core::ffmpeg::State::Failed(e) => { ui.label(RichText::new(format!("Декодер: {e}")).color(BAD)); }
+                            wavy_core::ffmpeg::State::Missing => {
+                                if pill(ui, "Скачать декодер сейчас", false).clicked() { let c = ui.ctx().clone(); self.ff.install_background(move || c.request_repaint()); }
+                            }
+                        }
 
                         section(ui, "\u{E58C}  Синхронизация с телефоном");
                         ui.label(RichText::new("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны. Файл с телефона можно просто перетащить в окно. Локальные файлы не переносятся.").color(MUTED).size(12.5));

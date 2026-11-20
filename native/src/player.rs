@@ -11,11 +11,13 @@ pub struct Audio {
     /// играем из потока, который ещё догружается: (загрузка, отложенная перемотка)
     stream: Option<(wavy_core::stream::Download, Option<f64>)>,
     volume: f32,
+    /// ffmpeg для звука, который не умеет symphonia (Opus, AC3, DTS…)
+    pub ffmpeg: Option<std::path::PathBuf>,
 }
 
 impl Audio {
     pub fn new() -> Self {
-        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0 };
+        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, ffmpeg: None };
         a.open();
         a
     }
@@ -98,9 +100,16 @@ impl Audio {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         if wavy_core::local::VIDEO_EXT.contains(&ext.as_str()) {
             // видеофайл: rodio взял бы первую дорожку (видео), поэтому выбираем звуковую сами
-            let src = AudioOfVideo::open(path, audio)?;
-            self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            p.append(src);
+            match AudioOfVideo::open(path, audio) {
+                Ok(src) => { self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0); p.append(src); }
+                Err(e) if e.starts_with(wavy_core::ffmpeg::NEED) => {
+                    let ff = self.ffmpeg.clone().ok_or(e)?;
+                    let src = FfAudio::open(ff, path, audio, 0.0)?;
+                    self.duration = src.duration.unwrap_or(0.0);
+                    p.append(src);
+                }
+                Err(e) => return Err(e),
+            }
             p.set_volume(volume);
             p.play();
             self.loaded = true;
@@ -110,7 +119,20 @@ impl Audio {
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
         let mut b = rodio::Decoder::builder().with_data(std::io::BufReader::new(f)).with_byte_len(len).with_seekable(true);
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) { b = b.with_hint(ext); }
-        let dec = b.build().map_err(|e| format!("не удалось декодировать: {e}"))?;
+        let dec = match b.build() {
+            Ok(d) => d,
+            // формат, которого нет в symphonia (Opus, AC3, DTS…) — через ffmpeg, если он есть
+            Err(e) => {
+                let Some(ff) = self.ffmpeg.clone() else { return Err(format!("{}не удалось декодировать: {e}", wavy_core::ffmpeg::NEED)) };
+                let src = FfAudio::open(ff, path, 0, 0.0)?;
+                self.duration = src.duration.unwrap_or(0.0);
+                p.append(src);
+                p.set_volume(volume);
+                p.play();
+                self.loaded = true;
+                return Ok(());
+            }
+        };
         self.duration = rodio::Source::total_duration(&dec).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         p.append(dec);
         p.set_volume(volume);
@@ -172,9 +194,13 @@ impl AudioOfVideo {
         let format = probed.format;
         let codecs = symphonia::default::get_codecs();
         let audio: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).collect();
-        let track = audio.get(nth).copied().filter(|t| codecs.get_codec(t.codec_params.codec).is_some())
-            .or_else(|| audio.iter().copied().find(|t| codecs.get_codec(t.codec_params.codec).is_some()))
-            .ok_or("в видео нет звуковой дорожки, которую можно воспроизвести (Opus, AC3 и DTS пока не поддерживаются)")?;
+        // выбранная дорожка в формате, которого нет в symphonia (Opus, AC3, DTS…) — это работа для ffmpeg
+        let track = match audio.get(nth) {
+            Some(t) if codecs.get_codec(t.codec_params.codec).is_some() => *t,
+            Some(_) => return Err(format!("{}звук в формате, который нужен ffmpeg", wavy_core::ffmpeg::NEED)),
+            None => audio.iter().copied().find(|t| codecs.get_codec(t.codec_params.codec).is_some())
+                .ok_or_else(|| format!("{}в видео нет звуковой дорожки, которую можно воспроизвести без ffmpeg", wavy_core::ffmpeg::NEED))?,
+        };
         let decoder = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
         let rate = track.codec_params.sample_rate.and_then(std::num::NonZero::new).ok_or("неизвестная частота")?;
         let channels = track.codec_params.channels.map(|c| c.count() as u16).and_then(std::num::NonZero::new).unwrap_or(std::num::NonZero::new(2).unwrap());
@@ -241,19 +267,37 @@ impl rodio::Source for AudioOfVideo {
 
 /// Кусок звука из файла (любого: музыка, MP4, MKV) для Shazam: `secs` секунд с позиции `start`, моно 16 кГц.
 /// `audio` — номер звуковой дорожки (для видео с несколькими озвучками).
-pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize) -> Result<Vec<f32>, String> {
+pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize, ffmpeg: Option<&Path>) -> Result<Vec<f32>, String> {
+    match sample_symphonia(path, start, secs, audio) {
+        Err(e) if e.starts_with(wavy_core::ffmpeg::NEED) => {
+            let ff = ffmpeg.ok_or_else(|| wavy_core::ffmpeg::human(&e).to_string())?;
+            let out = wavy_core::ffmpeg::cmd(ff).args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &format!("{:.3}", start.max(0.0)), "-t", &format!("{secs}")])
+                .arg("-i").arg(path).arg("-map").arg(format!("0:a:{audio}?")).args(["-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"])
+                .output().map_err(|e| format!("ffmpeg: {e}"))?;
+            let v: Vec<f32> = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            if v.len() < 16000 * 3 { return Err("слишком мало звука".into()); }
+            Ok(v)
+        }
+        r => r,
+    }
+}
+
+fn sample_symphonia(path: &Path, start: f64, secs: f64, audio: usize) -> Result<Vec<f32>, String> {
     use symphonia::core::{audio::SampleBuffer, codecs::DecoderOptions, errors::Error, formats::{FormatOptions, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(e) = path.extension().and_then(|e| e.to_str()) { hint.with_extension(e); }
     let mut format = symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| format!("не удалось открыть файл: {e}"))?.format;
+        .map_err(|e| format!("{}не удалось открыть файл: {e}", wavy_core::ffmpeg::NEED))?.format;
     let codecs = symphonia::default::get_codecs();
     let audio_tracks: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).cloned().collect();
-    let track = audio_tracks.get(audio).filter(|t| codecs.get_codec(t.codec_params.codec).is_some())
-        .or_else(|| audio_tracks.iter().find(|t| codecs.get_codec(t.codec_params.codec).is_some()))
-        .ok_or("нет звуковой дорожки, которую можно разобрать")?.clone();
+    let track = match audio_tracks.get(audio) {
+        Some(t) if codecs.get_codec(t.codec_params.codec).is_some() => t.clone(),
+        Some(_) => return Err(format!("{}звук в формате, который нужен ffmpeg", wavy_core::ffmpeg::NEED)),
+        None => audio_tracks.iter().find(|t| codecs.get_codec(t.codec_params.codec).is_some()).cloned()
+            .ok_or_else(|| format!("{}нет звуковой дорожки, которую можно разобрать", wavy_core::ffmpeg::NEED))?,
+    };
     let mut dec = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
     if start > 0.5 {
         let t = Time::new(start as u64, start.fract());
@@ -279,4 +323,66 @@ pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize) -> Re
     }
     if pcm.len() < rate as usize * ch * 3 { return Err("слишком мало звука".into()); }
     Ok(wavy_core::shazam::to_mono_16k(&pcm, ch, rate))
+}
+
+/// Звук через ffmpeg (Opus, AC3/E-AC3, DTS, TrueHD…): f32 стерео 48 кГц по трубе. Перемотка — перезапуск с -ss.
+pub struct FfAudio {
+    ff: std::path::PathBuf,
+    path: std::path::PathBuf,
+    track: usize,
+    child: Option<std::process::Child>,
+    out: Option<std::io::BufReader<std::process::ChildStdout>>,
+    pub duration: Option<f64>,
+}
+
+impl FfAudio {
+    pub fn open(ff: std::path::PathBuf, path: &Path, track: usize, at: f64) -> Result<Self, String> {
+        let duration = wavy_core::media::duration_of(path);
+        let mut s = Self { ff, path: path.to_path_buf(), track, child: None, out: None, duration };
+        s.spawn(at)?;
+        Ok(s)
+    }
+
+    fn spawn(&mut self, at: f64) -> Result<(), String> {
+        use std::process::Stdio;
+        self.kill();
+        let mut c = wavy_core::ffmpeg::cmd(&self.ff);
+        c.args(["-nostdin", "-hide_banner", "-nostats", "-loglevel", "error"]);
+        if at > 0.05 { c.arg("-ss").arg(format!("{at:.3}")); }
+        c.arg("-i").arg(&self.path).arg("-map").arg(format!("0:a:{}?", self.track))
+            .args(["-vn", "-sn", "-dn", "-ac", "2", "-ar", "48000", "-f", "f32le", "-"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = c.spawn().map_err(|e| format!("не удалось запустить ffmpeg: {e}"))?;
+        self.out = child.stdout.take().map(|o| std::io::BufReader::with_capacity(256 * 1024, o));
+        self.child = Some(child);
+        Ok(())
+    }
+
+    fn kill(&mut self) {
+        self.out = None;
+        if let Some(mut c) = self.child.take() { let _ = c.kill(); let _ = c.wait(); }
+    }
+}
+
+impl Drop for FfAudio { fn drop(&mut self) { self.kill(); } }
+
+impl Iterator for FfAudio {
+    type Item = rodio::Sample;
+    fn next(&mut self) -> Option<rodio::Sample> {
+        use std::io::Read;
+        let mut b = [0u8; 4];
+        self.out.as_mut()?.read_exact(&mut b).ok()?;
+        Some(f32::from_le_bytes(b) as rodio::Sample)
+    }
+}
+
+impl rodio::Source for FfAudio {
+    fn current_span_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> rodio::ChannelCount { std::num::NonZero::new(2).unwrap() }
+    fn sample_rate(&self) -> rodio::SampleRate { std::num::NonZero::new(48000).unwrap() }
+    fn total_duration(&self) -> Option<Duration> { self.duration.map(Duration::from_secs_f64) }
+    fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        let _ = self.spawn(pos.as_secs_f64());
+        Ok(())
+    }
 }

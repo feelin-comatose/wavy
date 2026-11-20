@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let path = std::path::PathBuf::from(&a[1]);
+    // WAVY_FFMPEG=<путь к ffmpeg> — проверить и форматы, которые идут через него
+    let ff = std::env::var_os("WAVY_FFMPEG").map(std::path::PathBuf::from);
     let info = wavy_core::media::probe(&path);
     println!("длительность {:?}, видео «{}»", info.duration, info.video_codec);
     for (i, t) in info.audio.iter().enumerate() { println!("  звук {i}: {} (поддержка {})", t.label, t.supported); }
@@ -21,7 +23,7 @@ fn main() {
 
     let ctx = eframe::egui::Context::default();
     let sub = pick.map(|i| info.subs[i].src.clone());
-    let mut v = video::Video::open(path.clone(), 0.0, &ctx, sub);
+    let mut v = video::Video::open(path.clone(), 0.0, &ctx, sub, ff.clone());
     let t0 = Instant::now();
     let (mut shown, mut last) = (0, None::<eframe::egui::TextureId>);
     // «играем» 12 секунд со скоростью x4
@@ -50,7 +52,7 @@ fn main() {
         }
     }
     // как при переходе к следующей серии: видео открылось с позиции прошлой серии (27.8), а звук идёт с нуля
-    let mut v2 = video::Video::open(path.clone(), 27.8, &ctx, None);
+    let mut v2 = video::Video::open(path.clone(), 27.8, &ctx, None, ff.clone());
     let mut clock = 0.0;
     let t2 = Instant::now();
     while t2.elapsed() < Duration::from_secs(4) {
@@ -59,10 +61,10 @@ fn main() {
         clock += 0.02;
     }
     println!("после открытия с 27.8 и часов {clock:.2}: показан кадр {:?}", v2.shown());
-    let mut au = player::AudioOfVideo::open(&path, 1);
+    let mut au = player::AudioOfVideo::open(&path, 1.min(info.audio.len().saturating_sub(1)));
     match &mut au { Ok(s) => { let n: usize = s.by_ref().take(48000).count(); println!("звук дорожка 1 (FLAC): {n} сэмплов"); } Err(e) => println!("звук 1: {e}") }
     if a.get(2).map(|s| s == "shazam").unwrap_or(false) {
-        let s = player::sample_for_shazam(&path, 8.0, 12.0, 0).unwrap();
+        let s = player::sample_for_shazam(&path, 8.0, 12.0, 0, ff.as_deref()).unwrap();
         println!("Shazam: {:?}", wavy_core::shazam::recognize(&s));
     }
 }

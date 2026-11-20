@@ -46,7 +46,8 @@ pub struct Video {
 
 impl Video {
     /// `sub` — какие субтитры показывать (встроенная дорожка MKV или внешний файл).
-    pub fn open(path: PathBuf, start: f64, ctx: &egui::Context, sub: Option<SubSrc>) -> Self {
+    /// `ffmpeg` — для форматов, которые не умеет OpenH264 (HEVC, 10 бит, VP9, AV1…); без него — ошибка `ffmpeg::NEED`.
+    pub fn open(path: PathBuf, start: f64, ctx: &egui::Context, sub: Option<SubSrc>, ffmpeg: Option<PathBuf>) -> Self {
         let (ftx, frx) = sync_channel(3);
         let (ctl_tx, ctl_rx) = channel();
         let c = ctx.clone();
@@ -60,7 +61,17 @@ impl Video {
                     Some(SubSrc::Embedded(n)) => Some(n),
                     None => None,
                 };
-                let r = if wavy_core::media::is_mkv(&path) { decode_mkv(&path, start, &ftx, &ctl_rx, &c, embedded, &s2) } else { decode_loop(&path, start, &ftx, &ctl_rx, &c) };
+                let mut r = if wavy_core::media::is_mkv(&path) { decode_mkv(&path, start, &ftx, &ctl_rx, &c, embedded, &s2) } else { decode_loop(&path, start, &ftx, &ctl_rx, &c) };
+                if let (Err(e), Some(ff)) = (&r, &ffmpeg) {
+                    if e.starts_with(wavy_core::ffmpeg::NEED) {
+                        // встроенный декодер не умеет — играем через ffmpeg; субтитры MKV собираем отдельным проходом
+                        if let (Some(n), true) = (embedded, wavy_core::media::is_mkv(&path)) {
+                            let (p2, s3, c2) = (path.clone(), s2.clone(), c.clone());
+                            std::thread::Builder::new().name("subs".into()).spawn(move || scan_subs(&p2, n, &s3, &c2)).ok();
+                        }
+                        r = decode_ffmpeg(ff, &path, start, &ftx, &ctl_rx, &c);
+                    }
+                }
                 if let Err(e) = r {
                     wavy_core::log(&format!("видео {}: {e}", path.display()));
                     let _ = ftx.send(Err(e));
@@ -152,12 +163,14 @@ fn check_ctrl(ctrl: &Receiver<Ctrl>) -> Flow {
 fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut mp4 = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| format!("не удалось прочитать MP4: {e}"))?;
+    // не разобрался MP4 (например, HEVC в hvc1) — пусть попробует ffmpeg
+    let mut mp4 = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| format!("{}MP4: {e}", wavy_core::ffmpeg::NEED))?;
     let (track_id, timescale, nal_len, params) = {
         let t = mp4.tracks().values()
             .find(|t| matches!(t.media_type(), Ok(mp4::MediaType::H264)))
-            .ok_or("Видео не в формате H.264 — такое пока не поддерживается (нужен MP4/MOV с H.264)")?;
+            .ok_or_else(|| format!("{}видео не в H.264", wavy_core::ffmpeg::NEED))?;
         let avcc = &t.trak.mdia.minf.stbl.stsd.avc1.as_ref().ok_or("нет описания H.264")?.avcc;
+        if let Some(p) = unsupported_profile(avcc.avc_profile_indication) { return Err(format!("{}видео в {p}", wavy_core::ffmpeg::NEED)); }
         let mut params = Vec::new();
         for nal in avcc.sequence_parameter_sets.iter().chain(avcc.picture_parameter_sets.iter()) {
             params.extend_from_slice(&[0, 0, 0, 1]);
@@ -396,7 +409,7 @@ fn video_codec_error(codec: &str) -> String {
         "V_VP8" => "VP8",
         c => c,
     };
-    format!("видео в {name} — пока показываем только H.264 (звук играет). Поищи релиз в H.264 / AVC")
+    format!("{}видео в {name}", wavy_core::ffmpeg::NEED)
 }
 
 /// MKV: H.264 + субтитры. Заголовок (кодек, avcC) читаем matroska-demuxer, а пакеты и перемотку
@@ -411,7 +424,7 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
         let codec = vt.codec_id().to_string();
         if codec != "V_MPEG4/ISO/AVC" { return Err(video_codec_error(&codec)); }
         let (nal_len, params, profile) = parse_avcc(vt.codec_private().unwrap_or(&[]))?;
-        if let Some(p) = unsupported_profile(profile) { return Err(format!("видео в {p} — такой вариант OpenH264 не декодирует. Поищи релиз в обычном 8-битном H.264")); }
+        if let Some(p) = unsupported_profile(profile) { return Err(format!("{}видео в {p}", wavy_core::ffmpeg::NEED)); }
         let sub_codec = sub_track.and_then(|n| mkv.tracks().iter().find(|t| t.track_number().get() == n)).map(|t| t.codec_id().to_string()).unwrap_or_default();
         (vt.track_number().get() as u32, nal_len, params, sub_codec)
     };
@@ -502,6 +515,149 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
         match ctrl.recv() {
             Ok(Ctrl::Seek(t, g)) => { target = t; gen = g; }
             Err(_) => return Ok(()),
+        }
+    }
+}
+
+/// Субтитры из MKV, когда видео идёт через ffmpeg: один быстрый проход по файлу (берём только пакеты субтитров).
+fn scan_subs(path: &Path, track: u64, subs: &Subs, ctx: &egui::Context) {
+    use symphonia::core::{formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
+    let codec = std::fs::File::open(path).ok().and_then(|f| matroska_demuxer::MatroskaFile::open(BufReader::new(f)).ok())
+        .and_then(|m| m.tracks().iter().find(|t| t.track_number().get() == track).map(|t| t.codec_id().to_string())).unwrap_or_default();
+    let Ok(file) = std::fs::File::open(path) else { return };
+    let mut hint = Hint::new();
+    hint.with_extension("mkv");
+    let Ok(probed) = symphonia::default::get_probe().format(&hint, MediaSourceStream::new(Box::new(file), Default::default()), &FormatOptions::default(), &MetadataOptions::default()) else { return };
+    let mut fmt = probed.format;
+    let tb = fmt.tracks().iter().find(|t| t.id == track as u32).and_then(|t| t.codec_params.time_base).map(|t| t.numer as f64 / t.denom as f64).unwrap_or(0.001);
+    let mut batch = Vec::new();
+    while let Ok(p) = fmt.next_packet() {
+        if p.track_id() != track as u32 { continue; }
+        let (st, dur) = (p.ts() as f64 * tb, if p.dur() > 0 { p.dur() as f64 * tb } else { 3.0 });
+        let cue = if codec.contains("UTF8") { wavy_core::media::mkv_srt_block(&p.data, st, dur) } else { wavy_core::media::mkv_ass_block(&p.data, st, dur) };
+        batch.extend(cue);
+        if batch.len() >= 50 {
+            subs.lock().unwrap().append(&mut batch);
+            ctx.request_repaint();
+        }
+        if Arc::strong_count(subs) == 1 { return; } // видео закрыли
+    }
+    subs.lock().unwrap().append(&mut batch);
+}
+
+/// Процесс ffmpeg, который убивается вместе с потоком видео.
+struct Child(std::process::Child);
+impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+
+/// Видео через ffmpeg: кадры RGBA по трубе, время и размер кадра — из фильтра showinfo.
+/// Перемотка — перезапуск с -ss (ffmpeg сам декодирует от ключевого кадра до нужного места).
+/// -hwaccel auto: если видеокарта умеет этот кодек — декодирует она (на слабом ПК это главное).
+/// Память: ffmpeg отдаёт YUV 4:2:0 (в 2,7 раза меньше RGBA) и декодирует в 2 потока — ~100 МБ на 1080p HEVC
+/// вместо ~350 МБ по умолчанию; в RGBA переводим сами.
+fn decode_ffmpeg(ff: &Path, path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Result<(), String> {
+    use std::io::{BufRead, Read};
+    use std::process::Stdio;
+    let (mut target, mut gen) = (start, 0u32);
+    let mut ever = false; // хоть один кадр за всё время (перемотка за конец файла — не ошибка)
+    'outer: loop {
+        let mut c = wavy_core::ffmpeg::cmd(ff);
+        c.args(["-nostdin", "-hide_banner", "-nostats", "-loglevel", "info", "-hwaccel", "auto", "-threads", "2", "-copyts"]);
+        if target > 0.3 { c.arg("-ss").arg(format!("{target:.3}")); }
+        c.arg("-i").arg(path)
+            .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", "scale=w='min(iw,1920)':h=-2:flags=bilinear,format=yuv420p,showinfo=checksum=0", "-filter_threads", "1", "-f", "rawvideo", "-"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = Child(c.spawn().map_err(|e| format!("не удалось запустить ffmpeg: {e}"))?);
+        let mut stdout = std::io::BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
+        let stderr = child.0.stderr.take().unwrap();
+        let (mtx, mrx) = channel::<(f64, usize, usize)>();
+        let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let t2 = tail.clone();
+        std::thread::Builder::new().name("ffmpeg-log".into()).spawn(move || {
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                match wavy_core::ffmpeg::parse_showinfo(&line) {
+                    Some(m) => { if mtx.send(m).is_err() { break; } }
+                    None => { let mut t = t2.lock().unwrap(); t.push_back(line); if t.len() > 8 { t.pop_front(); } }
+                }
+            }
+        }).ok();
+        let mut frames = 0usize;
+        let mut yuv = Vec::new();
+        loop {
+            match check_ctrl(ctrl) {
+                Flow::Seek(t, g) => { target = t; gen = g; continue 'outer; }
+                Flow::Stop => return Ok(()),
+                Flow::Go => {}
+            }
+            let (pts, w, h) = match mrx.recv_timeout(Duration::from_millis(100)) {
+                Ok(m) => m,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => break,
+            };
+            yuv.resize(w * h + 2 * (w.div_ceil(2) * h.div_ceil(2)), 0);
+            if stdout.read_exact(&mut yuv).is_err() { break; }
+            let rgba = yuv420_to_rgba(&yuv, w, h);
+            frames += 1;
+            ever = true;
+            match send(Frame { pts, gen, size: [w, h], rgba }, out, ctrl, ctx) {
+                Flow::Go => {}
+                Flow::Seek(t, g) => { target = t; gen = g; continue 'outer; }
+                Flow::Stop => return Ok(()),
+            }
+        }
+        if frames == 0 && !ever {
+            let _ = child.0.wait();
+            let t = tail.lock().unwrap().iter().filter(|l| !l.starts_with(' ')).cloned().collect::<Vec<_>>().join(" | ");
+            return Err(format!("ffmpeg не смог показать видео: {t}"));
+        }
+        drop(child);
+        match ctrl.recv() {
+            Ok(Ctrl::Seek(t, g)) => { target = t; gen = g; }
+            Err(_) => return Ok(()),
+        }
+    }
+}
+
+/// YUV 4:2:0 (planar) → RGBA. Матрица BT.709 для HD, BT.601 для SD, «телевизионный» диапазон 16–235.
+fn yuv420_to_rgba(src: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (yp, rest) = src.split_at(w * h);
+    let (up, vp) = rest.split_at(cw * ch);
+    // коэффициенты ×1024
+    let (rv, gu, gv, bu) = if h >= 720 { (1613, 192, 479, 1900) } else { (1436, 352, 731, 1815) };
+    let mut out = vec![255u8; w * h * 4];
+    for row in 0..h {
+        let (yr, cr) = (&yp[row * w..row * w + w], row / 2 * cw);
+        let o = &mut out[row * w * 4..(row + 1) * w * 4];
+        for x in 0..w {
+            let y = (yr[x] as i32 - 16) * 1192; // 255/219 ×1024
+            let u = up[cr + x / 2] as i32 - 128;
+            let v = vp[cr + x / 2] as i32 - 128;
+            let r = (y + rv * v * 1192 / 1024) >> 10;
+            let g = (y - (gu * u + gv * v) * 1192 / 1024) >> 10;
+            let b = (y + bu * u * 1192 / 1024) >> 10;
+            let p = &mut o[x * 4..x * 4 + 3];
+            p[0] = r.clamp(0, 255) as u8;
+            p[1] = g.clamp(0, 255) as u8;
+            p[2] = b.clamp(0, 255) as u8;
+        }
+    }
+    out
+}
+
+/// Отдать готовый кадр интерфейсу, не блокируясь насмерть (во время ожидания слушаем перемотку).
+fn send(mut frame: Frame, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Flow {
+    loop {
+        match out.try_send(Ok(frame)) {
+            Ok(()) => { ctx.request_repaint(); return Flow::Go; }
+            Err(TrySendError::Disconnected(_)) => return Flow::Stop,
+            Err(TrySendError::Full(Ok(f))) => {
+                frame = f;
+                match check_ctrl(ctrl) {
+                    Flow::Go => std::thread::sleep(Duration::from_millis(8)),
+                    other => return other,
+                }
+            }
+            Err(TrySendError::Full(Err(_))) => return Flow::Go,
         }
     }
 }

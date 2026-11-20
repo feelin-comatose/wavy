@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 pub struct AudioTrack {
     pub label: String,
     pub lang: String,
-    /// Умеем ли декодировать (AAC, FLAC, MP3, Vorbis, PCM; Opus/AC3/DTS — нет).
+    /// Умеем ли декодировать без ffmpeg (AAC, FLAC, MP3, Vorbis, PCM; Opus/AC3/DTS — через ffmpeg).
     pub supported: bool,
     pub default: bool,
 }
@@ -106,7 +106,7 @@ pub fn probe(path: &Path) -> MediaInfo {
                     match t.track_type() {
                         matroska_demuxer::TrackType::Audio => {
                             let supported = audio_supported(t.codec_id());
-                            let extra = if supported { String::new() } else { format!("{} — не поддерживается", audio_codec_name(t.codec_id())) };
+                            let extra = if supported { String::new() } else { audio_codec_name(t.codec_id()).to_string() };
                             info.audio.push(AudioTrack { label: label(t.name(), &lang, &extra), lang, supported, default: t.flag_default() });
                         }
                         matroska_demuxer::TrackType::Subtitle => {
@@ -158,12 +158,11 @@ pub fn pick_subs(info: &MediaInfo, pref: Option<&str>) -> Option<usize> {
         .or(if info.subs.is_empty() { None } else { Some(0) })
 }
 
-/// Какую звуковую дорожку играть: запомненную → по умолчанию → первую, которую умеем декодировать.
+/// Какую звуковую дорожку играть: запомненную → помеченную «по умолчанию» → первую.
+/// Формат не важен: то, чего нет в symphonia (Opus, AC3…), сыграет ffmpeg.
 pub fn pick_audio(info: &MediaInfo, pref: Option<usize>) -> usize {
-    if let Some(p) = pref.filter(|p| info.audio.get(*p).is_some_and(|a| a.supported)) { return p; }
-    info.audio.iter().position(|a| a.default && a.supported)
-        .or_else(|| info.audio.iter().position(|a| a.supported))
-        .unwrap_or(0)
+    if let Some(p) = pref.filter(|p| *p < info.audio.len()) { return p; }
+    info.audio.iter().position(|a| a.default).unwrap_or(0)
 }
 
 // ---------- субтитры ----------

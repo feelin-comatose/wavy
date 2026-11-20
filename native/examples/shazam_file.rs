@@ -9,7 +9,7 @@ fn main() {
     let start: f64 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let track: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
     let t0 = std::time::Instant::now();
-    let s = player::sample_for_shazam(&path, start, wavy_core::shazam::SECONDS as f64, track).unwrap();
+    let s = player::sample_for_shazam(&path, start, wavy_core::shazam::SECONDS as f64, track, std::env::var_os("WAVY_FFMPEG").map(std::path::PathBuf::from).as_deref()).unwrap();
     println!("звук: {:.1} с за {:?}", s.len() as f32 / 16000.0, t0.elapsed());
     println!("отпечаток: {} байт", wavy_core::shazam::signature(&s).len());
     match wavy_core::shazam::recognize(&s) {

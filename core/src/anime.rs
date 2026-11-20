@@ -102,7 +102,10 @@ fn is_junk(word: &str) -> bool {
 fn clean(s: &str) -> String {
     static BR: OnceLock<Regex> = OnceLock::new();
     static PAR: OnceLock<Regex> = OnceLock::new();
-    let mut s = re(&BR, r"\[[^\]]*\]|【[^】]*】|\{[^}]*\}").replace_all(s, " ").into_owned();
+    static NUM: OnceLock<Regex> = OnceLock::new();
+    // [01] / [12v2] / [05 из 12] — это номер серии (AniLibria и др.), а не группа: превращаем в « - 01 »
+    let s = re(&NUM, r"\[(\d{1,4}(?:\.\d)?)(?:v\d)?(?:\s*(?:из|of|/)\s*\d+)?\]").replace(s, " - $1 ").into_owned();
+    let mut s = re(&BR, r"\[[^\]]*\]|【[^】]*】|\{[^}]*\}").replace_all(&s, " ").into_owned();
     // (1080p), (BD 1080p HEVC), (2023), (ABCD1234) — убираем; (TV) и прочее осмысленное оставляем
     s = re(&PAR, r"\(([^)]*)\)").replace_all(&s, |c: &regex::Captures| {
         let inner = &c[1];
@@ -338,6 +341,8 @@ mod tests {
         assert_eq!(p("[Erai-raws] Kimetsu no Yaiba - Hashira Geiko-hen - 08 [1080p][Multiple Subtitle][F2A7C0D1]"), ("Kimetsu no Yaiba - Hashira Geiko-hen".into(), Some(8.0), None));
         assert_eq!(p("[AniLibria.TV] Jujutsu Kaisen - 12 [WEBRip 1080p]"), ("Jujutsu Kaisen".into(), Some(12.0), None));
         assert_eq!(p("Jujutsu_Kaisen_-_05_[AniLibria.TV]_[WEBRip_1080p]"), ("Jujutsu Kaisen".into(), Some(5.0), None));
+        assert_eq!(p("Jujutsu_Kaisen_[01]_[AniLibria_TV]_[WEBRip_1080p_HEVC]"), ("Jujutsu Kaisen".into(), Some(1.0), None));
+        assert_eq!(p("[AniLibria.TV] Chainsaw Man [05 из 12] [1080p]"), ("Chainsaw Man".into(), Some(5.0), None));
         assert_eq!(p("[Judas] Shingeki no Kyojin - S04E16v2 [1080p][HEVC x265 10bit]"), ("Shingeki no Kyojin".into(), Some(16.0), Some(4)));
         assert_eq!(p("Spy.x.Family.S02E03.1080p.WEB-DL.AAC.x264"), ("Spy x Family".into(), Some(3.0), Some(2)));
         assert_eq!(p("[SubsPlease] Mushoku Tensei S2 - 13 (1080p) [0B3A1B7C]"), ("Mushoku Tensei S2".into(), Some(13.0), Some(2)));
