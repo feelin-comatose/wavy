@@ -158,6 +158,9 @@ struct App {
     ff: wavy_core::ffmpeg::Ffmpeg,
     /// звук не открылся без ffmpeg — переоткрыть трек, когда он скачается
     reload_after_ff: bool,
+    /// шрифт с иероглифами уже подгружен (или искали и не нашли)
+    cjk_loaded: bool,
+    cjk_check: Instant,
 }
 
 impl App {
@@ -212,7 +215,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false,
+            ff, reload_after_ff: false, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -960,6 +963,7 @@ impl App {
         }
         self.ffmpeg_tick(ctx);
         self.video_tick(ctx);
+        self.cjk_tick(ctx);
         if let Some((pos, size, max, left)) = self.restore_window.take() {
             if max { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)); }
             else {
@@ -993,6 +997,28 @@ impl App {
                 Err(e) => send(UpdState::Error(e)),
             }
         });
+    }
+
+    /// Японские/китайские/корейские названия: раз в пару секунд смотрим, не появились ли такие
+    /// (библиотека, плейлисты, поиск, аниме), и тогда один раз подгружаем системный шрифт.
+    fn cjk_tick(&mut self, ctx: &egui::Context) {
+        if self.cjk_loaded || self.cjk_check.elapsed() < Duration::from_secs(2) { return; }
+        self.cjk_check = Instant::now();
+        let found = {
+            let s = self.store.lock().unwrap();
+            s.lib.tracks.values().any(|t| has_cjk(&t.title) || has_cjk(&t.artist) || has_cjk(&t.album))
+                || s.lib.playlists.iter().any(|p| has_cjk(&p.name))
+                || s.lib.anime.iter().any(|a| has_cjk(a.display()))
+        } || self.results.iter().any(|t| has_cjk(&t.title) || has_cjk(&t.artist))
+            || has_cjk(&self.filter) || has_cjk(&self.search_q)
+            || self.toast.as_ref().is_some_and(|t| has_cjk(&t.0))
+            || matches!(&self.modal, Some(Modal::Shazam { state: ShazamState::Found(f), .. }) if has_cjk(&f.title) || has_cjk(&f.artist))
+            || matches!(&self.modal, Some(Modal::AnimeMatch { results, .. }) if results.iter().any(|r| has_cjk(r.display())));
+        if !found { return; }
+        self.cjk_loaded = true;
+        let fonts = load_cjk_fonts();
+        if fonts.is_empty() { wavy_core::log("шрифт для иероглифов не найден"); return; }
+        ctx.set_fonts(font_defs(&fonts));
     }
 
     /// Декодер ffmpeg: качаем, если он понадобился, и повторяем то, что без него не открылось.
@@ -2348,7 +2374,29 @@ fn shuffle_vec<T>(v: &mut [T]) {
 fn semi() -> egui::FontFamily { egui::FontFamily::Name("semi".into()) }
 fn bold() -> egui::FontFamily { egui::FontFamily::Name("bold".into()) }
 
-fn style(ctx: &egui::Context) {
+/// Есть ли в тексте японские/китайские/корейские символы (Inter их не рисует — были бы квадратики).
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0xAC00..=0xD7AF | 0x1100..=0x11FF | 0x3130..=0x318F))
+}
+
+/// Системный шрифт с иероглифами: в exe его не вшиваем (+10 МБ), а берём из Windows,
+/// и только когда такие символы реально встретились. Корейский — отдельным шрифтом, если есть.
+fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
+    let dirs: Vec<PathBuf> = if cfg!(windows) {
+        vec![PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts")]
+    } else {
+        vec!["/usr/share/fonts/opentype/noto".into(), "/usr/share/fonts/noto-cjk".into(), "/usr/share/fonts/truetype/wqy".into(), "/usr/share/fonts/truetype/droid".into(), "/System/Library/Fonts".into()]
+    };
+    let ja = ["YuGothM.ttc", "YuGothR.ttc", "meiryo.ttc", "msgothic.ttc", "msyh.ttc", "simsun.ttc", "NotoSansCJK-Regular.ttc", "wqy-zenhei.ttc", "DroidSansFallbackFull.ttf", "Hiragino Sans GB.ttc"];
+    let ko = ["malgun.ttf", "gulim.ttc"];
+    let find = |names: &[&str]| dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find_map(|p| std::fs::read(&p).ok().map(|b| (p, b)));
+    let mut out = Vec::new();
+    if let Some((p, b)) = find(&ja) { wavy_core::log(&format!("шрифт для иероглифов: {}", p.display())); out.push(("cjk".to_string(), b)); }
+    if let Some((_, b)) = find(&ko) { out.push(("korean".to_string(), b)); }
+    out
+}
+
+fn font_defs(extra: &[(String, Vec<u8>)]) -> egui::FontDefinitions {
     // Inter (OFL) — основной шрифт; иконки Phosphor (MIT) — запасной, плюс «fill»-вариант для кнопки play
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter-Regular.otf"))));
@@ -2366,7 +2414,16 @@ fn style(ctx: &egui::Context) {
         f[0] = font.into(); // [inter-…, phosphor, …]
         fonts.families.insert(egui::FontFamily::Name(name.into()), f);
     }
-    ctx.set_fonts(fonts);
+    // иероглифы — последними: берутся только для символов, которых нет в Inter
+    for (name, bytes) in extra {
+        fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes.clone())));
+        for fam in fonts.families.values_mut() { fam.push(name.clone()); }
+    }
+    fonts
+}
+
+fn style(ctx: &egui::Context) {
+    ctx.set_fonts(font_defs(&[]));
     ctx.set_visuals(egui::Visuals::dark());
     ctx.all_styles_mut(|s| {
         let v = &mut s.visuals;
