@@ -3,9 +3,9 @@ use crate::{now_ms, sha16, Track};
 use lofty::prelude::*;
 use std::path::{Path, PathBuf};
 
-pub const AUDIO_EXT: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "webm", "weba", "wma", "aiff", "alac", "mp4", "m4v", "mov"];
-/// Видео, которое умеет показывать плеер (контейнер MP4/MOV, кодек H.264).
-pub const VIDEO_EXT: &[&str] = &["mp4", "m4v", "mov"];
+pub const AUDIO_EXT: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "webm", "weba", "wma", "aiff", "alac", "mp4", "m4v", "mov", "mkv"];
+/// Видео, которое умеет показывать плеер (MP4/MOV/MKV, кодек H.264).
+pub const VIDEO_EXT: &[&str] = &["mp4", "m4v", "mov", "mkv"];
 pub const PLAYLIST_EXT: &[&str] = &["m3u", "m3u8"];
 
 fn ext(p: &Path) -> String {
@@ -59,7 +59,10 @@ pub fn read_track(file: &Path, covers: &Path) -> Track {
         cover: None,
         added_at: now_ms(),
         video: VIDEO_EXT.contains(&ext(file).as_str()),
+        anime: None,
+        episode: None,
     };
+    if crate::media::is_mkv(file) { t.duration = crate::media::duration_of(file).unwrap_or(0.0); }
     if let Ok(tagged) = lofty::read_from_path(file) {
         t.duration = tagged.properties().duration().as_secs_f64();
         if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {

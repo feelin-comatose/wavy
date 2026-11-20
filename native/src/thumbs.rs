@@ -50,8 +50,13 @@ impl Thumbs {
         }
     }
 
-    pub fn get(&mut self, src: &str, size: u32) -> Option<TextureHandle> {
-        let key = (src.to_string(), size);
+    pub fn get(&mut self, src: &str, size: u32) -> Option<TextureHandle> { self.request(src.to_string(), size) }
+
+    /// Постер целиком, без квадратной обрезки (size — по большей стороне).
+    pub fn poster(&mut self, src: &str, size: u32) -> Option<TextureHandle> { self.request(format!("P|{src}"), size) }
+
+    fn request(&mut self, src: String, size: u32) -> Option<TextureHandle> {
+        let key = (src, size);
         if let Some(t) = self.tex.get(&key) { return Some(t.clone()); }
         if !self.pending.contains(&key) && !self.failed.contains(&key) {
             self.pending.insert(key.clone());
@@ -62,6 +67,7 @@ impl Thumbs {
 }
 
 fn load(src: &str, size: u32) -> Option<ColorImage> {
+    let (src, whole) = match src.strip_prefix("P|") { Some(s) => (s, true), None => (src, false) };
     let bytes = if src.starts_with("http") {
         let mut r = wavy_core::http().get(src).call().ok()?;
         r.body_mut().with_config().limit(10 * 1024 * 1024).read_to_vec().ok()?
@@ -69,6 +75,10 @@ fn load(src: &str, size: u32) -> Option<ColorImage> {
         std::fs::read(src).ok()?
     };
     let img = image::load_from_memory(&bytes).ok()?;
+    if whole {
+        let img = img.thumbnail(size, size).to_rgba8();
+        return Some(ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()));
+    }
     // квадратная обрезка по центру (YouTube-превью 4:3 с чёрными полосами)
     let (w, h) = (img.width(), img.height());
     let s = w.min(h);

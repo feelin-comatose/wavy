@@ -164,7 +164,7 @@ pub fn match_on_youtube(yt: &YouTube, t: &SpTrack) -> Result<Option<Track>, Stri
             album: t.album.clone(),
             duration: if t.duration > 0.0 { t.duration } else { c.duration },
             added_at: now_ms(),
-            video: false,
+            video: false, anime: None, episode: None,
         }
     }))
 }

@@ -1,6 +1,7 @@
-//! Встроенный видеоплеер: MP4/MOV с H.264, декодер OpenH264 (вшит в exe, ничего не докачивается).
+//! Встроенный видеоплеер: MP4/MOV/MKV с H.264, декодер OpenH264 (вшит в exe, ничего не докачивается).
 //! Звук играет как обычно (rodio), а видео подстраивается под позицию звука.
 //! Декодирование — в отдельном потоке, в памяти держим всего несколько кадров.
+//! Субтитры: из MKV (ASS/SRT, собираются по ходу чтения файла) или внешний .ass/.srt.
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use openh264::decoder::{Decoder, DecoderConfig, Flush};
 use openh264::formats::YUVSource;
@@ -10,7 +11,12 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use wavy_core::media::{Cue, SubSrc};
+
+/// Субтитры, которые видео-поток собирает по ходу (общие с интерфейсом).
+pub type Subs = Arc<Mutex<Vec<Cue>>>;
 
 struct Frame {
     pts: f64,
@@ -31,26 +37,50 @@ pub struct Video {
     shown_pts: Option<f64>,
     /// после перемотки показать первый же готовый кадр (даже на паузе)
     fresh: bool,
+    /// куда последний раз просили перемотать (или откуда открыли) и когда
+    target: (f64, std::time::Instant),
     pub texture: Option<TextureHandle>,
     pub error: Option<String>,
+    pub subs: Subs,
 }
 
 impl Video {
-    pub fn open(path: PathBuf, start: f64, ctx: &egui::Context) -> Self {
+    /// `sub` — какие субтитры показывать (встроенная дорожка MKV или внешний файл).
+    pub fn open(path: PathBuf, start: f64, ctx: &egui::Context, sub: Option<SubSrc>) -> Self {
         let (ftx, frx) = sync_channel(3);
         let (ctl_tx, ctl_rx) = channel();
         let c = ctx.clone();
+        let subs: Subs = Arc::new(Mutex::new(Vec::new()));
+        let s2 = subs.clone();
         std::thread::Builder::new()
             .name("video".into())
             .spawn(move || {
-                if let Err(e) = decode_loop(&path, start, &ftx, &ctl_rx, &c) {
+                let embedded = match sub {
+                    Some(SubSrc::External(p)) => { *s2.lock().unwrap() = wavy_core::media::load_sub_file(&p); None }
+                    Some(SubSrc::Embedded(n)) => Some(n),
+                    None => None,
+                };
+                let r = if wavy_core::media::is_mkv(&path) { decode_mkv(&path, start, &ftx, &ctl_rx, &c, embedded, &s2) } else { decode_loop(&path, start, &ftx, &ctl_rx, &c) };
+                if let Err(e) = r {
                     wavy_core::log(&format!("видео {}: {e}", path.display()));
                     let _ = ftx.send(Err(e));
                     c.request_repaint();
                 }
             })
             .ok();
-        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None }
+        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None, subs, target: (start, std::time::Instant::now()) }
+    }
+
+    /// Время показанного кадра (для проверок в examples/).
+    #[allow(dead_code)]
+    pub fn shown(&self) -> Option<f64> { self.shown_pts }
+
+    /// Субтитры, которые должны быть на экране в момент `t`.
+    pub fn subs_at(&self, t: f64) -> Vec<Cue> {
+        let s = self.subs.lock().unwrap();
+        let mut v: Vec<Cue> = s.iter().filter(|c| c.start <= t && t < c.end).cloned().collect();
+        v.sort_by(|a, b| a.start.total_cmp(&b.start));
+        v
     }
 
     /// Перемотка: декодер начинает с ближайшего ключевого кадра.
@@ -60,6 +90,7 @@ impl Video {
         // иначе старый (более поздний) кадр выглядит как «видео убежало вперёд» → бесконечная перемотка
         self.shown_pts = None;
         self.fresh = true;
+        self.target = (t.max(0.0), std::time::Instant::now());
         let _ = self.ctrl.send(Ctrl::Seek(t.max(0.0), self.gen));
     }
 
@@ -74,8 +105,10 @@ impl Video {
                 Err(_) => break,
             }
         }
+        // открылись не с того места (например, со старой позиции прошлой серии) и кадров нет — догоняем звук
+        let lost = self.queue.is_empty() && (self.shown_pts.is_none() || self.fresh) && (clock - self.target.0).abs() > 1.0 && self.target.1.elapsed() > Duration::from_millis(400);
         // звук ушёл назад (или сильно вперёд) от того, что у нас есть — перематываем видео
-        let behind = self.shown_pts.is_some_and(|p| p > clock + 1.0);
+        let behind = lost || self.shown_pts.is_some_and(|p| p > clock + 1.0);
         let far_ahead = self.queue.back().is_some_and(|f| f.pts + 2.0 < clock);
         if behind || far_ahead {
             self.seek(clock);
@@ -295,6 +328,182 @@ fn fragmented_index<R>(mp4: &mp4::Mp4Reader<R>, track_id: u32, timescale: f64, m
         }
     }
     (idx, locs)
+}
+
+/// Профили H.264, которые OpenH264 не умеет: 10 бит (Hi10P), 4:2:2, 4:4:4.
+fn unsupported_profile(profile: u8) -> Option<&'static str> {
+    match profile {
+        110 => Some("10-битное H.264 (Hi10P)"),
+        122 | 244 | 44 => Some("H.264 4:2:2/4:4:4"),
+        _ => None,
+    }
+}
+
+/// avcC (CodecPrivate в MKV): длина префикса NAL и SPS/PPS в виде Annex B.
+fn parse_avcc(c: &[u8]) -> Result<(usize, Vec<u8>, u8), String> {
+    if c.len() < 7 { return Err("нет описания H.264".into()); }
+    let profile = c[1];
+    let nal_len = (c[4] & 3) as usize + 1;
+    let mut params = Vec::new();
+    let mut p = 5;
+    for round in 0..2 {
+        let n = if round == 0 { (c[p] & 0x1f) as usize } else { c[p] as usize };
+        p += 1;
+        for _ in 0..n {
+            if p + 2 > c.len() { break; }
+            let len = u16::from_be_bytes([c[p], c[p + 1]]) as usize;
+            p += 2;
+            if p + len > c.len() { break; }
+            params.extend_from_slice(&[0, 0, 0, 1]);
+            params.extend_from_slice(&c[p..p + len]);
+            p += len;
+        }
+        if p >= c.len() { break; }
+    }
+    Ok((nal_len, params, profile))
+}
+
+/// Есть ли в кадре IDR (ключевой кадр) — для блоков MKV без флага keyframe.
+fn has_idr(data: &[u8], nal_len: usize) -> bool {
+    let mut p = 0;
+    while p + nal_len <= data.len() {
+        let n = data[p..p + nal_len].iter().fold(0usize, |a, b| (a << 8) | *b as usize);
+        p += nal_len;
+        if p < data.len() && data[p] & 0x1f == 5 { return true; }
+        p += n;
+    }
+    false
+}
+
+/// Длина-префиксные NAL → Annex B (то, что ест OpenH264).
+fn to_annexb(data: &[u8], nal_len: usize, buf: &mut Vec<u8>) {
+    let mut p = 0;
+    while p + nal_len <= data.len() {
+        let n = data[p..p + nal_len].iter().fold(0usize, |a, b| (a << 8) | *b as usize);
+        p += nal_len;
+        if p + n > data.len() { break; }
+        buf.extend_from_slice(&[0, 0, 0, 1]);
+        buf.extend_from_slice(&data[p..p + n]);
+        p += n;
+    }
+}
+
+fn video_codec_error(codec: &str) -> String {
+    let name = match codec {
+        "V_MPEGH/ISO/HEVC" => "H.265 (HEVC)",
+        "V_AV1" => "AV1",
+        "V_VP9" => "VP9",
+        "V_VP8" => "VP8",
+        c => c,
+    };
+    format!("видео в {name} — пока показываем только H.264 (звук играет). Поищи релиз в H.264 / AVC")
+}
+
+/// MKV: H.264 + субтитры. Заголовок (кодек, avcC) читаем matroska-demuxer, а пакеты и перемотку
+/// берём у symphonia (у неё перемотка надёжная). Перемотка — к ближайшему ключевому кадру до нужного места.
+fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context, sub_track: Option<u64>, subs: &Subs) -> Result<(), String> {
+    use matroska_demuxer::{MatroskaFile, TrackType};
+    use symphonia::core::{formats::{FormatOptions, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
+    let (vnum, nal_len, params, sub_codec) = {
+        let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
+        let mkv = MatroskaFile::open(BufReader::new(file)).map_err(|e| format!("не удалось прочитать MKV: {e}"))?;
+        let vt = mkv.tracks().iter().find(|t| t.track_type() == TrackType::Video).ok_or("в файле нет видео")?;
+        let codec = vt.codec_id().to_string();
+        if codec != "V_MPEG4/ISO/AVC" { return Err(video_codec_error(&codec)); }
+        let (nal_len, params, profile) = parse_avcc(vt.codec_private().unwrap_or(&[]))?;
+        if let Some(p) = unsupported_profile(profile) { return Err(format!("видео в {p} — такой вариант OpenH264 не декодирует. Поищи релиз в обычном 8-битном H.264")); }
+        let sub_codec = sub_track.and_then(|n| mkv.tracks().iter().find(|t| t.track_number().get() == n)).map(|t| t.codec_id().to_string()).unwrap_or_default();
+        (vt.track_number().get() as u32, nal_len, params, sub_codec)
+    };
+    let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
+    let mut hint = Hint::new();
+    hint.with_extension("mkv");
+    let mut fmt = symphonia::default::get_probe().format(&hint, MediaSourceStream::new(Box::new(file), Default::default()), &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| format!("не удалось прочитать MKV: {e}"))?.format;
+    let tb = fmt.tracks().iter().find(|t| t.id == vnum).and_then(|t| t.codec_params.time_base).map(|t| t.numer as f64 / t.denom as f64).unwrap_or(0.001);
+    let sub_num = sub_track.map(|n| n as u32);
+    let push_sub = |p: &symphonia::core::formats::Packet| {
+        if Some(p.track_id()) != sub_num { return; }
+        let (st, dur) = (p.ts() as f64 * tb, if p.dur() > 0 { p.dur() as f64 * tb } else { 3.0 });
+        let cue = if sub_codec.contains("UTF8") { wavy_core::media::mkv_srt_block(&p.data, st, dur) } else { wavy_core::media::mkv_ass_block(&p.data, st, dur) };
+        if let Some(c) = cue {
+            let mut s = subs.lock().unwrap();
+            if !s.iter().any(|x| x.start == c.start && x.text == c.text) { s.push(c); }
+        }
+    };
+    let seek = |fmt: &mut Box<dyn symphonia::core::formats::FormatReader>, sec: f64| {
+        let sec = sec.max(0.0);
+        fmt.seek(SeekMode::Accurate, SeekTo::Time { time: Time::new(sec as u64, sec.fract()), track_id: Some(vnum) }).is_ok()
+    };
+
+    let (mut target, mut gen) = (start, 0u32);
+    let mut buf = Vec::new();
+    let mut logged_err = false;
+    'outer: loop {
+        // ключевой кадр не позже target: смотрим окно перед ним (15 с, потом шире)
+        let mut key: Option<f64> = None;
+        if target > 0.3 {
+            for back in [15.0, 60.0, 600.0] {
+                if !seek(&mut fmt, target - back) { break; }
+                while let Ok(p) = fmt.next_packet() {
+                    if p.track_id() == vnum {
+                        let t = p.ts() as f64 * tb;
+                        if t > target + 0.001 { break; }
+                        if has_idr(&p.data, nal_len) { key = Some(t); }
+                    } else { push_sub(&p); }
+                }
+                if key.is_some() || target - back <= 0.0 { break; }
+            }
+        }
+        seek(&mut fmt, key.unwrap_or(0.0));
+        let mut dec = Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().flush_after_decode(Flush::NoFlush))
+            .map_err(|e| format!("декодер H.264: {e}"))?;
+        let mut pending: BinaryHeap<Reverse<i64>> = BinaryHeap::new();
+        let mut started = false;
+        loop {
+            match check_ctrl(ctrl) {
+                Flow::Seek(t, g) => { target = t; gen = g; continue 'outer; }
+                Flow::Stop => return Ok(()),
+                Flow::Go => {}
+            }
+            let p = match fmt.next_packet() { Ok(p) => p, Err(_) => break };
+            if p.track_id() != vnum { push_sub(&p); continue; }
+            let key = has_idr(&p.data, nal_len);
+            if !started { if !key { continue; } started = true; }
+            buf.clear();
+            if key { buf.extend_from_slice(&params); }
+            to_annexb(&p.data, nal_len, &mut buf);
+            let pts = p.ts() as f64 * tb;
+            match dec.decode(&buf) {
+                Ok(img) => {
+                    pending.push(Reverse((pts * 1_000_000.0) as i64));
+                    if let Some(img) = img {
+                        let Some(Reverse(k)) = pending.pop() else { continue };
+                        match emit(&img, k as f64 / 1_000_000.0, target, gen, out, ctrl, ctx) {
+                            Flow::Go => {}
+                            Flow::Seek(t, g) => { target = t; gen = g; continue 'outer; }
+                            Flow::Stop => return Ok(()),
+                        }
+                    }
+                }
+                Err(e) => if !logged_err { logged_err = true; wavy_core::log(&format!("видео: кадр {pts:.2} с не декодировался: {e}")); },
+            }
+        }
+        if let Ok(rest) = dec.flush_remaining() {
+            for img in rest {
+                let Some(Reverse(k)) = pending.pop() else { break };
+                match emit(&img, k as f64 / 1_000_000.0, target, gen, out, ctrl, ctx) {
+                    Flow::Go => {}
+                    Flow::Seek(t, g) => { target = t; gen = g; continue 'outer; }
+                    Flow::Stop => return Ok(()),
+                }
+            }
+        }
+        match ctrl.recv() {
+            Ok(Ctrl::Seek(t, g)) => { target = t; gen = g; }
+            Err(_) => return Ok(()),
+        }
+    }
 }
 
 fn emit(img: &openh264::decoder::DecodedYUV<'_>, pts: f64, target: f64, gen: u32, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Flow {

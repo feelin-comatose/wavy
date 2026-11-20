@@ -69,6 +69,14 @@ impl Audio {
     }
 
     /// Открыть докачанный файл (уже с перемоткой) и встать на позицию, сохранив паузу/игру.
+    /// Переоткрыть тот же файл с другой звуковой дорожкой, оставшись на той же позиции.
+    pub fn switch_track(&mut self, path: &Path, audio: usize) -> Result<(), String> {
+        let (pos, playing, vol) = (self.position(), self.is_playing(), self.volume);
+        self.load_track(path, vol, audio)?;
+        if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(pos)); if !playing { p.pause(); } }
+        Ok(())
+    }
+
     fn reopen_at(&mut self, path: &Path, sec: f64) {
         let was_playing = self.is_playing() || self.player.as_ref().is_some_and(|p| !p.is_paused());
         let vol = self.volume;
@@ -77,7 +85,10 @@ impl Audio {
         }
     }
 
-    pub fn load(&mut self, path: &Path, volume: f32) -> Result<(), String> {
+    pub fn load(&mut self, path: &Path, volume: f32) -> Result<(), String> { self.load_track(path, volume, 0) }
+
+    /// Открыть файл; для видео — с выбранной звуковой дорожкой (номер среди звуковых).
+    pub fn load_track(&mut self, path: &Path, volume: f32, audio: usize) -> Result<(), String> {
         if self.player.is_none() { self.open(); }
         self.stream = None;
         self.volume = volume;
@@ -87,7 +98,7 @@ impl Audio {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         if wavy_core::local::VIDEO_EXT.contains(&ext.as_str()) {
             // видеофайл: rodio взял бы первую дорожку (видео), поэтому выбираем звуковую сами
-            let src = AudioOfVideo::open(path)?;
+            let src = AudioOfVideo::open(path, audio)?;
             self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0);
             p.append(src);
             p.set_volume(volume);
@@ -149,7 +160,7 @@ pub struct AudioOfVideo {
 }
 
 impl AudioOfVideo {
-    pub fn open(path: &Path) -> Result<Self, String> {
+    pub fn open(path: &Path, nth: usize) -> Result<Self, String> {
         use symphonia::core::{codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -160,9 +171,10 @@ impl AudioOfVideo {
             .map_err(|e| format!("не удалось открыть файл: {e}"))?;
         let format = probed.format;
         let codecs = symphonia::default::get_codecs();
-        let track = format.tracks().iter()
-            .find(|t| t.codec_params.sample_rate.is_some() && codecs.get_codec(t.codec_params.codec).is_some())
-            .ok_or("в видео нет звуковой дорожки (или её формат не поддерживается)")?;
+        let audio: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).collect();
+        let track = audio.get(nth).copied().filter(|t| codecs.get_codec(t.codec_params.codec).is_some())
+            .or_else(|| audio.iter().copied().find(|t| codecs.get_codec(t.codec_params.codec).is_some()))
+            .ok_or("в видео нет звуковой дорожки, которую можно воспроизвести (Opus, AC3 и DTS пока не поддерживаются)")?;
         let decoder = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
         let rate = track.codec_params.sample_rate.and_then(std::num::NonZero::new).ok_or("неизвестная частота")?;
         let channels = track.codec_params.channels.map(|c| c.count() as u16).and_then(std::num::NonZero::new).unwrap_or(std::num::NonZero::new(2).unwrap());
@@ -225,4 +237,46 @@ impl rodio::Source for AudioOfVideo {
         self.pos = 0;
         Ok(())
     }
+}
+
+/// Кусок звука из файла (любого: музыка, MP4, MKV) для Shazam: `secs` секунд с позиции `start`, моно 16 кГц.
+/// `audio` — номер звуковой дорожки (для видео с несколькими озвучками).
+pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize) -> Result<Vec<f32>, String> {
+    use symphonia::core::{audio::SampleBuffer, codecs::DecoderOptions, errors::Error, formats::{FormatOptions, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(e) = path.extension().and_then(|e| e.to_str()) { hint.with_extension(e); }
+    let mut format = symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| format!("не удалось открыть файл: {e}"))?.format;
+    let codecs = symphonia::default::get_codecs();
+    let audio_tracks: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).cloned().collect();
+    let track = audio_tracks.get(audio).filter(|t| codecs.get_codec(t.codec_params.codec).is_some())
+        .or_else(|| audio_tracks.iter().find(|t| codecs.get_codec(t.codec_params.codec).is_some()))
+        .ok_or("нет звуковой дорожки, которую можно разобрать")?.clone();
+    let mut dec = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
+    if start > 0.5 {
+        let t = Time::new(start as u64, start.fract());
+        let _ = format.seek(SeekMode::Coarse, SeekTo::Time { time: t, track_id: Some(track.id) });
+    }
+    let (mut pcm, mut ch, mut rate) = (Vec::<f32>::new(), 2usize, track.codec_params.sample_rate.unwrap_or(44100));
+    loop {
+        if pcm.len() as f64 >= secs * rate as f64 * ch as f64 { break; }
+        let packet = match format.next_packet() { Ok(p) => p, Err(_) => break };
+        if packet.track_id() != track.id { continue; }
+        match dec.decode(&packet) {
+            Ok(buf) => {
+                let spec = *buf.spec();
+                ch = spec.channels.count().max(1);
+                rate = spec.rate;
+                let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+                sb.copy_interleaved_ref(buf);
+                pcm.extend_from_slice(sb.samples());
+            }
+            Err(Error::DecodeError(_)) => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    if pcm.len() < rate as usize * ch * 3 { return Err("слишком мало звука".into()); }
+    Ok(wavy_core::shazam::to_mono_16k(&pcm, ch, rate))
 }

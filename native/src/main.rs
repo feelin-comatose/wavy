@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use wavy_core::{discord::{Discord, DiscordStatus}, fmt_time, local, overlay::OverlayServer, store::Store, youtube::YouTube, PlayerState, Track};
+use wavy_core::{anime, discord::{Discord, DiscordStatus}, fmt_time, local, media::{MediaInfo, SubSrc}, overlay::OverlayServer, shazam::Found, shikimori::ShikiAnime, store::Store, youtube::YouTube, PlayerState, Track};
 
 // ---------- палитра ----------
 const BG: Color32 = Color32::from_rgb(0x0a, 0x0a, 0x0c);
@@ -31,10 +31,15 @@ const ACCENT_SOFT: Color32 = Color32::from_rgb(0xa1, 0xa1, 0xaa);
 const BAD: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
 const OK: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 
-const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "m3u", "m3u8"];
+const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "mkv", "m3u", "m3u8"];
+/// Плейлист, куда Shazam складывает распознанные опенинги.
+const OPENINGS: &str = "Опенинги";
 
 #[derive(Clone, PartialEq)]
-enum View { Library, Playlist(String), Search }
+enum View { Library, Playlist(String), Search, Anime, AnimeTitle(String) }
+
+#[derive(Clone)]
+enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 
 #[derive(Clone)]
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
@@ -53,6 +58,9 @@ enum Bg {
     VideoFailed { id: String, err: String },
     Update(UpdState),
     ImportDone(Result<(), String>),
+    OpenAnime(Option<String>),
+    ShikiResults(Result<Vec<ShikiAnime>, String>),
+    Shazam(Result<Option<Found>, String>),
 }
 
 enum Modal {
@@ -61,6 +69,9 @@ enum Modal {
     Rename { id: String, name: String },
     Delete { id: String },
     Settings { client_id: String, port: String, sp_id: String, sp_secret: String },
+    AnimeMatch { id: String, query: String, results: Vec<ShikiAnime>, busy: bool, err: Option<String> },
+    DeleteAnime { id: String },
+    Shazam { state: ShazamState, to_openings: bool },
 }
 
 enum Act {
@@ -72,6 +83,8 @@ enum Act {
     CreatePlaylist(String, Vec<String>), Rename(String, String), DeletePlaylist(String), Sync(String),
     Reveal(String), OpenUrl(String), Settings(serde_json::Value), ToggleOverlay, ToggleLock, JumpQueue(usize),
     Modal(Modal), YtUpdate, SyncExport, SyncImport(Option<PathBuf>), ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
+    ImportAnime(Vec<PathBuf>), ImportAnimeFiles, ImportAnimeFolder, PlayAnime(String, Option<String>), AnimeSearch(String), AnimeApply(String, ShikiAnime),
+    DeleteAnime(String), MarkWatched(String, bool), AudioTrack(usize), Subs(Option<usize>), Shazam, ShazamAdd(Found, bool),
 }
 
 struct App {
@@ -133,6 +146,12 @@ struct App {
     _hotkeys: Option<GlobalHotKeyManager>,
     hk_rx: Receiver<u32>,
     hk_ids: (u32, u32),
+    /// Дорожки текущего видео и что выбрано (звук — номер среди звуковых, субтитры — номер в списке).
+    media_info: Option<(String, MediaInfo)>,
+    audio_sel: usize,
+    sub_sel: Option<usize>,
+    /// серия, уже отмеченная просмотренной (чтобы не писать на диск каждый кадр)
+    watched_mark: Option<String>,
 }
 
 impl App {
@@ -184,6 +203,7 @@ impl App {
             media, media_rx, resume: None, session_saved: Instant::now(), spin: 0.0,
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
+            media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
         };
         app.overlay_open = s.overlay_window.visible;
         app.restore_session(&ctx);
@@ -200,6 +220,7 @@ impl App {
         let pos = self.resume.as_ref().map(|r| r.1).unwrap_or_else(|| self.audio.position());
         let v = json!({ "queue": self.queue, "qi": self.qi, "position": pos });
         let _ = std::fs::write(Self::session_file(), v.to_string());
+        if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_some()) { self.store.lock().unwrap().set_progress(&t.id, pos); }
     }
 
     fn restore_session(&mut self, ctx: &egui::Context) {
@@ -233,6 +254,7 @@ impl App {
             View::Library => s.library_ids(),
             View::Playlist(id) => s.lib.playlists.iter().find(|p| &p.id == id).map(|p| p.track_ids.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect()).unwrap_or_default(),
             View::Search => return self.results.iter().map(|t| t.id.clone()).collect(),
+            View::Anime | View::AnimeTitle(_) => return vec![],
         };
         let q = self.filter.trim().to_lowercase();
         if q.is_empty() { return ids; }
@@ -266,6 +288,7 @@ impl App {
         self.current = Some(t.clone());
         self.shown_at = Instant::now();
         self.audio.stop();
+        self.prepare_media(&t);
         if t.is_local() {
             let path = PathBuf::from(t.path.clone().unwrap_or_default());
             self.start_file(&path);
@@ -290,6 +313,25 @@ impl App {
         }
     }
 
+    /// Дорожки видеофайла: какую озвучку и какие субтитры включить (для аниме — как в прошлой серии).
+    fn prepare_media(&mut self, t: &Track) {
+        self.media_info = None;
+        self.audio_sel = 0;
+        self.sub_sel = None;
+        if !(t.is_local() && t.video) { return; }
+        let info = wavy_core::media::probe(Path::new(t.path.as_deref().unwrap_or_default()));
+        let (ap, sp) = t.anime.as_ref().and_then(|a| self.store.lock().unwrap().anime(a).map(|a| (a.audio, a.subs.clone()))).unwrap_or_default();
+        self.audio_sel = wavy_core::media::pick_audio(&info, ap);
+        self.sub_sel = wavy_core::media::pick_subs(&info, sp.as_deref());
+        if t.anime.is_some() { self.store.lock().unwrap().set_progress(&t.id, 0.0); }
+        self.media_info = Some((t.id.clone(), info));
+    }
+
+    fn sub_src(&self) -> Option<SubSrc> {
+        let (_, info) = self.media_info.as_ref()?;
+        Some(info.subs.get(self.sub_sel?)?.src.clone())
+    }
+
     fn start_stream(&mut self, dl: wavy_core::stream::Download) {
         let vol = self.settings().volume;
         match self.audio.load_stream(dl, vol * vol) {
@@ -311,7 +353,7 @@ impl App {
 
     fn start_file(&mut self, path: &Path) {
         let vol = self.settings().volume;
-        match self.audio.load(path, vol * vol) {
+        match self.audio.load_track(path, vol * vol, self.audio_sel) {
             Ok(()) => {
                 self.errors_in_row = 0;
                 let cur = self.current.as_ref().map(|t| t.id.clone());
@@ -565,6 +607,154 @@ impl App {
                 update::restart();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Act::ImportAnimeFiles | Act::ImportAnimeFolder => {
+                let dlg = rfd::FileDialog::new();
+                let picked = if matches!(a, Act::ImportAnimeFiles) { dlg.set_title("Выбери серии").add_filter("Видео", anime::EPISODE_EXT).pick_files() } else { dlg.set_title("Выбери папку с аниме").pick_folders() };
+                if let Some(p) = picked { self.apply(Act::ImportAnime(p), ctx); }
+            }
+            Act::ImportAnime(paths) => {
+                self.toast("Ищу серии…", false);
+                let (store, covers) = (self.store.clone(), self.covers.clone());
+                self.bg(ctx, move |tx| {
+                    let groups = anime::scan(&paths, |i, n| { if n > 30 && i % 25 == 0 { let _ = tx.send(Bg::Status(format!("Серии: {i} / {n}"))); } });
+                    if groups.is_empty() { return Err("Не нашлось видео (mkv, mp4, mov)".into()); }
+                    let eps: usize = groups.iter().map(|g| g.tracks.len()).sum();
+                    let mut ids = Vec::new();
+                    for g in groups {
+                        let n = g.tracks.len();
+                        let (id, _) = store.lock().unwrap().add_episodes(&g.key, &g.parsed, g.tracks);
+                        ids.push(id.clone());
+                        let need = store.lock().unwrap().anime(&id).is_some_and(|a| !a.matched);
+                        if !need { continue; }
+                        let _ = tx.send(Bg::Status(format!("Ищу «{}» на Шикимори…", g.parsed.title)));
+                        match wavy_core::shikimori::search(&anime::search_query(&g.parsed), 10) {
+                            Ok(list) => {
+                                let best = wavy_core::shikimori::best_match(&g.parsed.title, g.parsed.season, n, &list).cloned();
+                                let mut a = store.lock().unwrap().anime(&id).cloned().unwrap_or_default();
+                                match best {
+                                    Some(b) => wavy_core::shikimori::apply(&mut a, &b, &covers),
+                                    None => { a.matched = true; wavy_core::log(&format!("Шикимори: «{}» не нашлось", g.parsed.title)); }
+                                }
+                                let mut s = store.lock().unwrap();
+                                if let Some(x) = s.anime_mut(&id) { *x = a; }
+                                s.retitle_episodes(&id);
+                                s.save();
+                            }
+                            Err(e) => wavy_core::log(&format!("Шикимори: {e}")),
+                        }
+                    }
+                    let _ = tx.send(Bg::Status(format!("Добавлено серий: {eps}")));
+                    let _ = tx.send(Bg::OpenAnime(if ids.len() == 1 { ids.pop() } else { None }));
+                    Ok(())
+                });
+            }
+            Act::PlayAnime(id, ep) => {
+                let Some(a) = self.store.lock().unwrap().anime(&id).cloned() else { return };
+                if a.episodes.is_empty() { return; }
+                // продолжить: последняя серия (если досмотрена — следующая), с того же места
+                let start = match &ep {
+                    Some(e) => a.episodes.iter().position(|x| x == e).unwrap_or(0),
+                    None => match a.last.as_ref().and_then(|l| a.episodes.iter().position(|x| x == l)) {
+                        Some(i) if a.watched.contains(&a.episodes[i]) && i + 1 < a.episodes.len() => i + 1,
+                        Some(i) => i,
+                        None => a.episodes.iter().position(|e| !a.watched.contains(e)).unwrap_or(0),
+                    },
+                };
+                let resume_pos = if ep.is_none() && a.last.as_deref() == Some(a.episodes[start].as_str()) && a.last_pos > 5.0 { a.last_pos } else { 0.0 };
+                self.queue = a.episodes.clone();
+                self.qi = start;
+                self.resume = (resume_pos > 0.0).then(|| (a.episodes[start].clone(), resume_pos, true));
+                self.video = None;
+                self.show_video = true;
+                self.load_current(ctx);
+            }
+            Act::AnimeSearch(q) => {
+                if let Some(Modal::AnimeMatch { busy, err, .. }) = &mut self.modal { *busy = true; *err = None; }
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || { let _ = tx.send(Bg::ShikiResults(wavy_core::shikimori::search(&q, 12))); c.request_repaint(); });
+            }
+            Act::AnimeApply(id, sh) => {
+                let (store, covers) = (self.store.clone(), self.covers.clone());
+                let name = sh.display().to_string();
+                self.bg(ctx, move |tx| {
+                    let mut a = store.lock().unwrap().anime(&id).cloned().ok_or("Тайтл не найден")?;
+                    wavy_core::shikimori::apply(&mut a, &sh, &covers);
+                    let mut s = store.lock().unwrap();
+                    if let Some(x) = s.anime_mut(&id) { *x = a; }
+                    s.retitle_episodes(&id);
+                    s.save();
+                    let _ = tx.send(Bg::Status(format!("Теперь это «{name}»")));
+                    Ok(())
+                });
+            }
+            Act::DeleteAnime(id) => {
+                let eps = self.store.lock().unwrap().anime(&id).map(|a| a.episodes.clone()).unwrap_or_default();
+                if self.current.as_ref().is_some_and(|t| eps.contains(&t.id)) { self.audio.stop(); self.current = None; self.queue.clear(); self.video = None; self.show_video = false; self.push_state(); }
+                self.store.lock().unwrap().delete_anime(&id);
+                self.view = View::Anime;
+            }
+            Act::MarkWatched(tid, w) => self.store.lock().unwrap().mark_episode(&tid, w),
+            Act::AudioTrack(i) => {
+                let Some(t) = self.current.clone() else { return };
+                self.audio_sel = i;
+                if let Err(e) = self.audio.switch_track(Path::new(t.path.as_deref().unwrap_or_default()), i) { self.toast(e, true); }
+                if let Some(aid) = &t.anime { if let Some(a) = self.store.lock().unwrap().anime_mut(aid) { a.audio = Some(i); } self.store.lock().unwrap().save(); }
+                self.push_state();
+            }
+            Act::Subs(sel) => {
+                self.sub_sel = sel;
+                self.video = None; // откроется заново с нужными субтитрами на той же позиции
+                let key = match (sel, &self.media_info) { (Some(i), Some((_, info))) => info.subs.get(i).map(|s| s.key()), _ => Some("off".to_string()) };
+                if let Some(aid) = self.current.as_ref().and_then(|t| t.anime.clone()) {
+                    let mut s = self.store.lock().unwrap();
+                    if let Some(a) = s.anime_mut(&aid) { a.subs = key; }
+                    s.save();
+                }
+            }
+            Act::Shazam => {
+                let Some(t) = self.current.clone() else { return };
+                let path = match t.path.clone() {
+                    Some(p) => PathBuf::from(p),
+                    None => self.cache.join(format!("{}.s.m4a", wavy_core::sha16(t.url.clone().unwrap_or_default().as_bytes()))),
+                };
+                if !path.exists() { self.toast("Shazam работает с файлами на компьютере (и уже загруженными треками)", true); return; }
+                let (pos, track) = (self.audio.position(), self.audio_sel);
+                self.modal = Some(Modal::Shazam { state: ShazamState::Listening, to_openings: t.anime.is_some() });
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    // берём чуть до текущего места и вперёд — нажимают обычно, когда опенинг уже идёт
+                    let r = player::sample_for_shazam(&path, (pos - 3.0).max(0.0), wavy_core::shazam::SECONDS as f64, track).and_then(|s| wavy_core::shazam::recognize(&s));
+                    if let Err(e) = &r { wavy_core::log(&format!("Shazam: {e}")); }
+                    let _ = tx.send(Bg::Shazam(r));
+                    c.request_repaint();
+                });
+            }
+            Act::ShazamAdd(f, to_pl) => {
+                if let Some(Modal::Shazam { state, .. }) = &mut self.modal { *state = ShazamState::Adding; }
+                let (store, yt) = (self.store.clone(), self.yt.clone());
+                self.bg(ctx, move |tx| {
+                    let q = format!("{} {}", f.artist, f.title);
+                    let list = yt.search(&q, 8)?;
+                    let low = |s: &str| s.to_lowercase();
+                    let best = list.iter().find(|t| low(&t.title).contains(&low(&f.title)) && (60.0..900.0).contains(&t.duration))
+                        .or_else(|| list.iter().find(|t| (60.0..900.0).contains(&t.duration))).or(list.first()).cloned()
+                        .ok_or_else(|| format!("На YouTube не нашлось «{q}»"))?;
+                    let mut t = best;
+                    t.title = f.title.clone();
+                    if !f.artist.is_empty() { t.artist = f.artist.clone(); }
+                    let id = t.id.clone();
+                    let mut s = store.lock().unwrap();
+                    s.add_tracks(vec![t]);
+                    let mut note = String::new();
+                    if to_pl {
+                        let pid = match s.lib.playlists.iter().find(|p| p.name == OPENINGS) { Some(p) => p.id.clone(), None => s.create_playlist(OPENINGS, vec![], None).id };
+                        s.add_to_playlist(&pid, &[id]);
+                        note = format!(" и в «{OPENINGS}»");
+                    }
+                    let _ = tx.send(Bg::Status(format!("{} — {}: добавлено в библиотеку{note}", f.artist, f.title)));
+                    Ok(())
+                });
+            }
             Act::YtUpdate => {
                 let yt = self.yt.clone();
                 self.yt_version = None;
@@ -607,7 +797,7 @@ impl App {
                     let cur = self.current.as_ref().map(|t| t.id.clone());
                     if cur.as_deref() == Some(id.as_str()) && (self.show_video || self.fullscreen) {
                         let pos = self.audio.position();
-                        self.video = Some((id, video::Video::open(path, pos, ctx)));
+                        self.video = Some((id, video::Video::open(path, pos, ctx, None)));
                     }
                 }
                 Bg::VideoFailed { id, err } => {
@@ -621,8 +811,24 @@ impl App {
                 }
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
-                        if let Some(Modal::ImportUrl { busy, err, .. }) = &mut self.modal { *busy = false; *err = Some(e); } else { self.toast(e, true); }
-                    } else if let Some(Modal::ImportUrl { busy: true, .. }) = &self.modal { self.modal = None; }
+                        match &mut self.modal {
+                            Some(Modal::ImportUrl { busy, err, .. }) => { *busy = false; *err = Some(e); }
+                            Some(Modal::Shazam { state, .. }) => *state = ShazamState::Error(e),
+                            _ => self.toast(e, true),
+                        }
+                    } else if matches!(self.modal, Some(Modal::ImportUrl { busy: true, .. }) | Some(Modal::Shazam { state: ShazamState::Adding, .. })) { self.modal = None; }
+                }
+                Bg::OpenAnime(id) => self.view = match id { Some(id) => View::AnimeTitle(id), None => View::Anime },
+                Bg::ShikiResults(r) => {
+                    if let Some(Modal::AnimeMatch { results, busy, err, .. }) = &mut self.modal {
+                        *busy = false;
+                        match r { Ok(v) => { if v.is_empty() { *err = Some("Ничего не нашлось — попробуй другое написание (можно по-русски или по-английски)".into()); } *results = v; } Err(e) => *err = Some(e) }
+                    }
+                }
+                Bg::Shazam(r) => {
+                    if let Some(Modal::Shazam { state, .. }) = &mut self.modal {
+                        *state = match r { Ok(Some(f)) => ShazamState::Found(f), Ok(None) => ShazamState::NotFound, Err(e) => ShazamState::Error(e) };
+                    }
                 }
             }
         }
@@ -653,8 +859,18 @@ impl App {
         dropped.retain(|p| !exports.contains(p));
         for e in exports { self.apply(Act::SyncImport(Some(e)), ctx); }
         if !dropped.is_empty() {
-            let pid = self.cur_playlist();
-            self.apply(Act::ImportPaths(dropped, pid), ctx);
+            if matches!(self.view, View::Anime | View::AnimeTitle(_)) { self.apply(Act::ImportAnime(dropped), ctx); }
+            else { let pid = self.cur_playlist(); self.apply(Act::ImportPaths(dropped, pid), ctx); }
+        }
+        // серия досмотрена (последние 10 % или титры) — отмечаем
+        if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_some()) {
+            let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+            let pos = self.audio.position();
+            if dur > 60.0 && self.audio.loaded && (pos > dur * 0.9 || (dur > 600.0 && dur - pos < 100.0)) && self.watched_mark.as_deref() != Some(t.id.as_str()) {
+                let id = t.id.clone();
+                self.store.lock().unwrap().mark_episode(&id, true);
+                self.watched_mark = Some(id);
+            }
         }
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
         self.audio.poll();
@@ -725,8 +941,9 @@ impl App {
         if self.video.is_none() && !failed {
             if t.is_local() {
                 let path = PathBuf::from(t.path.clone().unwrap_or_default());
-                let pos = self.audio.position();
-                self.video = Some((t.id.clone(), video::Video::open(path, pos, ctx)));
+                let pos = self.resume.as_ref().map(|r| r.1).unwrap_or_else(|| self.audio.position());
+                let sub = self.sub_src();
+                self.video = Some((t.id.clone(), video::Video::open(path, pos, ctx, sub)));
             } else if self.video_loading.as_deref() != Some(t.id.as_str()) {
                 self.video_loading = Some(t.id.clone());
                 let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
@@ -828,6 +1045,8 @@ impl App {
         ui.add_space(14.0);
         if nav(ui, "\u{E340}  Библиотека", self.view == View::Library, None).clicked() { acts.push(Act::View(View::Library)); }
         if nav(ui, "\u{E30C}  Поиск на YouTube", self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
+        let n_anime = self.store.lock().unwrap().lib.anime.len();
+        if nav(ui, "\u{E754}  Аниме", matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("ПЛЕЙЛИСТЫ").size(11.0).color(MUTED));
@@ -866,6 +1085,7 @@ impl App {
             match &self.view {
                 View::Library => ("КОЛЛЕКЦИЯ", "Библиотека".to_string(), None),
                 View::Search => ("YOUTUBE", "Поиск".to_string(), None),
+                View::Anime | View::AnimeTitle(_) => ("АНИМЕ", "Аниме".to_string(), None),
                 View::Playlist(id) => {
                     let p = s.lib.playlists.iter().find(|p| &p.id == id).cloned();
                     (if p.as_ref().is_some_and(|p| p.is_remote()) { "ПЛЕЙЛИСТ · ИМПОРТ" } else { "ПЛЕЙЛИСТ" }, p.as_ref().map(|p| p.name.clone()).unwrap_or_default(), p)
@@ -917,6 +1137,11 @@ impl App {
                 });
             });
             ui.add_space(12.0);
+        }
+        match self.view.clone() {
+            View::Anime => return self.anime_grid(ui, acts),
+            View::AnimeTitle(id) => return self.anime_page(ui, &id, acts),
+            _ => {}
         }
         let ids = self.list_ids();
         self.header(ui, &ids, acts);
@@ -1008,6 +1233,164 @@ impl App {
                     if r.secondary_clicked() && !self.selected.contains(id) { self.selected = HashSet::from([id.clone()]); }
                     let sel: Vec<String> = if self.selected.contains(id) { ids.iter().filter(|x| self.selected.contains(*x)).cloned().collect() } else { vec![id.clone()] };
                     r.context_menu(|ui| track_menu(ui, &sel, &t, pid.as_deref(), &pls, acts));
+                });
+            });
+    }
+
+    /// Постер (2:3) с обрезкой по центру; без постера — заглушка.
+    fn poster(&mut self, ui: &egui::Ui, a: &anime::Anime, r: Rect, px: u32) {
+        let tex = a.poster.clone().and_then(|p| self.thumbs.poster(&p, px));
+        match tex {
+            Some(t) => {
+                let s = t.size_vec2();
+                let (ta, ra) = (s.x / s.y, r.width() / r.height());
+                let uv = if ta > ra { let w = ra / ta; Rect::from_min_max(Pos2::new(0.5 - w / 2.0, 0.0), Pos2::new(0.5 + w / 2.0, 1.0)) }
+                    else { let h = ta / ra; Rect::from_min_max(Pos2::new(0.0, 0.5 - h / 2.0), Pos2::new(1.0, 0.5 + h / 2.0)) };
+                egui::Image::new(&t).uv(uv).corner_radius(10).paint_at(ui, r);
+            }
+            None => {
+                ui.painter().rect_filled(r, 10, BG3);
+                ui.painter().rect_stroke(r, 10, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, "\u{E754}", FontId::proportional(r.width() * 0.28), MUTED);
+            }
+        }
+    }
+
+    fn anime_grid(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let list = self.store.lock().unwrap().lib.anime.clone();
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new("КОЛЛЕКЦИЯ").size(11.0).color(MUTED));
+                ui.label(RichText::new("Аниме").size(34.0).family(bold()).color(TEXT));
+                ui.label(RichText::new(if list.is_empty() { "Серии с компьютера — с обложками и названиями с Шикимори".to_string() } else { format!("{} тайтл(ов)", list.len()) }).color(MUTED));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if pill(ui, "\u{E25A}  Папка", true).clicked() { acts.push(Act::ImportAnimeFolder); }
+                if pill(ui, "\u{EA20}  Файлы", false).clicked() { acts.push(Act::ImportAnimeFiles); }
+            });
+        });
+        ui.add_space(14.0);
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Найти тайтл…").desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
+        ui.add_space(12.0);
+        if list.is_empty() {
+            ui.add_space(50.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Пока пусто").size(22.0).family(bold()).color(TEXT));
+                ui.label(RichText::new("Перетащи сюда папку с сериями (mkv, mp4). Название и номер серии Wavy поймёт из имён файлов,").color(MUTED));
+                ui.label(RichText::new("а обложку и русское название возьмёт с Шикимори.").color(MUTED));
+            });
+            return;
+        }
+        let q = self.filter.trim().to_lowercase();
+        let list: Vec<anime::Anime> = list.into_iter().filter(|a| q.is_empty() || format!("{} {} {}", a.russian, a.name, a.title).to_lowercase().contains(&q)).collect();
+        let (cw, ch) = (156.0, 234.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(18.0, 18.0);
+                for a in &list {
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(cw, ch + 70.0), Sense::click());
+                    let pr = Rect::from_min_size(r.min, Vec2::new(cw, ch));
+                    self.poster(ui, a, pr, 320);
+                    if resp.hovered() { ui.painter().rect_stroke(pr, 10, Stroke::new(2.0, TEXT), egui::StrokeKind::Outside); }
+                    let seen = a.watched.iter().filter(|w| a.episodes.contains(w)).count();
+                    let badge = format!("{seen}/{}", a.episodes.len());
+                    let br = Rect::from_min_size(pr.right_top() + Vec2::new(-52.0, 8.0), Vec2::new(44.0, 20.0));
+                    ui.painter().rect_filled(br, 99, Color32::from_black_alpha(190));
+                    ui.painter().text(br.center(), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), Color32::WHITE);
+                    // название — до двух строк с «…»
+                    let mut job = egui::text::LayoutJob::simple(a.display().to_string(), FontId::new(13.5, semi()), TEXT, cw);
+                    job.wrap.max_rows = 2;
+                    let g = ui.fonts_mut(|f| f.layout_job(job));
+                    let th = g.size().y;
+                    ui.painter().galley(pr.left_bottom() + Vec2::new(0.0, 8.0), g, TEXT);
+                    let meta = if a.matched && a.shiki_id.is_some() { a.meta() } else if a.matched { "нет на Шикимори".into() } else { "ищу на Шикимори…".into() };
+                    ui.painter().text(pr.left_bottom() + Vec2::new(0.0, 12.0 + th), Align2::LEFT_TOP, ellipsize(&meta, cw - 10.0, 12.0), FontId::proportional(12.0), MUTED);
+                    if resp.clicked() { acts.push(Act::View(View::AnimeTitle(a.id.clone()))); }
+                    let id = a.id.clone();
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| {
+                        if ui.button("Смотреть").clicked() { acts.push(Act::PlayAnime(id.clone(), None)); ui.close(); }
+                        if ui.button("Другой тайтл на Шикимори…").clicked() { acts.push(Act::Modal(Modal::AnimeMatch { id: id.clone(), query: a.display().to_string(), results: vec![], busy: false, err: None })); acts.push(Act::AnimeSearch(a.display().to_string())); ui.close(); }
+                        ui.separator();
+                        if ui.button(RichText::new("Удалить из раздела").color(BAD)).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: id.clone() })); ui.close(); }
+                    });
+                }
+            });
+            ui.add_space(20.0);
+        });
+    }
+
+    fn anime_page(&mut self, ui: &mut egui::Ui, id: &str, acts: &mut Vec<Act>) {
+        let Some(a) = self.store.lock().unwrap().anime(id).cloned() else { acts.push(Act::View(View::Anime)); return };
+        if ui.add(egui::Label::new(RichText::new("\u{E138}  Аниме").color(MUTED)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { acts.push(Act::View(View::Anime)); }
+        ui.add_space(10.0);
+        let eps: Vec<Track> = a.episodes.iter().filter_map(|e| self.track(e)).collect();
+        let cont = a.last.as_ref().and_then(|l| eps.iter().find(|t| &t.id == l)).map(|t| t.title.clone());
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(Vec2::new(150.0, 225.0), Sense::hover());
+            self.poster(ui, &a, r, 360);
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new(if a.kind.is_empty() { "АНИМЕ".to_string() } else { anime::kind_ru(&a.kind).to_uppercase() }).size(11.0).color(MUTED));
+                ui.add(egui::Label::new(RichText::new(a.display()).size(30.0).family(bold()).color(TEXT)).wrap());
+                if !a.name.is_empty() && a.name != a.display() { ui.label(RichText::new(&a.name).color(MUTED)); }
+                let mut meta = a.meta();
+                let seen = a.watched.iter().filter(|w| a.episodes.contains(w)).count();
+                meta = [meta, format!("серий в папке: {} · просмотрено {seen}", eps.len())].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+                ui.label(RichText::new(meta).color(MUTED));
+                if !a.matched { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу на Шикимори…").color(MUTED)); }); }
+                else if a.shiki_id.is_none() { ui.label(RichText::new("На Шикимори не нашлось — выбери вручную").color(MUTED)); }
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    let play = match &cont { Some(t) if a.last_pos > 5.0 || a.watched.len() > 0 => format!("\u{E3D0}  Продолжить · {t}"), _ => "\u{E3D0}  Смотреть".into() };
+                    if !eps.is_empty() && pill(ui, &play, true).clicked() { acts.push(Act::PlayAnime(a.id.clone(), None)); }
+                    if let Some(u) = &a.url { if pill(ui, "\u{E5DE}  Шикимори", false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
+                    if pill(ui, "\u{E30C}  Другой тайтл", false).on_hover_text("Если Wavy угадал не то аниме или сезон").clicked() {
+                        let q = if a.title.is_empty() { a.display().to_string() } else { a.title.clone() };
+                        acts.push(Act::Modal(Modal::AnimeMatch { id: a.id.clone(), query: q.clone(), results: vec![], busy: false, err: None }));
+                        acts.push(Act::AnimeSearch(q));
+                    }
+                    if pill(ui, "\u{EA20}  Добавить серии", false).clicked() { acts.push(Act::ImportAnimeFiles); }
+                    if pill(ui, "\u{E4A6}  Удалить", false).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: a.id.clone() })); }
+                });
+            });
+        });
+        ui.add_space(16.0);
+        let cur = self.current.as_ref().map(|t| t.id.clone());
+        let playing = self.audio.is_playing();
+        TableBuilder::new(ui)
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .column(Column::exact(36.0))
+            .column(Column::remainder().at_least(200.0).clip(true))
+            .column(Column::exact(64.0))
+            .max_scroll_height(f32::INFINITY)
+            .header(26.0, |mut h| { for t in ["", "СЕРИЯ", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); } })
+            .body(|body| {
+                body.rows(46.0, eps.len(), |mut row| {
+                    let t = &eps[row.index()];
+                    let is_cur = cur.as_deref() == Some(t.id.as_str());
+                    let seen = a.watched.contains(&t.id);
+                    row.col(|ui| {
+                        let (ic, c) = if is_cur { (if playing { "\u{E340}" } else { "\u{E39E}" }, ACCENT) } else if seen { ("\u{E184}", MUTED) } else { ("", MUTED) };
+                        ui.label(RichText::new(ic).color(c));
+                    });
+                    row.col(|ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(4.0);
+                            ui.add(egui::Label::new(RichText::new(&t.title).color(if is_cur { ACCENT } else if seen { MUTED } else { TEXT }).size(14.0)).truncate());
+                            let file = t.path.as_deref().and_then(|p| Path::new(p).file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                            ui.add(egui::Label::new(RichText::new(file).color(MUTED).size(11.5)).truncate());
+                        });
+                    });
+                    row.col(|ui| { ui.label(RichText::new(fmt_time(t.duration)).color(MUTED)); });
+                    let r = row.response();
+                    if r.double_clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); }
+                    r.context_menu(|ui| {
+                        if ui.button("Смотреть").clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); ui.close(); }
+                        if ui.button(if seen { "Отметить непросмотренной" } else { "Отметить просмотренной" }).clicked() { acts.push(Act::MarkWatched(t.id.clone(), !seen)); ui.close(); }
+                        if let Some(p) = &t.path { if ui.button("Показать в папке").clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
+                    });
                 });
             });
     }
@@ -1130,6 +1513,7 @@ impl App {
                 if r.drag_stopped() || r.clicked() { acts.push(Act::SaveVolume); }
                 ui.label(RichText::new(if v == 0.0 { "\u{E45C}" } else { "\u{E44A}" }).color(MUTED));
                 if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь").clicked() { self.show_queue = !self.show_queue; }
+                if self.current.is_some() && icon_btn(ui, "\u{E802}", 34.0, false).on_hover_text("Что это играет? (Shazam) — например, опенинг в аниме").clicked() { acts.push(Act::Shazam); }
             });
         });
     }
@@ -1149,7 +1533,10 @@ impl App {
         let tex = self.video.as_ref().and_then(|(_, v)| v.texture.clone());
         let err = self.video_error.as_ref().filter(|e| e.0 == t.id).map(|e| e.1.clone());
         if let Some(tex) = tex {
-            p.image(tex.id(), fit(tex.size_vec2()), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            let vr = fit(tex.size_vec2());
+            p.image(tex.id(), vr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            let clock = self.audio.position();
+            if let Some((_, v)) = &self.video { draw_subs(ui, &p, vr, &v.subs_at(clock)); }
         } else {
             // большая обложка (пока видео грузится, при ошибке или если видео нет)
             let side = (area.height() * 0.62).min(area.width() * 0.6).max(80.0);
@@ -1172,6 +1559,9 @@ impl App {
                 if err.is_none() { ui.ctx().request_repaint_after(Duration::from_millis(200)); }
             }
         }
+        // озвучка / субтитры / Shazam — в оконном режиме всегда, в полноэкранном — когда двигали мышью
+        let moved = ui.input(|i| i.pointer.time_since_last_movement()) < 2.5;
+        if !self.fullscreen || moved { self.video_controls(ui, area, &t, acts); }
         // кнопка «во весь экран» и подсказка
         let btn = Rect::from_min_size(area.right_top() + Vec2::new(-46.0, 12.0), Vec2::splat(34.0));
         let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
@@ -1203,6 +1593,43 @@ impl App {
                 ui.ctx().request_repaint_after(Duration::from_millis(250));
             }
         }
+    }
+
+    /// Кнопки поверх видео: выбор озвучки и субтитров, Shazam.
+    fn video_controls(&mut self, ui: &mut egui::Ui, area: Rect, t: &Track, acts: &mut Vec<Act>) {
+        let info = self.media_info.as_ref().filter(|m| m.0 == t.id).map(|m| m.1.clone());
+        let r = Rect::from_min_size(area.left_top() + Vec2::new(12.0, 12.0), Vec2::new((area.width() - 80.0).max(100.0), 34.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(Layout::left_to_right(Align::Center)));
+        let ui = &mut child;
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let chip = |text: String| egui::Button::new(RichText::new(text).color(Color32::WHITE).size(13.0)).fill(Color32::from_black_alpha(170)).stroke(Stroke::NONE).corner_radius(99).min_size(Vec2::new(0.0, 30.0));
+        if let Some(info) = &info {
+            if info.audio.len() > 1 {
+                let cur = info.audio.get(self.audio_sel).map(|a| a.label.clone()).unwrap_or_default();
+                let resp = ui.add(chip(format!("\u{E44A}  {}", ellipsize(&cur, 180.0, 13.0))));
+                egui::Popup::menu(&resp).show(|ui| {
+                    ui.set_min_width(220.0);
+                    for (i, a) in info.audio.iter().enumerate() {
+                        let txt = if i == self.audio_sel { format!("\u{E182}  {}", a.label) } else { format!("      {}", a.label) };
+                        if ui.add_enabled(a.supported, egui::Button::new(txt).frame(false)).clicked() { acts.push(Act::AudioTrack(i)); ui.close(); }
+                    }
+                });
+            }
+            if !info.subs.is_empty() {
+                let cur = self.sub_sel.and_then(|i| info.subs.get(i)).map(|s| s.label.clone()).unwrap_or_else(|| "выкл".into());
+                let resp = ui.add(chip(format!("\u{E1A8}  {}", ellipsize(&cur, 180.0, 13.0))));
+                egui::Popup::menu(&resp).show(|ui| {
+                    ui.set_min_width(240.0);
+                    let mark = |on: bool, l: &str| if on { format!("\u{E182}  {l}") } else { format!("      {l}") };
+                    if ui.add(egui::Button::new(mark(self.sub_sel.is_none(), "Без субтитров")).frame(false)).clicked() { acts.push(Act::Subs(None)); ui.close(); }
+                    for (i, s) in info.subs.iter().enumerate() {
+                        let l = if s.forced { format!("{} (надписи)", s.label) } else { s.label.clone() };
+                        if ui.add(egui::Button::new(mark(self.sub_sel == Some(i), &l)).frame(false)).clicked() { acts.push(Act::Subs(Some(i))); ui.close(); }
+                    }
+                });
+            }
+        }
+        if ui.add(chip("\u{E802}  Что за песня?".into())).on_hover_text("Shazam: узнать опенинг/эндинг и добавить в библиотеку").clicked() { acts.push(Act::Shazam); }
     }
 
     fn queue_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -1287,6 +1714,94 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if pill(ui, "Удалить", true).clicked() { acts.push(Act::DeletePlaylist(id.clone())); close = true; }
                         if pill(ui, "Отмена", false).clicked() { close = true; }
+                    });
+                }
+                Modal::AnimeMatch { id, query, results, busy, err } => {
+                    ui.label(RichText::new("Какое это аниме?").size(20.0).family(bold()));
+                    ui.label(RichText::new("Поиск на Шикимори — по-русски, по-английски или по-японски (ромадзи).").color(MUTED));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(query).desired_width(360.0).margin(egui::Margin::symmetric(10, 8)));
+                        let go = pill(ui, if *busy { "Ищу…" } else { "Найти" }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if go && !query.trim().is_empty() && !*busy { acts.push(Act::AnimeSearch(query.trim().to_string())); }
+                    });
+                    if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for r in results.iter() {
+                            let resp = ui.horizontal(|ui| {
+                                ui.set_min_height(64.0);
+                                let (pr, _) = ui.allocate_exact_size(Vec2::new(40.0, 60.0), Sense::hover());
+                                match r.poster.as_ref().and_then(|u| self.thumbs.poster(u, 120)) {
+                                    Some(t) => { egui::Image::new(&t).corner_radius(4).paint_at(ui, pr); }
+                                    None => { ui.painter().rect_filled(pr, 4, BG3); }
+                                }
+                                ui.vertical(|ui| {
+                                    ui.add_space(6.0);
+                                    ui.add(egui::Label::new(RichText::new(r.display()).family(semi()).color(TEXT)).truncate());
+                                    let meta = [anime::kind_ru(&r.kind).to_string(), if r.year > 0 { r.year.to_string() } else { String::new() }, if r.episodes > 0 { format!("{} эп.", r.episodes) } else { String::new() }, r.name.clone()];
+                                    ui.add(egui::Label::new(RichText::new(meta.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")).color(MUTED).size(12.5)).truncate());
+                                });
+                            }).response.interact(Sense::click());
+                            if resp.hovered() { ui.painter().rect_stroke(resp.rect.expand(2.0), 8, Stroke::new(1.0, LINE), egui::StrokeKind::Outside); }
+                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { acts.push(Act::AnimeApply(id.clone(), r.clone())); close = true; }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Отмена", false).clicked() { close = true; } });
+                }
+                Modal::DeleteAnime { id } => {
+                    let name = self.store.lock().unwrap().anime(id).map(|a| a.display().to_string()).unwrap_or_default();
+                    ui.label(RichText::new(format!("Убрать «{name}»?")).size(20.0).family(bold()));
+                    ui.label(RichText::new("Файлы серий на диске останутся — пропадёт только запись в Wavy.").color(MUTED));
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if pill(ui, "Убрать", true).clicked() { acts.push(Act::DeleteAnime(id.clone())); close = true; }
+                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                    });
+                }
+                Modal::Shazam { state, to_openings } => {
+                    ui.label(RichText::new("\u{E802}  Что за песня?").size(20.0).family(bold()));
+                    ui.add_space(8.0);
+                    match state.clone() {
+                        ShazamState::Listening => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Слушаю 12 секунд с текущего места и спрашиваю Shazam…").color(MUTED)); }); }
+                        ShazamState::Adding => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу трек на YouTube и добавляю…").color(MUTED)); }); }
+                        ShazamState::NotFound => {
+                            ui.label(RichText::new("Shazam не узнал этот кусок.").color(TEXT));
+                            ui.label(RichText::new("Попробуй ещё раз, когда играет сама песня (опенинг/эндинг), а не диалог.").color(MUTED));
+                        }
+                        ShazamState::Error(e) => { ui.label(RichText::new(e).color(BAD)); }
+                        ShazamState::Found(f) => {
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(Vec2::splat(96.0), Sense::hover());
+                                match f.cover.as_ref().and_then(|c| self.thumbs.get(c, 200)) {
+                                    Some(t) => { egui::Image::new(&t).corner_radius(10).paint_at(ui, r); }
+                                    None => { ui.painter().rect_filled(r, 10, BG3); ui.painter().text(r.center(), Align2::CENTER_CENTER, "\u{E33C}", FontId::proportional(36.0), MUTED); }
+                                }
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.add_space(16.0);
+                                    ui.add(egui::Label::new(RichText::new(&f.title).size(18.0).family(bold()).color(TEXT)).wrap());
+                                    ui.label(RichText::new(&f.artist).color(MUTED));
+                                });
+                            });
+                            ui.add_space(8.0);
+                            ui.checkbox(to_openings, format!("Ещё и в плейлист «{OPENINGS}»"));
+                        }
+                    }
+                    ui.add_space(10.0);
+                    let st = state.clone();
+                    let to_pl = *to_openings;
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        match &st {
+                            ShazamState::Found(f) => {
+                                if pill(ui, "\u{E340}  В библиотеку", true).clicked() { acts.push(Act::ShazamAdd(f.clone(), to_pl)); }
+                                if let Some(u) = &f.url { if pill(ui, "Открыть в Shazam", false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
+                            }
+                            ShazamState::NotFound | ShazamState::Error(_) => { if pill(ui, "Ещё раз", true).clicked() { acts.push(Act::Shazam); } }
+                            _ => {}
+                        }
+                        if !matches!(st, ShazamState::Adding) && pill(ui, "Закрыть", false).clicked() { close = true; }
                     });
                 }
                 Modal::Settings { client_id, port, sp_id, sp_secret } => {
@@ -1420,7 +1935,7 @@ impl App {
                 }
             }
         });
-        if resp.should_close() && !matches!(m, Modal::ImportUrl { busy: true, .. }) { close = true; }
+        if resp.should_close() && !matches!(m, Modal::ImportUrl { busy: true, .. } | Modal::Shazam { state: ShazamState::Adding, .. }) { close = true; }
         if !close { self.modal = Some(m); }
     }
 
@@ -1662,6 +2177,37 @@ fn vinyl(p: &egui::Painter, tex: Option<egui::TextureId>, c: Pos2, r: f32, rot: 
     // блик
     let (sn, cs) = rot.sin_cos();
     p.circle_filled(c + Vec2::new(cs, sn) * r * 0.62, r * 0.05, a(Color32::from_white_alpha(70)));
+}
+
+/// Субтитры: белый текст с чёрной обводкой, снизу кадра (надписи \an8 — сверху).
+fn draw_subs(ui: &egui::Ui, p: &egui::Painter, vr: Rect, cues: &[wavy_core::media::Cue]) {
+    if cues.is_empty() { return; }
+    let size = (vr.height() * 0.052).clamp(15.0, 54.0);
+    let font = FontId::new(size, semi());
+    let wrap = vr.width() * 0.86;
+    let outline = (size / 14.0).max(1.5);
+    let draw = |text: &str, y: f32, from_bottom: bool| -> f32 {
+        let g = ui.fonts_mut(|f| f.layout(text.to_string(), font.clone(), Color32::WHITE, wrap));
+        let h = g.size().y;
+        let top = if from_bottom { y - h } else { y };
+        let pos = Pos2::new(vr.center().x - g.size().x / 2.0, top);
+        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7), (0.7, 0.7)] {
+            p.galley_with_override_text_color(pos + Vec2::new(dx, dy) * outline, g.clone(), Color32::BLACK);
+        }
+        p.galley(pos, g, Color32::WHITE);
+        h
+    };
+    // каждую строку отдельно — так все строки по центру
+    let mut y = vr.bottom() - vr.height() * 0.06;
+    for c in cues.iter().filter(|c| !c.top).rev() {
+        for line in c.text.lines().rev() { y -= draw(line, y, true); }
+        y -= size * 0.2;
+    }
+    let mut y = vr.top() + vr.height() * 0.05;
+    for c in cues.iter().filter(|c| c.top) {
+        for line in c.text.lines() { y += draw(line, y, false); }
+        y += size * 0.2;
+    }
 }
 
 fn drop_hint(ctx: &egui::Context) {

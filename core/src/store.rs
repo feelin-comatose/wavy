@@ -67,6 +67,8 @@ pub struct Library {
     pub tracks: HashMap<String, Track>,
     pub playlists: Vec<Playlist>,
     pub settings: Settings,
+    /// Раздел «Аниме»: тайтлы, их серии лежат в tracks (с полем anime).
+    pub anime: Vec<crate::anime::Anime>,
 }
 
 pub struct Store {
@@ -161,11 +163,79 @@ impl Store {
         self.save();
     }
 
-    /// Треки библиотеки, новые сверху.
+    /// Треки библиотеки (без серий аниме), новые сверху.
     pub fn library_ids(&self) -> Vec<String> {
-        let mut v: Vec<&Track> = self.lib.tracks.values().collect();
+        let mut v: Vec<&Track> = self.lib.tracks.values().filter(|t| t.anime.is_none()).collect();
         v.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(a.title.cmp(&b.title)));
         v.into_iter().map(|t| t.id.clone()).collect()
+    }
+}
+
+impl Store {
+    pub fn anime(&self, id: &str) -> Option<&crate::anime::Anime> { self.lib.anime.iter().find(|a| a.id == id) }
+    pub fn anime_mut(&mut self, id: &str) -> Option<&mut crate::anime::Anime> { self.lib.anime.iter_mut().find(|a| a.id == id) }
+
+    /// Добавить серии в тайтл (найти по ключу или создать). Возвращает id тайтла и был ли он новым.
+    pub fn add_episodes(&mut self, key: &str, parsed: &crate::anime::Parsed, tracks: Vec<Track>) -> (String, bool) {
+        let idx = match self.lib.anime.iter().position(|a| a.key == key) {
+            Some(i) => i,
+            None => { self.lib.anime.push(crate::anime::new_anime(key, parsed)); self.lib.anime.len() - 1 }
+        };
+        let is_new = self.lib.anime[idx].episodes.is_empty();
+        let id = self.lib.anime[idx].id.clone();
+        let display = self.lib.anime[idx].display().to_string();
+        for mut t in tracks {
+            t.anime = Some(id.clone());
+            t.artist = display.clone();
+            if let Some(old) = self.lib.tracks.get(&t.id) { t.added_at = old.added_at; }
+            if !self.lib.anime[idx].episodes.contains(&t.id) { self.lib.anime[idx].episodes.push(t.id.clone()); }
+            self.lib.tracks.insert(t.id.clone(), t);
+        }
+        self.sort_anime(&id);
+        self.save();
+        (id, is_new)
+    }
+
+    /// Серии по номерам.
+    pub fn sort_anime(&mut self, id: &str) {
+        let Some(a) = self.lib.anime.iter().find(|a| a.id == id) else { return };
+        let mut eps: Vec<Track> = a.episodes.iter().filter_map(|e| self.lib.tracks.get(e).cloned()).collect();
+        crate::anime::sort_episodes(&mut eps);
+        let ids = eps.into_iter().map(|t| t.id).collect();
+        if let Some(a) = self.anime_mut(id) { a.episodes = ids; }
+    }
+
+    /// Обновить исполнителя у серий (после того как с Шикимори пришло русское название).
+    pub fn retitle_episodes(&mut self, id: &str) {
+        let Some(a) = self.anime(id).cloned() else { return };
+        for e in &a.episodes {
+            if let Some(t) = self.lib.tracks.get_mut(e) { t.artist = a.display().to_string(); t.cover = a.poster.clone(); }
+        }
+    }
+
+    pub fn delete_anime(&mut self, id: &str) {
+        if let Some(a) = self.anime(id).cloned() {
+            for e in &a.episodes { self.lib.tracks.remove(e); }
+        }
+        self.lib.anime.retain(|a| a.id != id);
+        self.save();
+    }
+
+    /// Серия просмотрена / нет.
+    pub fn mark_episode(&mut self, track_id: &str, watched: bool) {
+        let Some(aid) = self.lib.tracks.get(track_id).and_then(|t| t.anime.clone()) else { return };
+        if let Some(a) = self.anime_mut(&aid) {
+            if watched && !a.watched.iter().any(|w| w == track_id) { a.watched.push(track_id.to_string()); }
+            if !watched { a.watched.retain(|w| w != track_id); }
+        }
+        self.save();
+    }
+
+    /// Запомнить, где остановились (серия и позиция).
+    pub fn set_progress(&mut self, track_id: &str, pos: f64) {
+        let Some(aid) = self.lib.tracks.get(track_id).and_then(|t| t.anime.clone()) else { return };
+        if let Some(a) = self.anime_mut(&aid) { a.last = Some(track_id.to_string()); a.last_pos = pos; }
+        self.save();
     }
 }
 

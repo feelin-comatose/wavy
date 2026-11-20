@@ -315,7 +315,7 @@ fn to_track(e: &Value, parent: &Value, is_music: bool) -> Track {
             url: Some(format!("{host}/watch?v={id}")),
             cover: Some(format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
             video_id: Some(id), title, artist: if artist.is_empty() { "YouTube".into() } else { artist },
-            album, duration, added_at: now_ms(), video: false,
+            album, duration, added_at: now_ms(), video: false, anime: None, episode: None,
         };
     }
     let url = s(e, "webpage_url").or_else(|| s(e, "url")).or_else(|| s(parent, "webpage_url")).unwrap_or_default();
@@ -324,7 +324,7 @@ fn to_track(e: &Value, parent: &Value, is_music: bool) -> Track {
         id: format!("ext_{}", sha16(url.as_bytes())), kind: "stream".into(), path: None, video_id: None,
         title: if title.is_empty() { url.clone() } else { title }, url: Some(url),
         artist: if artist.is_empty() { s(e, "extractor_key").unwrap_or_else(|| "Stream".into()) } else { artist },
-        album, duration, cover, added_at: now_ms(), video: false,
+        album, duration, cover, added_at: now_ms(), video: false, anime: None, episode: None,
     }
 }
 

@@ -79,7 +79,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wavy-sync-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut s = Store::open(&dir);
-        let yt = |id: &str| Track { id: format!("yt_{id}"), kind: "youtube".into(), path: None, video_id: Some(id.into()), url: None, title: id.into(), artist: "A".into(), album: String::new(), duration: 1.0, cover: None, added_at: 1, video: false };
+        let yt = |id: &str| Track { id: format!("yt_{id}"), kind: "youtube".into(), path: None, video_id: Some(id.into()), url: None, title: id.into(), artist: "A".into(), album: String::new(), duration: 1.0, cover: None, added_at: 1, video: false, anime: None, episode: None };
         let mut local = yt("x"); local.id = "loc_1".into(); local.kind = "local".into(); local.path = Some("C:/m.mp3".into());
         s.add_tracks(vec![yt("aaaaaaaaaaa"), local]);
         s.create_playlist("Mix", vec!["yt_aaaaaaaaaaa".into(), "loc_1".into()], None);

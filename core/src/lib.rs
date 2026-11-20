@@ -1,8 +1,12 @@
 //! Общее ядро Wavy: библиотека, импорт, YouTube (yt-dlp), Discord RPC, сервер оверлея.
-//! Используется и Tauri-версией, и нативной (egui).
+//! Используется нативной версией (egui).
+pub mod anime;
 pub mod discord;
 pub mod local;
+pub mod media;
 pub mod overlay;
+pub mod shazam;
+pub mod shikimori;
 pub mod spotify;
 pub mod stream;
 pub mod sync;
@@ -38,6 +42,11 @@ pub struct Track {
     /// Локальный видеофайл (mp4/m4v/mov). У YouTube-треков видео есть всегда (по video_id).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub video: bool,
+    /// Серия аниме: id тайтла (такие треки живут в разделе «Аниме», а не в музыке).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<f32>,
 }
 
 impl Track {

@@ -16,6 +16,7 @@ raw-window-handle = "0.6"
 openh264 = "0.9"
 symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
 mp4 = "0.14"
+matroska-demuxer = "0.8"
 self-replace = "1.5"
 url = "2"
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
