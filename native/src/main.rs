@@ -2198,6 +2198,22 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
             }
             Err(e) => wavy_core::log(&format!("rustypipe «{}»: {e} — пробую yt-dlp", t.title)),
         }
+        // yt-dlp потоком: играем, пока он качает (с 2025 года ссылки rustypipe YouTube часто отклоняет — 403)
+        let t0 = std::time::Instant::now();
+        match yt.stream_audio(t, &path) {
+            Ok(dl) => {
+                if dl.wait_for(200 * 1024, Duration::from_secs(40)) {
+                    wavy_core::log(&format!("«{}»: поток yt-dlp пошёл через {:.1} с", t.title, t0.elapsed().as_secs_f32()));
+                    return Ok(AudioSrc::Stream(dl));
+                }
+                let e = dl.error().unwrap_or_else(|| "долго нет данных".into());
+                dl.cancel();
+                // видео пропало — дальше качать бессмысленно, пусть ищется замена
+                if gone_from_youtube(&e) { return Err(e); }
+                wavy_core::log(&format!("поток yt-dlp «{}» не пошёл: {e} — качаю целиком", t.title));
+            }
+            Err(e) => wavy_core::log(&format!("yt-dlp потоком «{}»: {e}", t.title)),
+        }
     }
     yt.download_audio(t, cache).map(AudioSrc::File)
 }

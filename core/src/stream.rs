@@ -70,6 +70,64 @@ impl Download {
         d
     }
 
+    /// Загрузка из вывода процесса (yt-dlp -o -): размер неизвестен, конец — когда процесс закрыл вывод.
+    /// Если идёт загрузка этого же файла — присоединяемся к ней (процесс тогда не нужен и завершается).
+    pub fn pipe(mut child: std::process::Child, path: PathBuf) -> Self {
+        let mut act = active().lock().unwrap();
+        if let Some(d) = act.get(&path) {
+            let st = d.shared.0.lock().unwrap();
+            if !st.cancel && st.error.is_none() { drop(st); let _ = child.kill(); let _ = child.wait(); return d.clone(); }
+        }
+        let _ = std::fs::remove_file(marker(&path));
+        let d = Self { shared: Arc::new((Mutex::new(State::default()), Condvar::new())), path };
+        act.insert(d.path.clone(), d.clone());
+        drop(act);
+        let me = d.clone();
+        std::thread::Builder::new().name("stream-pipe".into()).spawn(move || {
+            let r = me.run_pipe(&mut child);
+            let _ = child.kill();
+            let status = child.wait();
+            let mut err_text = || {
+                let mut e = String::new();
+                if let Some(mut se) = child.stderr.take() { let _ = se.read_to_string(&mut e); }
+                let lines: Vec<&str> = e.lines().filter(|l| l.contains("ERROR")).collect();
+                if lines.is_empty() { e.trim().to_string() } else { lines.join("\n") }
+            };
+            let (m, cv) = &*me.shared;
+            let mut st = m.lock().unwrap();
+            let ok = r.is_ok() && st.downloaded > 0 && status.as_ref().is_ok_and(|s| s.success());
+            if ok {
+                st.done = true;
+                st.total = Some(st.downloaded);
+                let _ = File::create(marker(&me.path));
+            } else {
+                let e = r.err().unwrap_or_else(|| { let t = err_text(); if t.is_empty() { "yt-dlp ничего не отдал".into() } else { t } });
+                if !st.cancel { crate::log(&format!("поток yt-dlp {}: {e}", me.path.display())); }
+                st.error = Some(e);
+            }
+            cv.notify_all();
+            drop(st);
+            active().lock().unwrap().remove(&me.path);
+        }).ok();
+        d
+    }
+
+    fn run_pipe(&self, child: &mut std::process::Child) -> Result<(), String> {
+        let mut out = child.stdout.take().ok_or("нет вывода")?;
+        let mut f = File::create(&self.path).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            if self.shared.0.lock().unwrap().cancel { return Err("отменено".into()); }
+            let n = out.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            let (m, cv) = &*self.shared;
+            m.lock().unwrap().downloaded += n as u64;
+            cv.notify_all();
+        }
+        f.flush().map_err(|e| e.to_string())
+    }
+
     fn run(&self, url: &str) -> Result<(), String> {
         let mut f = File::create(&self.path).map_err(|e| e.to_string())?;
         let mut pos = 0u64;

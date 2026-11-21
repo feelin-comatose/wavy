@@ -252,10 +252,37 @@ impl YouTube {
         Ok(stream)
     }
 
+    /// Звук потоком через yt-dlp (-o -): он сам проходит защиту YouTube (deno), а мы играем с первых
+    /// килобайт, пока остальное докачивается в `path`. Только m4a (AAC) — его декодирует symphonia.
+    pub fn stream_audio(&self, track: &Track, path: &Path) -> Result<crate::stream::Download, String> {
+        use std::process::Stdio;
+        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let bin = self.ensure_binary(&|_| {})?;
+        self.ensure_deno_background();
+        // deno нужен для подписи ссылок; если он ещё качается — подождём немного
+        self.wait_deno(std::time::Duration::from_secs(60));
+        let mut c = cmd(&bin);
+        if let Some(d) = self.deno_path() { c.arg("--js-runtimes").arg(format!("deno:{d}")); }
+        c.args(["-f", "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]", "--no-playlist", "--no-warnings", "--no-progress", "--quiet",
+                "--no-part", "--match-filter", "!is_live", "-o", "-", &key])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = c.spawn().map_err(|e| format!("yt-dlp не запустился: {e}"))?;
+        Ok(crate::stream::Download::pipe(child, path.to_path_buf()))
+    }
+
+    /// Один трек не качаем двумя yt-dlp сразу (предзагрузка + воспроизведение): в Windows второй
+    /// не может переименовать .part, пока его держит первый («WinError 32»). Второй ждёт первого.
+    fn key_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        static LOCKS: std::sync::OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = std::sync::OnceLock::new();
+        LOCKS.get_or_init(Default::default).lock().unwrap().entry(key.to_string()).or_default().clone()
+    }
+
     /// Скачать аудио в кэш (для нативного плеера). Возвращает путь к файлу.
     /// Берём m4a (AAC) — его умеет декодировать symphonia.
     pub fn download_audio(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
         let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let lock = self.key_lock(&format!("a:{key}"));
+        let _guard = lock.lock().unwrap();
         let _ = std::fs::create_dir_all(cache);
         let stem = sha16(key.as_bytes());
         if let Some(p) = std::fs::read_dir(cache).ok().and_then(|rd| rd.flatten().map(|e| e.path())
@@ -283,6 +310,8 @@ impl YouTube {
     /// его умеет встроенный декодер, и он не грузит процессор.
     pub fn download_video(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
         let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let lock = self.key_lock(&format!("v:{key}"));
+        let _guard = lock.lock().unwrap();
         let _ = std::fs::create_dir_all(cache);
         let path = cache.join(format!("{}.video.mp4", sha16(key.as_bytes())));
         if path.exists() { return Ok(path); }
