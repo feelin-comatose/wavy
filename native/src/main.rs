@@ -73,6 +73,9 @@ enum Bg {
     Changes(Result<Vec<(String, String)>, String>),
     Lyrics(String, Result<wavy_core::lyrics::Lyrics, String>),
     Radio(String, Result<Vec<Track>, String>),
+    Skips(String, Vec<wavy_core::aniskip::Skip>),
+    /// вход/синхронизация с Шикимори: обновлённый аккаунт (токены) или ошибка
+    Shiki(Result<wavy_core::shikimori::Account, String>, bool),
 }
 
 enum Modal {
@@ -206,6 +209,12 @@ struct App {
     lyrics: Option<(String, Option<Result<wavy_core::lyrics::Lyrics, String>>)>,
     lyrics_line: Option<usize>,
     stats_period: u8,
+    skips: Option<(String, Vec<wavy_core::aniskip::Skip>)>,
+    auto_skipped: HashSet<String>,
+    /// «следующая серия через…»: (серия, когда переключить); серия, где человек выбрал остаться
+    next_ep: Option<(String, Instant)>,
+    stay_ep: Option<String>,
+    shiki_code: String,
     /// трек, для которого уже начат кроссфейд
     xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
@@ -266,7 +275,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -1063,6 +1072,14 @@ impl App {
                     Ok(_) => self.toast("Похожих треков не нашлось", true),
                     Err(e) => self.toast(format!("Радио не собралось: {e}"), true),
                 },
+                Bg::Skips(id, v) => if let Some((cur, slot)) = &mut self.skips { if *cur == id { *slot = v; } },
+                Bg::Shiki(r, login) => match r {
+                    Ok(acc) => {
+                        if login { self.toast(format!("Шикимори: вошёл как {}", acc.nickname), false); self.shiki_code.clear(); }
+                        self.store.lock().unwrap().patch_settings(&json!({ "shiki": acc }));
+                    }
+                    Err(e) => self.toast(e, true),
+                },
                 Bg::Changes(r) => if let Some(Modal::WhatsNew { items, .. }) = &mut self.modal { *items = Some(r); },
                 Bg::Exported(r) => {
                     self.exporting = false;
@@ -1191,8 +1208,10 @@ impl App {
                 let id = t.id.clone();
                 self.store.lock().unwrap().mark_episode(&id, true);
                 self.watched_mark = Some(id);
+                self.shiki_sync(t.anime.clone().unwrap_or_default(), ctx);
             }
         }
+        self.anime_tick(ctx);
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
         self.audio.poll();
         if self.audio.buffering() { ctx.request_repaint_after(Duration::from_millis(200)); }
@@ -2122,6 +2141,7 @@ impl App {
         // озвучка / субтитры / Shazam — в оконном режиме всегда, в полноэкранном — когда двигали мышью
         let moved = ui.input(|i| i.pointer.time_since_last_movement()) < 2.5;
         if !self.fullscreen || moved { self.video_controls(ui, area, &t, acts); }
+        if t.anime.is_some() { self.anime_overlay(ui, area, acts); }
         // кнопка «во весь экран» и подсказка
         let btn = Rect::from_min_size(area.right_top() + Vec2::new(-46.0, 12.0), Vec2::splat(34.0));
         let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
@@ -2190,6 +2210,93 @@ impl App {
             }
         }
         if ui.add(chip("\u{E802}  Что за песня?".into())).on_hover_text("Shazam: узнать опенинг/эндинг и добавить в библиотеку").clicked() { acts.push(Act::Shazam); }
+    }
+
+    /// Серия аниме: загрузить отрезки опенинга/эндинга, пропускать их, предлагать следующую серию.
+    fn anime_tick(&mut self, ctx: &egui::Context) {
+        let Some(t) = self.current.clone().filter(|t| t.anime.is_some()) else { self.next_ep = None; return };
+        if self.skips.as_ref().map(|s| &s.0) != Some(&t.id) {
+            self.skips = Some((t.id.clone(), Vec::new()));
+            self.next_ep = None;
+            let a = self.store.lock().unwrap().anime(t.anime.as_deref().unwrap_or_default()).cloned();
+            if let (Some(mal), Some(ep)) = (a.and_then(|a| a.shiki_id), t.episode) {
+                let (tx, c, dir, id, len) = (self.tx.clone(), ctx.clone(), wavy_core::data_dir().join("aniskip"), t.id.clone(), t.duration);
+                std::thread::spawn(move || {
+                    match wavy_core::aniskip::fetch(mal, ep.round() as u32, len, &dir) {
+                        Ok(v) => { let _ = tx.send(Bg::Skips(id, v)); }
+                        Err(e) => wavy_core::log(&format!("aniskip: {e}")),
+                    }
+                    c.request_repaint();
+                });
+            }
+        }
+        let st = self.settings();
+        let pos = self.audio.position();
+        let has_next = self.qi + 1 < self.queue.len();
+        let skips = self.skips.as_ref().map(|s| s.1.clone()).unwrap_or_default();
+        for s in &skips {
+            let inside = pos >= s.start && pos < s.end - 3.0;
+            // эндинг перед следующей серией — предложим её; иначе (опенинг и т.п.) сами пропускаем, если включено
+            if s.is_ed() && has_next && st.anime_next {
+                if inside && self.next_ep.is_none() && self.stay_ep.as_deref() != Some(t.id.as_str()) && self.audio.is_playing() {
+                    self.next_ep = Some((t.id.clone(), Instant::now() + Duration::from_secs(10)));
+                }
+            } else if inside && st.anime_autoskip && self.audio.is_playing() {
+                let key = format!("{}:{}", t.id, s.start as i64);
+                if self.auto_skipped.insert(key) { self.audio.seek(s.end); if let Some((_, v)) = &mut self.video { v.seek(s.end); } self.toast(format!("Пропустил {}", s.label()), false); }
+            }
+        }
+        if let Some((id, at)) = self.next_ep.clone() {
+            if id != t.id { self.next_ep = None; }
+            else if Instant::now() >= at { self.next_ep = None; self.next(false, ctx); }
+            else { ctx.request_repaint_after(Duration::from_millis(250)); }
+        }
+    }
+
+    /// Отметить на Шикимори, сколько серий тайтла просмотрено.
+    fn shiki_sync(&mut self, anime_id: String, ctx: &egui::Context) {
+        let mut acc = self.settings().shiki;
+        if !acc.logged_in() { return; }
+        let Some(a) = self.store.lock().unwrap().anime(&anime_id).cloned() else { return };
+        let Some(sid) = a.shiki_id else { return };
+        let eps = { let s = self.store.lock().unwrap(); a.watched.iter().filter_map(|w| s.lib.tracks.get(w).and_then(|t| t.episode)).fold(0f32, f32::max) as u32 };
+        if eps == 0 { return; }
+        let (tx, c) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = wavy_core::shikimori::set_progress(&mut acc, sid, eps, a.episodes_total).map(|_| acc);
+            if let Err(e) = &r { wavy_core::log(&format!("шикимори: {e}")); }
+            let _ = tx.send(Bg::Shiki(r, false));
+            c.request_repaint();
+        });
+    }
+
+    /// Кнопка «Пропустить опенинг» и карточка «Следующая серия через…» поверх видео.
+    fn anime_overlay(&mut self, ui: &mut egui::Ui, area: Rect, acts: &mut Vec<Act>) {
+        let pos = self.audio.position();
+        let p = ui.painter().clone();
+        let corner = area.right_bottom() - Vec2::new(24.0, 90.0);
+        if let Some((_, at)) = &self.next_ep {
+            let left = at.saturating_duration_since(Instant::now()).as_secs() + 1;
+            // сверху справа — внизу субтитры
+            let top = area.right_top() + Vec2::new(-24.0, 60.0);
+            let card = Rect::from_min_max(Pos2::new(top.x - 300.0, top.y), Pos2::new(top.x, top.y + 80.0));
+            p.rect_filled(card, 14, Color32::from_black_alpha(220));
+            p.rect_stroke(card, 14, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+            p.text(card.left_top() + Vec2::new(16.0, 14.0), Align2::LEFT_TOP, format!("Следующая серия через {left} с"), FontId::new(15.0, semi()), TEXT);
+            let mut c = ui.new_child(egui::UiBuilder::new().max_rect(card.shrink2(Vec2::new(14.0, 10.0)).with_min_y(card.top() + 40.0)).layout(Layout::left_to_right(Align::Center)));
+            if pill(&mut c, "Смотреть", true).clicked() { self.next_ep = None; acts.push(Act::Next); }
+            if pill(&mut c, "Остаться", false).clicked() { self.stay_ep = self.current.as_ref().map(|t| t.id.clone()); self.next_ep = None; }
+            return;
+        }
+        let skip = self.skips.as_ref().and_then(|s| s.1.iter().find(|k| pos >= k.start - 0.5 && pos < k.end - 2.0).cloned());
+        let (label, to) = match skip {
+            Some(k) => (format!("\u{E5A6}  Пропустить {}", k.label()), k.end),
+            // данных нет — обычный опенинг длится 1:30, даём прыжок в начале серии
+            None if self.skips.as_ref().is_some_and(|s| s.1.is_empty()) && pos > 1.0 && pos < 240.0 => ("\u{E5A6}  +85 с".to_string(), pos + 85.0),
+            None => return,
+        };
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(corner - Vec2::new(300.0, 40.0), corner)).layout(Layout::right_to_left(Align::Max)));
+        if pill(&mut c, &label, true).clicked() { acts.push(Act::Seek(to)); }
     }
 
     fn stats_page(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -2649,6 +2756,39 @@ impl App {
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
 
+                        section(ui, "\u{E754}  Аниме");
+                        let mut a = s.anime_autoskip;
+                        if ui.checkbox(&mut a, "Сам пропускать опенинги (время берётся из AniSkip)").changed() { acts.push(Act::Settings(json!({"animeAutoskip": a}))); }
+                        let mut n = s.anime_next;
+                        if ui.checkbox(&mut n, "На эндинге предлагать следующую серию").changed() { acts.push(Act::Settings(json!({"animeNext": n}))); }
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Шикимори: отмечать просмотренные серии в твоём списке").family(semi()));
+                        let acc = s.shiki.clone();
+                        if acc.logged_in() {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Вошёл как {}", acc.nickname)).color(OK));
+                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"shiki": wavy_core::shikimori::Account { client_id: acc.client_id.clone(), client_secret: acc.client_secret.clone(), ..Default::default() }}))); }
+                            });
+                        } else {
+                            ui.label(RichText::new("1) На shikimori.io/oauth/applications создай приложение: название Wavy, Redirect URI — urn:ietf:wg:oauth:2.0:oob, доступ user_rates. 2) Вставь сюда его Client ID и Client Secret. 3) Нажми «Войти», разреши доступ и вставь код со страницы.").color(MUTED).size(12.0));
+                            let (mut id, mut sec) = (acc.client_id.clone(), acc.client_secret.clone());
+                            ui.horizontal(|ui| {
+                                ui.label("Client ID");
+                                if ui.add(egui::TextEdit::singleline(&mut id).desired_width(300.0)).changed() { acts.push(Act::Settings(json!({"shiki": {"clientId": id.trim()}}))); }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Client Secret");
+                                if ui.add(egui::TextEdit::singleline(&mut sec).password(true).desired_width(280.0)).changed() { acts.push(Act::Settings(json!({"shiki": {"clientSecret": sec.trim()}}))); }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn("Войти", false)).clicked() { open_url(&wavy_core::shikimori::authorize_url(&acc.client_id)); }
+                                ui.add(egui::TextEdit::singleline(&mut self.shiki_code).hint_text("код со страницы Шикимори").desired_width(200.0));
+                                if ui.add_enabled(!self.shiki_code.trim().is_empty() && !acc.client_secret.is_empty(), pill_btn("Подтвердить", true)).clicked() {
+                                    let (mut acc, code, tx, c) = (acc.clone(), self.shiki_code.clone(), self.tx.clone(), ui.ctx().clone());
+                                    std::thread::spawn(move || { let r = wavy_core::shikimori::login(&mut acc, &code).map(|_| acc); let _ = tx.send(Bg::Shiki(r, true)); c.request_repaint(); });
+                                }
+                            });
+                        }
                         section(ui, "\u{E58C}  Видео");
                         ui.label(RichText::new("H.264 показывается встроенным декодером. Для HEVC (H.265), 10-битного видео, VP9, AV1 и звука Opus/AC3/DTS Wavy один раз скачивает свой маленький ffmpeg (≈6 МБ) — сам, когда такое видео встретится. Если видеокарта умеет этот формат, декодирует она.").color(MUTED).size(12.5));
                         match self.ff.state() {

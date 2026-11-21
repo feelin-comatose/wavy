@@ -168,3 +168,96 @@ mod tests {
         assert_eq!(best_match("Совсем другое", None, 3, &list), None);
     }
 }
+
+// ---------- аккаунт: отмечать просмотренные серии в списке на Шикимори ----------
+//
+// Шикимори пускает только зарегистрированные приложения: человек создаёт своё на
+// shikimori.io/oauth/applications (Redirect URI: urn:ietf:wg:oauth:2.0:oob) и вставляет в Wavy
+// его Client ID и Client Secret. Вход — код со страницы Шикимори, дальше токены обновляются сами.
+
+pub const OOB: &str = "urn:ietf:wg:oauth:2.0:oob";
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Account {
+    pub client_id: String,
+    pub client_secret: String,
+    pub access: String,
+    pub refresh: String,
+    /// когда истекает access, мс
+    pub expires: u64,
+    pub user_id: u64,
+    pub nickname: String,
+}
+
+impl Account {
+    pub fn logged_in(&self) -> bool { !self.refresh.is_empty() && self.user_id > 0 }
+}
+
+/// Страница входа на Шикимори (там человек нажимает «Разрешить» и получает код).
+pub fn authorize_url(client_id: &str) -> String {
+    format!("{}/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope=user_rates", HOSTS[0],
+        url::form_urlencoded::byte_serialize(client_id.as_bytes()).collect::<String>(), url::form_urlencoded::byte_serialize(OOB.as_bytes()).collect::<String>())
+}
+
+fn token(acc: &mut Account, form: &[(&str, &str)]) -> Result<(), String> {
+    let body: String = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(form).finish();
+    let mut r = crate::http().post(&format!("{}/oauth/token", HOSTS[0])).header("User-Agent", UA_APP).header("Content-Type", "application/x-www-form-urlencoded")
+        .send(body).map_err(|e| format!("Шикимори не принял вход: {e}"))?;
+    let v: Value = serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    acc.access = v["access_token"].as_str().ok_or("Шикимори не выдал токен")?.to_string();
+    if let Some(rt) = v["refresh_token"].as_str() { acc.refresh = rt.to_string(); }
+    acc.expires = crate::now_ms() + v["expires_in"].as_u64().unwrap_or(86_400) * 1000 - 60_000;
+    Ok(())
+}
+
+/// Шикимори требует, чтобы User-Agent совпадал с названием приложения — просим назвать его «Wavy».
+const UA_APP: &str = "Wavy";
+
+/// Обменять код со страницы входа на токены и узнать, кто вошёл.
+pub fn login(acc: &mut Account, code: &str) -> Result<(), String> {
+    let (id, secret) = (acc.client_id.clone(), acc.client_secret.clone());
+    token(acc, &[("grant_type", "authorization_code"), ("client_id", &id), ("client_secret", &secret), ("code", code.trim()), ("redirect_uri", OOB)])?;
+    let me = api(acc, "GET", "/api/users/whoami", None)?;
+    acc.user_id = me["id"].as_u64().ok_or("Шикимори не сказал, кто вошёл")?;
+    acc.nickname = me["nickname"].as_str().unwrap_or("").to_string();
+    Ok(())
+}
+
+fn api(acc: &mut Account, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+    if acc.expires <= crate::now_ms() && !acc.refresh.is_empty() {
+        let (id, secret, rt) = (acc.client_id.clone(), acc.client_secret.clone(), acc.refresh.clone());
+        token(acc, &[("grant_type", "refresh_token"), ("client_id", &id), ("client_secret", &secret), ("refresh_token", &rt)])?;
+    }
+    let url = format!("{}{path}", HOSTS[0]);
+    let auth = format!("Bearer {}", acc.access);
+    let a = crate::http();
+    let r = match (method, body) {
+        ("GET", _) => a.get(&url).header("User-Agent", UA_APP).header("Authorization", &auth).call(),
+        ("POST", Some(b)) => a.post(&url).header("User-Agent", UA_APP).header("Authorization", &auth).header("Content-Type", "application/json").send(b.to_string()),
+        ("PATCH", Some(b)) => a.patch(&url).header("User-Agent", UA_APP).header("Authorization", &auth).header("Content-Type", "application/json").send(b.to_string()),
+        _ => return Err("неизвестный запрос".into()),
+    };
+    let mut r = r.map_err(|e| format!("Шикимори: {e}"))?;
+    let t = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str(&t).unwrap_or(Value::Null))
+}
+
+/// Записать в список на Шикимори: просмотрено `episodes` серий (все — «просмотрено», иначе «смотрю»).
+pub fn set_progress(acc: &mut Account, anime_id: u64, episodes: u32, total: u32) -> Result<(), String> {
+    let status = if total > 0 && episodes >= total { "completed" } else { "watching" };
+    let existing = api(acc, "GET", &format!("/api/v2/user_rates?user_id={}&target_id={anime_id}&target_type=Anime", acc.user_id), None)?;
+    let rate = existing.as_array().and_then(|a| a.first()).cloned();
+    match rate {
+        Some(r) => {
+            // не откатываем назад, если на сайте уже больше
+            if r["episodes"].as_u64().unwrap_or(0) as u32 >= episodes && r["status"] != "planned" { return Ok(()); }
+            let id = r["id"].as_u64().ok_or("непонятный ответ Шикимори")?;
+            api(acc, "PATCH", &format!("/api/v2/user_rates/{id}"), Some(json!({ "user_rate": { "episodes": episodes, "status": status } })))?;
+        }
+        None => {
+            api(acc, "POST", "/api/v2/user_rates", Some(json!({ "user_rate": { "user_id": acc.user_id, "target_id": anime_id, "target_type": "Anime", "episodes": episodes, "status": status } })))?;
+        }
+    }
+    Ok(())
+}

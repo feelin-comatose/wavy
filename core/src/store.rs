@@ -75,10 +75,14 @@ pub struct Settings {
     pub normalize: bool,
     pub eq_on: bool,
     pub eq: [f32; 10],
+    /// Аниме: сам пропускать опенинги (по AniSkip), предлагать следующую серию на эндинге, аккаунт Шикимори.
+    pub anime_autoskip: bool,
+    pub anime_next: bool,
+    pub shiki: crate::shikimori::Account,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10] }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default() }
     }
 }
 
