@@ -12,6 +12,9 @@ import app.wavy.android.data.Store
 import app.wavy.android.data.Track
 import app.wavy.android.player.PlayerConn
 import app.wavy.android.ui.AppState
+import app.wavy.android.ui.AnimeScreen
+import app.wavy.android.ui.ShazamDialog
+import app.wavy.android.data.Shazam
 import app.wavy.android.ui.Bg
 import app.wavy.android.ui.FullPlayer
 import app.wavy.android.ui.LibraryScreen
@@ -68,4 +71,20 @@ class ScreenshotTest {
     @Test fun search() = shot("4-search") { SearchScreen {} }
     @Test fun player() = shot("5-player") { FullPlayer {} }
     @Test fun settings() = shot("6-settings") { SettingsScreen({}, {}, {}, {}) }
+
+    private fun animeData() {
+        val eps = (1..4).map { Track("and_v_$it", "local", path = "content://x/$it", title = "[SubsPlease] Sousou no Frieren - 0$it (1080p)", duration = 1440.0, video = true) }
+        Store.addTracks(eps)
+        Store.addEpisodes(eps.associate { it.id to (it.title to "Frieren") })
+        val a = Store.lib.value.anime.first()
+        Store.editAnime(a.id) { it.copy(russian = "Провожающая в последний путь Фрирен", name = "Sousou no Frieren", kind = "tv", year = 2023, episodesTotal = 28, score = 9.3, matched = true) }
+        Store.markWatched("and_v_1")
+    }
+
+    @Test fun anime() { animeData(); shot("7-anime") { AnimeScreen(null, {}, {}, {}, {}) } }
+    @Test fun animeTitle() { animeData(); shot("8-anime-title") { AnimeScreen(Store.lib.value.anime.first().id, {}, {}, {}, {}) } }
+    @Test fun shazam() {
+        AppState.shazam.value = AppState.Shz.Found(Shazam.Found("Yuusha", "YOASOBI", null, null))
+        shot("9-shazam") { ShazamDialog {} }
+    }
 }

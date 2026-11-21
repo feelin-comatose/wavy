@@ -1,5 +1,8 @@
 package app.wavy.android
 
+import app.wavy.android.data.AnimeParse
+import app.wavy.android.data.Shazam
+import app.wavy.android.data.Shikimori
 import app.wavy.android.data.Store
 import app.wavy.android.data.Sync
 import app.wavy.android.data.Track
@@ -59,5 +62,60 @@ class LogicTest {
         val desktop = """{"wavyExport":1,"app":"desktop","playlists":[{"name":"Desk","tracks":[{"id":"yt_bbbbbbbbbbb","type":"youtube","videoId":"bbbbbbbbbbb","title":"B","artist":"Y","duration":5.0,"addedAt":1,"futureField":true}]}],"tracks":[]}"""
         Sync.import(desktop)
         assertNotNull(Store.track("yt_bbbbbbbbbbb"))
+    }
+
+    private fun p(s: String) = AnimeParse.parseName(s).let { Triple(it.title, it.episode, it.season) }
+
+    /** Те же случаи, что в тестах версии для ПК (core/src/anime.rs). */
+    @Test fun animeFansubNames() {
+        assertEquals(Triple("Sousou no Frieren", 1.0, null), p("[SubsPlease] Sousou no Frieren - 01 (1080p) [ABCD1234]"))
+        assertEquals(Triple("Kimetsu no Yaiba - Hashira Geiko-hen", 8.0, null), p("[Erai-raws] Kimetsu no Yaiba - Hashira Geiko-hen - 08 [1080p][Multiple Subtitle][F2A7C0D1]"))
+        assertEquals(Triple("Jujutsu Kaisen", 12.0, null), p("[AniLibria.TV] Jujutsu Kaisen - 12 [WEBRip 1080p]"))
+        assertEquals(Triple("Jujutsu Kaisen", 5.0, null), p("Jujutsu_Kaisen_-_05_[AniLibria.TV]_[WEBRip_1080p]"))
+        assertEquals(Triple("Jujutsu Kaisen", 1.0, null), p("Jujutsu_Kaisen_[01]_[AniLibria_TV]_[WEBRip_1080p_HEVC]"))
+        assertEquals(Triple("Chainsaw Man", 5.0, null), p("[AniLibria.TV] Chainsaw Man [05 из 12] [1080p]"))
+        assertEquals(Triple("Shingeki no Kyojin", 16.0, 4), p("[Judas] Shingeki no Kyojin - S04E16v2 [1080p][HEVC x265 10bit]"))
+        assertEquals(Triple("Spy x Family", 3.0, 2), p("Spy.x.Family.S02E03.1080p.WEB-DL.AAC.x264"))
+        assertEquals(Triple("Mushoku Tensei S2", 13.0, 2), p("[SubsPlease] Mushoku Tensei S2 - 13 (1080p) [0B3A1B7C]"))
+        assertEquals(Triple("One Piece", 1100.0, null), p("[SubsPlease] One Piece - 1100 (1080p) [ABCDEF12]"))
+        assertEquals(Triple("Oshi no Ko", 11.5, null), p("[Group] Oshi no Ko - 11.5 (1080p)"))
+        assertEquals(Triple("Chainsaw Man", 3.0, null), p("Chainsaw Man Episode 3"))
+        assertEquals(Triple("Chainsaw Man", 3.0, null), p("Chainsaw Man 03"))
+        assertEquals(Triple("Атака титанов", 7.0, null), p("Атака титанов - Серия 7"))
+        assertEquals(Triple("Атака титанов", 7.0, null), p("07. Атака титанов"))
+        assertEquals(Triple("Kimi no Na wa", null, null), p("Kimi no Na wa (2016) [BDRip 1080p]"))
+        assertEquals("Dr. Stone", p("Dr. Stone - 05 [1080p]").first)
+        // название из папки, если в имени файла только номер
+        assertEquals("Тетрадь смерти", AnimeParse.parse("05", "Тетрадь смерти").title)
+        assertEquals(AnimeParse.key(AnimeParse.parseName("[A] Mushoku Tensei S2 - 01")), AnimeParse.key(AnimeParse.parseName("[B] Mushoku Tensei Season 2 - 02")))
+        assertEquals("Mushoku Tensei 2", AnimeParse.searchQuery(AnimeParse.parseName("[SubsPlease] Mushoku Tensei S2 - 13 (1080p)")))
+    }
+
+    @Test fun shikimoriPicksRightSeason() {
+        fun a(id: Long, name: String, ru: String, kind: String, eps: Int) = Shikimori.Hit(id, name, ru, "", "", emptyList(), kind, eps, 0.0, 0, null, "")
+        val list = listOf(a(1, "Sousou no Frieren", "Провожающая в последний путь Фрирен", "tv", 28), a(2, "Sousou no Frieren: ●● no Mahou", "", "ona", 24), a(3, "Sousou no Frieren 2nd Season", "Провожающая в последний путь Фрирен 2", "tv", 10))
+        assertEquals(1L, Shikimori.bestMatch("Sousou no Frieren", null, 12, list)?.id)
+        assertEquals(3L, Shikimori.bestMatch("Sousou no Frieren", 2, 10, list)?.id)
+        assertNull(Shikimori.bestMatch("Совсем другое", null, 3, list))
+    }
+
+    /** Отпечаток Shazam совпадает с версией для ПК (core/src/shazam.rs, тест vector::dump). */
+    @Test fun shazamMatchesDesktop() {
+        var x = 12345
+        val sig = FloatArray(Shazam.RATE * 4) { i ->
+            x = x * 1103515245 + 12345
+            val noise = ((x ushr 16) and 0x7ff) - 1024
+            val period = 16 + (i / 4000) % 40
+            val sq = if ((i / period) % 2 == 0) 6000 else -6000
+            (sq + noise) / 32768f
+        }
+        val ours = Shazam.signature(sig)
+        val hex = javaClass.classLoader!!.getResource("shazam_desktop.hex")!!.readText().trim()
+        val desktop = ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+        assertEquals(desktop.size, ours.size)
+        val diff = desktop.indices.count { desktop[it] != ours[it] }
+        // заголовок (кроме CRC) — один в один; в пиках допускаем редкие расхождения в последнем бите округления
+        assertTrue("различий: $diff", diff < desktop.size / 50 + 8)
+        assertEquals(desktop.copyOfRange(8, 48).toList(), ours.copyOfRange(8, 48).toList())
     }
 }

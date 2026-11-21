@@ -1,7 +1,11 @@
 package app.wavy.android.ui
 
 import android.content.Context
+import app.wavy.android.data.AnimeParse
 import app.wavy.android.data.LocalScanner
+import app.wavy.android.data.Shazam
+import app.wavy.android.data.Shikimori
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import app.wavy.android.data.Store
 import app.wavy.android.data.Sync
 import app.wavy.android.data.Track
@@ -44,7 +48,95 @@ object AppState {
     fun scanLocal(ctx: Context) = bg("Ищу музыку и видео на телефоне…") {
         val found = withContext(Dispatchers.IO) { LocalScanner.scan(ctx) }
         Store.addTracks(found)
+        // серии аниме: видео с номером серии в имени → тайтлы, обложки и названия с Шикимори
+        val ids = found.filter { it.video }.map { it.id }.toSet()
+        val pending = Store.addEpisodes(LocalScanner.videoNames.filterKeys { it in ids })
         say(if (found.isEmpty()) "На телефоне не нашлось музыки" else "Найдено: ${found.count { !it.video }} треков, ${found.count { it.video }} видео")
+        if (pending.isNotEmpty()) matchAnime(pending)
+    }
+
+    /** Найти тайтлы на Шикимори. Видео с одной «серией», которых там нет, — не аниме: возвращаем в библиотеку. */
+    fun matchAnime(list: List<app.wavy.android.data.Anime>) = bg("Ищу аниме на Шикимори…") {
+        for (a in list) {
+            val p = AnimeParse.Parsed(a.title, null, if ("#s" in a.key) a.key.substringAfter("#s").toIntOrNull() else null)
+            val hit = runCatching { withContext(Dispatchers.IO) { Shikimori.bestMatch(a.title, p.season, a.episodes.size, Shikimori.search(AnimeParse.searchQuery(p))) } }.getOrNull()
+            if (hit == null) {
+                if (a.episodes.size < 2) Store.deleteAnime(a.id) else Store.editAnime(a.id) { it.copy(matched = true) }
+                continue
+            }
+            Store.editAnime(a.id) { it.copy(shikiId = hit.id, name = hit.name, russian = hit.russian, kind = hit.kind, episodesTotal = hit.episodes, score = hit.score, year = hit.year, poster = hit.poster, url = hit.url, matched = true) }
+            val title = hit.russian.ifEmpty { hit.name }
+            Store.addTracks(a.episodes.mapNotNull { Store.track(it) }.map { it.copy(artist = title, cover = hit.poster ?: it.cover) })
+        }
+    }
+
+    /** Смотреть тайтл: с последней недосмотренной серии (или с выбранной). */
+    fun playAnime(id: String, episode: String? = null) {
+        val a = Store.anime(id) ?: return
+        if (a.episodes.isEmpty()) return
+        val start = episode?.let { a.episodes.indexOf(it) }?.takeIf { it >= 0 }
+            ?: a.last?.let { l -> a.episodes.indexOf(l).takeIf { it >= 0 }?.let { i -> if (l in a.watched && i + 1 < a.episodes.size) i + 1 else i } }
+            ?: a.episodes.indexOfFirst { it !in a.watched }.coerceAtLeast(0)
+        app.wavy.android.player.PlayerConn.play(a.episodes, start)
+    }
+
+    // ---------- синхронизация с ПК по Wi-Fi ----------
+    fun wifiSync(addr: String, pin: String) = bg("Синхронизация с ПК…") {
+        val base = "http://" + addr.trim().removePrefix("http://").trimEnd('/').let { if (':' in it) it else "$it:3738" } + "/wavy/sync?pin=" + pin.trim()
+        val r = withContext(Dispatchers.IO) {
+            val fromPc = app.wavy.android.net.Http.get(base)
+            val got = Sync.import(fromPc)
+            val req = okhttp3.Request.Builder().url(base).post(okhttp3.RequestBody.create("application/json".toMediaTypeOrNull(), Sync.export())).build()
+            app.wavy.android.net.Http.client.newCall(req).execute().use { resp -> if (!resp.isSuccessful) throw java.io.IOException(if (resp.code == 403) "неверный PIN" else "ПК ответил ${resp.code}") }
+            got
+        }
+        say("С ПК: ${r.tracks} треков, новых плейлистов ${r.newPlaylists}. Плейлисты телефона отправлены на ПК")
+    }
+
+    // ---------- Shazam ----------
+    sealed interface Shz { data object Idle : Shz; data object Listening : Shz; data class Found(val f: Shazam.Found) : Shz; data object NotFound : Shz; data class Error(val msg: String) : Shz; data object Adding : Shz }
+    val shazam = MutableStateFlow<Shz>(Shz.Idle)
+    val shazamOpen = MutableStateFlow(false)
+    /** Activity спрашивает разрешение на микрофон и запускает listen(). */
+    var micRequest: (() -> Unit)? = null
+    fun startShazam() { shazamOpen.value = true; micRequest?.invoke() ?: listen() }
+
+    /** Слушать микрофон 12 секунд и спросить Shazam. Разрешение на микрофон проверяет Activity. */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun listen() = scope.launch {
+        shazam.value = Shz.Listening
+        shazam.value = try {
+            val samples = withContext(Dispatchers.IO) { recordMic(Shazam.SECONDS) }
+            withContext(Dispatchers.IO) { Shazam.recognize(samples) }?.let { Shz.Found(it) } ?: Shz.NotFound
+        } catch (e: Throwable) { Shz.Error(e.message ?: "не получилось") }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun recordMic(secs: Int): FloatArray {
+        val rate = Shazam.RATE
+        val min = android.media.AudioRecord.getMinBufferSize(rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT)
+        val rec = android.media.AudioRecord(android.media.MediaRecorder.AudioSource.MIC, rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, maxOf(min, rate))
+        if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); throw IllegalStateException("микрофон недоступен") }
+        val buf = ShortArray(rate * secs)
+        rec.startRecording()
+        try {
+            var got = 0
+            while (got < buf.size) { val n = rec.read(buf, got, buf.size - got); if (n <= 0) break; got += n }
+        } finally { rec.stop(); rec.release() }
+        return FloatArray(buf.size) { buf[it] / 32768f }
+    }
+
+    /** Добавить найденное: трек ищется на YouTube, попадает в библиотеку и плейлист «Опенинги». */
+    fun addFound(f: Shazam.Found) = scope.launch {
+        shazam.value = Shz.Adding
+        try {
+            val t = withContext(Dispatchers.IO) { YouTube.search("${f.artist} ${f.title}", music = true, limit = 1).firstOrNull() } ?: throw IllegalStateException("на YouTube не нашлось")
+            Store.addTracks(listOf(t))
+            val pl = Store.lib.value.playlists.firstOrNull { it.name == "Опенинги" }?.id ?: Store.createPlaylist("Опенинги").id
+            Store.addToPlaylist(pl, listOf(t.id))
+            say("«${f.title}» — в библиотеке и плейлисте «Опенинги»")
+            shazam.value = Shz.Idle
+        } catch (e: Throwable) { shazam.value = Shz.Error(e.message ?: "не получилось добавить") }
     }
 
     /** Ссылка → треки (Spotify / YouTube / YouTube Music / SoundCloud…). onDone(playlistId). */

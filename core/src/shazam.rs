@@ -319,3 +319,26 @@ mod tests {
         assert_eq!(to_mono_16k(&x, 2, 48000).len(), 16000);
     }
 }
+
+#[cfg(test)]
+mod vector {
+    /// Детерминированный сигнал (целочисленный, чтобы совпадал до бита в Kotlin-версии).
+    pub fn test_signal() -> Vec<f32> {
+        let mut x: u32 = 12345;
+        (0..super::RATE * 4).map(|i| {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let noise = ((x >> 16) & 0x7ff) as i32 - 1024;
+            let period = 16 + (i / 4000) % 40; // «мелодия»: меняющийся период прямоугольной волны
+            let sq = if (i / period) % 2 == 0 { 6000 } else { -6000 };
+            (sq + noise) as f32 / 32768.0
+        }).collect()
+    }
+
+    /// Печатает отпечаток для сверки с Android (LogicTest.shazamMatchesDesktop).
+    #[test]
+    #[ignore]
+    fn dump() {
+        let sig = super::signature(&test_signal());
+        println!("SIG {}", sig.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    }
+}

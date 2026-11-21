@@ -79,6 +79,46 @@ object Store {
     fun settings(f: (Settings) -> Settings) = edit { it.copy(settings = f(it.settings)) }
     fun session(s: Session) = edit { it.copy(session = s) }
 
-    /** Треки библиотеки, новые сверху. */
-    fun libraryIds(l: Library = _lib.value) = l.tracks.values.sortedWith(compareByDescending<Track> { it.addedAt }.thenBy { it.title }).map { it.id }
+    /** Треки библиотеки, новые сверху (серии аниме живут в своём разделе). */
+    fun libraryIds(l: Library = _lib.value): List<String> {
+        val episodes = l.anime.flatMapTo(HashSet()) { it.episodes }
+        return l.tracks.values.filter { it.id !in episodes }.sortedWith(compareByDescending<Track> { it.addedAt }.thenBy { it.title }).map { it.id }
+    }
+
+    fun anime(id: String) = _lib.value.anime.firstOrNull { it.id == id }
+    fun editAnime(id: String, f: (Anime) -> Anime) = edit { l -> l.copy(anime = l.anime.map { if (it.id == id) f(it) else it }) }
+    fun deleteAnime(id: String) = edit { l -> l.copy(anime = l.anime.filterNot { it.id == id }) }
+
+    /**
+     * Видео с телефона → тайтлы аниме: имя файла и папка разбираются как на ПК, серии собираются по названию.
+     * `names` — id трека → (имя файла без расширения, папка). Возвращает тайтлы, которые ещё не искали на Шикимори.
+     */
+    fun addEpisodes(names: Map<String, Pair<String, String?>>): List<Anime> {
+        val now = System.currentTimeMillis()
+        val parsed = names.mapValues { (_, v) -> AnimeParse.parse(v.first, v.second) }.filter { it.value.episode != null }
+        if (parsed.isEmpty()) return emptyList()
+        edit { l ->
+            val list = l.anime.toMutableList()
+            val tracks = l.tracks.toMutableMap()
+            for ((tid, p) in parsed) {
+                val key = AnimeParse.key(p)
+                if (key.isEmpty()) continue
+                val i = list.indexOfFirst { it.key == key }.takeIf { it >= 0 } ?: run { list += Anime("an_${key.hashCode().toUInt().toString(36)}", key, p.title, addedAt = now); list.size - 1 }
+                val a = list[i]
+                if (tid !in a.episodes) list[i] = a.copy(episodes = a.episodes + tid)
+                tracks[tid]?.let { t -> tracks[tid] = t.copy(title = AnimeParse.episodeTitle(p, t.title), artist = a.display, album = "") }
+            }
+            // серии по номеру
+            val num = parsed.mapValues { it.value.episode ?: 0.0 }
+            l.copy(anime = list.map { a -> a.copy(episodes = a.episodes.sortedBy { num[it] ?: Double.MAX_VALUE }) }, tracks = tracks)
+        }
+        return _lib.value.anime.filter { !it.matched }
+    }
+
+    fun markWatched(trackId: String, on: Boolean = true) = edit { l ->
+        l.copy(anime = l.anime.map { a ->
+            if (trackId !in a.episodes) a
+            else a.copy(watched = if (on) (a.watched + trackId).distinct() else a.watched - trackId, last = trackId)
+        })
+    }
 }

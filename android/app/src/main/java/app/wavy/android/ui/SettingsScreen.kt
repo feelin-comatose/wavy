@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
@@ -61,6 +62,14 @@ fun SettingsScreen(
                 Pill("Экспорт", Icons.Rounded.Upload, primary = true) { onExport() }
                 Pill("Импорт файла", Icons.Rounded.Download) { onImportFile() }
             }
+            Spacer(Modifier.height(14.dp))
+            Text("По Wi-Fi, без файлов: в Wavy на ПК включи Настройки → Синхронизация → «По Wi-Fi» и впиши сюда адрес и PIN оттуда. Телефон и ПК — в одной сети.", color = Muted, fontSize = 13.sp)
+            var addr by remember(s.syncAddr) { mutableStateOf(s.syncAddr) }
+            var pin by remember(s.syncPin) { mutableStateOf(s.syncPin) }
+            OutlinedTextField(addr, { v -> addr = v.trim(); Store.settings { it.copy(syncAddr = addr) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Адрес ПК (например 192.168.1.5:3738)") }, singleLine = true)
+            OutlinedTextField(pin, { v -> pin = v.filter { it.isDigit() }.take(6); Store.settings { it.copy(syncPin = pin) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("PIN") }, singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            Pill("Синхронизировать", Icons.Rounded.Sync, primary = true) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.wifiSync(addr, pin) }
         }
 
         Section("Spotify") {

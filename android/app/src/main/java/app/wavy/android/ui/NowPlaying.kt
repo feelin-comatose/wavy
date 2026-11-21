@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -117,6 +118,7 @@ fun FullPlayer(onClose: () -> Unit) {
             IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", Modifier.size(30.dp)) }
             Text("Сейчас играет", Modifier.weight(1f), color = Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             if (t?.hasVideo == true) IconButton({ showVideo = !showVideo }) { Icon(if (showVideo) Icons.Rounded.Image else Icons.Rounded.Videocam, "Видео / обложка") }
+            IconButton({ AppState.startShazam() }) { Icon(Icons.Rounded.GraphicEq, "Что за песня? (Shazam)", tint = Muted) }
             IconButton({ showQueue = !showQueue }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Очередь", tint = if (showQueue) Accent else Muted) }
         }
         if (t == null) { Empty("Ничего не играет", "Выбери трек в библиотеке"); return@Column }

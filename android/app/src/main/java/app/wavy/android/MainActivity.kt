@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
@@ -58,6 +60,8 @@ import app.wavy.android.ui.LibraryScreen
 import app.wavy.android.ui.MiniPlayer
 import app.wavy.android.ui.Muted
 import app.wavy.android.ui.PlaylistsScreen
+import app.wavy.android.ui.AnimeScreen
+import app.wavy.android.ui.ShazamDialog
 import app.wavy.android.ui.SearchScreen
 import app.wavy.android.ui.SettingsScreen
 import app.wavy.android.ui.TextC
@@ -73,6 +77,16 @@ class MainActivity : ComponentActivity() {
         if (res.values.any { it }) AppState.scanLocal(this) else AppState.say("Без доступа к файлам музыку с телефона не найти")
     }
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) AppState.listen() else AppState.say("Без микрофона Shazam не услышит музыку")
+    }
+
+    /** Shazam: разрешение на микрофон → слушать. */
+    private fun shazam() {
+        AppState.shazamOpen.value = true
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) AppState.listen()
+        else askMic.launch(Manifest.permission.RECORD_AUDIO)
+    }
     private val pickImport = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::importFile) }
     private val saveExport = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         uri?.let { runCatching { contentResolver.openOutputStream(it)?.use { o -> o.write(Sync.export().toByteArray()) } }.onSuccess { AppState.say("Экспорт сохранён — открой этот файл в Wavy на ПК") } }
@@ -86,6 +100,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         if (Store.lib.value.settings.autoUpdate) AppState.checkUpdate(manual = false)
         handleIntent(intent)
+        AppState.micRequest = ::shazam
         setContent { WavyTheme { Root() } }
     }
 
@@ -138,6 +153,17 @@ class MainActivity : ComponentActivity() {
     private fun Root() {
         var tab by rememberSaveable { mutableStateOf(0) }
         var openPlaylist by rememberSaveable { mutableStateOf<String?>(null) }
+        var openAnime by rememberSaveable { mutableStateOf<String?>(null) }
+        val shazamOpen by AppState.shazamOpen.collectAsState()
+        // серия досмотрена (последние 10 %) — отмечаем
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(5000)
+                val id = PlayerConn.state.value.currentId ?: continue
+                val dur = PlayerConn.duration()
+                if (dur > 60_000 && PlayerConn.position() > dur * 0.9 && Store.lib.value.anime.any { id in it.episodes && id !in it.watched }) Store.markWatched(id)
+            }
+        }
         var full by rememberSaveable { mutableStateOf(false) }
         var importFor by remember { mutableStateOf<Pair<String, String?>?>(null) } // (ссылка, плейлист)
         var addTo by remember { mutableStateOf<List<String>?>(null) }
@@ -150,7 +176,7 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(msg) { msg?.let { snack.showSnackbar(it); AppState.message.value = null } }
         LaunchedEffect(shared) { shared?.let { importFor = it to null; sharedUrl.value = null } }
         LaunchedEffect(upd) { if (upd is AppState.Upd.Available) AppState.say("Вышла новая версия Wavy — Настройки → Обновления") }
-        BackHandler(full || openPlaylist != null) { if (full) full = false else openPlaylist = null }
+        BackHandler(full || openPlaylist != null || openAnime != null) { if (full) full = false else if (openAnime != null) openAnime = null else openPlaylist = null }
 
         Box(Modifier.fillMaxSize().background(Bg)) {
             Scaffold(
@@ -160,9 +186,9 @@ class MainActivity : ComponentActivity() {
                     Column {
                         MiniPlayer { full = true }
                         NavigationBar(containerColor = Bg3) {
-                            val items = listOf("Библиотека" to Icons.Rounded.LibraryMusic, "Плейлисты" to Icons.AutoMirrored.Rounded.QueueMusic, "Поиск" to Icons.Rounded.Search, "Настройки" to Icons.Rounded.Settings)
+                            val items = listOf("Библиотека" to Icons.Rounded.LibraryMusic, "Плейлисты" to Icons.AutoMirrored.Rounded.QueueMusic, "Аниме" to Icons.Rounded.LiveTv, "Поиск" to Icons.Rounded.Search, "Настройки" to Icons.Rounded.Settings)
                             items.forEachIndexed { i, (label, icon) ->
-                                NavigationBarItem(tab == i, { tab = i; if (i == 1) openPlaylist = null }, { Icon(icon, label) }, label = { Text(label) },
+                                NavigationBarItem(tab == i, { tab = i; if (i == 1) openPlaylist = null; if (i == 2) openAnime = null }, { Icon(icon, label) }, label = { Text(label, maxLines = 1, fontSize = 11.sp) },
                                     colors = NavigationBarItemDefaults.colors(selectedIconColor = Bg, indicatorColor = TextC, unselectedIconColor = Muted, unselectedTextColor = Muted))
                             }
                         }
@@ -174,7 +200,8 @@ class MainActivity : ComponentActivity() {
                     when (tab) {
                         0 -> LibraryScreen(onImport = { importFor = "" to null }, onScan = ::scan, onAddToPlaylist = { addTo = it })
                         1 -> PlaylistsScreen(openPlaylist, onOpen = { openPlaylist = it }, onImport = { importFor = "" to it }, onAddToPlaylist = { addTo = it })
-                        2 -> SearchScreen(onAddToPlaylist = { addTo = it })
+                        2 -> AnimeScreen(openAnime, onOpen = { openAnime = it }, onScan = ::scan, onWatch = { full = true }, onShazam = ::shazam)
+                        3 -> SearchScreen(onAddToPlaylist = { addTo = it })
                         else -> SettingsScreen(::setFloating, onExport = { saveExport.launch("wavy-export.json") }, onImportFile = { pickImport.launch(arrayOf("application/json", "text/*", "*/*")) }, onInstallUpdate = ::installUpdate)
                     }
                 }
@@ -183,5 +210,6 @@ class MainActivity : ComponentActivity() {
         }
         importFor?.let { (url, pl) -> ImportDialog(url, pl, dismiss = { importFor = null }) { pid -> if (pid != null) { tab = 1; openPlaylist = pid } } }
         addTo?.let { ids -> AddToPlaylistDialog(ids) { addTo = null } }
+        if (shazamOpen) ShazamDialog { AppState.shazamOpen.value = false; AppState.shazam.value = AppState.Shz.Idle }
     }
 }

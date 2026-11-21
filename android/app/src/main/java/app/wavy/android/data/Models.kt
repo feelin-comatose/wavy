@@ -44,6 +44,9 @@ data class Settings(
     val floatingPlayer: Boolean = false,
     val spotifyClientId: String = "",
     val spotifyClientSecret: String = "",
+    /** синхронизация с ПК по Wi-Fi: адрес (192.168.1.5:3738) и PIN из настроек Wavy на ПК */
+    val syncAddr: String = "",
+    val syncPin: String = "",
 )
 
 /** Сохранённая очередь — чтобы продолжить с того же места после перезапуска. */
@@ -56,6 +59,7 @@ data class Library(
     val playlists: List<Playlist> = emptyList(),
     val settings: Settings = Settings(),
     val session: Session = Session(),
+    val anime: List<Anime> = emptyList(),
 )
 
 val json = Json {
