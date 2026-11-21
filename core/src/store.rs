@@ -14,6 +14,9 @@ pub struct Playlist {
     pub source: Option<String>,
     #[serde(default)]
     pub created_at: u64,
+    /// своя картинка обложки (файл в data_dir/covers)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
 }
 
 impl Playlist {
@@ -54,10 +57,12 @@ pub struct Settings {
     /// Сам скачивать и ставить новые версии с GitHub Releases.
     pub auto_update: bool,
     pub spotify: SpotifySettings,
+    /// Сортировка: "library" или id плейлиста → способ (см. Sort).
+    pub sort: HashMap<String, String>,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new() }
     }
 }
 
@@ -69,6 +74,8 @@ pub struct Library {
     pub settings: Settings,
     /// Раздел «Аниме»: тайтлы, их серии лежат в tracks (с полем anime).
     pub anime: Vec<crate::anime::Anime>,
+    /// Сколько раз трек слушали (больше 30 секунд) — для сортировки «Часто слушаю».
+    pub plays: HashMap<String, u32>,
 }
 
 pub struct Store {
@@ -123,7 +130,7 @@ impl Store {
     }
 
     pub fn create_playlist(&mut self, name: &str, track_ids: Vec<String>, source: Option<String>) -> Playlist {
-        let p = Playlist { id: format!("pl_{:x}{:04x}", now_ms(), rand16()), name: name.into(), track_ids, source, created_at: now_ms() };
+        let p = Playlist { id: format!("pl_{:x}{:04x}", now_ms(), rand16()), name: name.into(), track_ids, source, created_at: now_ms(), cover: None };
         self.lib.playlists.push(p.clone());
         self.save();
         p
@@ -144,6 +151,7 @@ impl Store {
     }
 
     pub fn delete_playlist(&mut self, id: &str) {
+        if let Some(c) = self.lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.cover.clone()) { let _ = std::fs::remove_file(c); }
         self.lib.playlists.retain(|p| p.id != id);
         self.save();
     }
@@ -164,6 +172,32 @@ impl Store {
     }
 
     /// Треки библиотеки (без серий аниме), новые сверху.
+    /// Засчитать прослушивание.
+    pub fn count_play(&mut self, id: &str) {
+        *self.lib.plays.entry(id.to_string()).or_default() += 1;
+        self.save();
+    }
+
+    /// Порядок треков по способу сортировки. `ids` приходят в «родном» порядке (библиотека — новые сверху,
+    /// плейлист — как составлен). Неизвестный способ — родной порядок.
+    pub fn sorted(&self, mut ids: Vec<String>, how: &str, playlist: bool) -> Vec<String> {
+        let t = |id: &String| self.lib.tracks.get(id);
+        let key = |s: &str| s.trim().to_lowercase();
+        let by = |f: &dyn Fn(&Track) -> String, ids: &mut Vec<String>| {
+            ids.sort_by_cached_key(|id| t(id).map(|t| (f(t).is_empty(), f(t), key(&t.title))).unwrap_or((true, String::new(), String::new())));
+        };
+        match how {
+            "plays" => { ids.sort_by_key(|id| std::cmp::Reverse(self.lib.plays.get(id).copied().unwrap_or(0))); } // стабильно: при равенстве — родной порядок
+            "newest" if playlist => ids.reverse(),
+            "oldest" if !playlist => ids.reverse(),
+            "title" => by(&|t| key(&t.title), &mut ids),
+            "artist" => by(&|t| key(&t.artist), &mut ids),
+            "album" => by(&|t| key(&t.album), &mut ids),
+            _ => {}
+        }
+        ids
+    }
+
     pub fn library_ids(&self) -> Vec<String> {
         let mut v: Vec<&Track> = self.lib.tracks.values().filter(|t| t.anime.is_none()).collect();
         v.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(a.title.cmp(&b.title)));
@@ -254,5 +288,30 @@ fn merge(a: &mut Value, b: &Value) {
             }
         }
         (a, b) => *a = b.clone(),
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+
+    fn tr(id: &str, title: &str, artist: &str, album: &str) -> Track {
+        serde_json::from_value(serde_json::json!({ "id": id, "type": "local", "title": title, "artist": artist, "album": album })).unwrap()
+    }
+
+    #[test]
+    fn sorts() {
+        let mut s = Store { file: std::env::temp_dir().join(format!("wavy-sort-{}.json", std::process::id())), lib: Library::default() };
+        for t in [tr("a", "Бета", "Zed", ""), tr("b", "альфа", "abc", "X"), tr("c", "Gamma", "", "A")] { s.lib.tracks.insert(t.id.clone(), t); }
+        let ids: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let j = |v: Vec<String>| v.join("");
+        assert_eq!(j(s.sorted(ids.clone(), "manual", true)), "abc");
+        assert_eq!(j(s.sorted(ids.clone(), "newest", true)), "cba");
+        assert_eq!(j(s.sorted(ids.clone(), "title", true)), "cba"); // латиница раньше кириллицы, без учёта регистра
+        assert_eq!(j(s.sorted(ids.clone(), "artist", true)), "bac"); // без исполнителя — в конце
+        assert_eq!(j(s.sorted(ids.clone(), "album", true)), "cba");
+        s.lib.plays.insert("c".into(), 5);
+        s.lib.plays.insert("a".into(), 2);
+        assert_eq!(j(s.sorted(ids, "plays", true)), "cab");
     }
 }

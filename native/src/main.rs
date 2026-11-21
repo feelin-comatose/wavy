@@ -91,6 +91,9 @@ enum Act {
     DeleteAnime(String), MarkWatched(String, bool), AudioTrack(usize), Subs(Option<usize>), Shazam, ShazamAdd(Found, bool),
     /// треки → MP3 в папку; Some(название) — плейлист целиком (своя подпапка)
     Export(Vec<String>, Option<String>),
+    /// (ключ: "library" или id плейлиста, способ)
+    Sort(String, String),
+    PlaylistCover(String), PlaylistCoverReset(String),
 }
 
 struct App {
@@ -167,6 +170,8 @@ struct App {
     exporting: bool,
     /// (трек, сколько раз уже восстанавливали после обрыва)
     cut_retries: Option<(String, u8)>,
+    /// трек, прослушивание которого уже засчитано (после 30 секунд)
+    counted: Option<String>,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
     cjk_check: Instant,
@@ -224,7 +229,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -300,6 +305,8 @@ impl App {
             View::Search => return self.results.iter().map(|t| t.id.clone()).collect(),
             View::Anime | View::AnimeTitle(_) => return vec![],
         };
+        let (key, pl) = match &self.view { View::Playlist(id) => (id.clone(), true), _ => ("library".to_string(), false) };
+        let ids = s.sorted(ids, s.lib.settings.sort.get(&key).map(String::as_str).unwrap_or(""), pl);
         let q = self.filter.trim().to_lowercase();
         if q.is_empty() { return ids; }
         ids.into_iter().filter(|id| s.lib.tracks.get(id).is_some_and(|t| format!("{} {} {}", t.title, t.artist, t.album).to_lowercase().contains(&q))).collect()
@@ -327,6 +334,8 @@ impl App {
     fn load_current(&mut self, ctx: &egui::Context) {
         let Some(id) = self.queue.get(self.qi).cloned() else { return };
         let Some(t) = self.track(&id) else { return };
+        // новый запуск трека — новое прослушивание (а продолжение после обрыва — то же самое)
+        if self.resume.as_ref().map(|r| &r.0) != Some(&id) { self.counted = None; }
         self.token += 1;
         let token = self.token;
         self.current = Some(t.clone());
@@ -651,6 +660,29 @@ impl App {
                     let _ = tx.send(Bg::Exported(r));
                     c.request_repaint();
                 }).ok();
+            }
+            Act::Sort(key, how) => { self.store.lock().unwrap().patch_settings(&json!({ "sort": { key: how } })); }
+            Act::PlaylistCover(id) => {
+                let Some(src) = rfd::FileDialog::new().set_title("Картинка для обложки").add_filter("Картинки", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
+                let (store, covers, tx, c) = (self.store.clone(), self.covers.clone(), self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    match playlist_cover(&src, &covers, &id) {
+                        Ok(path) => {
+                            let mut s = store.lock().unwrap();
+                            if let Some(p) = s.lib.playlists.iter_mut().find(|p| p.id == id) {
+                                if let Some(old) = p.cover.replace(path.to_string_lossy().into_owned()) { let _ = std::fs::remove_file(old); }
+                            }
+                            s.save();
+                        }
+                        Err(e) => { let _ = tx.send(Bg::Status(format!("Не вышло поставить обложку: {e}"))); }
+                    }
+                    c.request_repaint();
+                });
+            }
+            Act::PlaylistCoverReset(id) => {
+                let mut s = self.store.lock().unwrap();
+                if let Some(old) = s.lib.playlists.iter_mut().find(|p| p.id == id).and_then(|p| p.cover.take()) { let _ = std::fs::remove_file(old); }
+                s.save();
             }
             Act::Reveal(p) => reveal(&p),
             Act::OpenUrl(u) => open_url(&u),
@@ -979,6 +1011,9 @@ impl App {
         let state = (self.current.as_ref().map(|t| t.id.clone()), self.audio.is_playing());
         if state != self.last_pushed && !self.loading { self.push_state(); }
         self.sync_clock();
+        if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_none() && self.counted.as_deref() != Some(t.id.as_str())) {
+            if self.audio.is_playing() && self.audio.position() > 30.0 { let id = t.id.clone(); self.store.lock().unwrap().count_play(&id); self.counted = Some(id); }
+        }
 
         while let Ok(cmd) = self.media_rx.try_recv() {
             use media::MediaCmd::*;
@@ -1284,9 +1319,19 @@ impl App {
             }
         };
         let total: f64 = ids.iter().filter_map(|i| self.track(i)).map(|t| t.duration).sum();
-        let cover = ids.iter().filter_map(|i| self.track(i)).find_map(|t| t.cover.clone().map(|c| if t.video_id.is_some() { format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", t.video_id.unwrap()) } else { c }));
+        let own = pl.as_ref().and_then(|p| p.cover.clone());
+        let cover = own.clone().or_else(|| ids.iter().filter_map(|i| self.track(i)).find_map(|t| t.cover.clone().map(|c| if t.video_id.is_some() { format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", t.video_id.unwrap()) } else { c })));
         ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(120.0), Sense::hover());
+            let (r, resp) = ui.allocate_exact_size(Vec2::splat(120.0), if pl.is_some() { Sense::click() } else { Sense::hover() });
+            if let Some(p) = &pl {
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Поставить свою картинку");
+                if resp.clicked() { acts.push(Act::PlaylistCover(p.id.clone())); }
+                resp.context_menu(|ui| {
+                    if ui.button("Поставить свою картинку…").clicked() { acts.push(Act::PlaylistCover(p.id.clone())); ui.close(); }
+                    if own.is_some() && ui.button("Вернуть обложку из треков").clicked() { acts.push(Act::PlaylistCoverReset(p.id.clone())); ui.close(); }
+                });
+            }
+            let hovered = pl.is_some() && ui.rect_contains_pointer(r);
             match cover.filter(|_| pl.is_some()).and_then(|c| self.thumbs.get(&c, 240)) {
                 Some(t) => { ui.painter().image(t.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE); }
                 None => {
@@ -1294,6 +1339,11 @@ impl App {
                     ui.painter().rect_stroke(r, 14, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, if self.view == View::Search { "\u{E30C}" } else { "\u{E340}" }, FontId::proportional(44.0), ACCENT);
                 }
+            }
+            if hovered {
+                ui.painter().rect_filled(r, 0, Color32::from_black_alpha(150));
+                glyph(ui.painter(), r.center() - Vec2::new(0.0, 10.0), "\u{E3B4}", FontId::proportional(26.0), TEXT);
+                ui.painter().text(r.center() + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, "Своя обложка", FontId::proportional(12.0), TEXT);
             }
             ui.add_space(16.0);
             ui.vertical(|ui| {
@@ -1351,6 +1401,25 @@ impl App {
         }
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Фильтр по названию, артисту, альбому…").desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
+            // сортировка (своя для библиотеки и для каждого плейлиста)
+            let (key, is_pl) = match &self.view { View::Playlist(id) => (id.clone(), true), _ => ("library".to_string(), false) };
+            let cur = self.settings().sort.get(&key).cloned().unwrap_or_default();
+            let opts: &[(&str, &str)] = if is_pl {
+                &[("", "Как в плейлисте"), ("plays", "Часто слушаю"), ("newest", "Сначала новые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
+            } else {
+                &[("", "Сначала новые"), ("plays", "Часто слушаю"), ("oldest", "Сначала старые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
+            };
+            let label = opts.iter().find(|o| o.0 == cur).map(|o| o.1).unwrap_or(opts[0].1);
+            ui.add_space(6.0);
+            let text = format!("\u{E444}  {label}");
+            let r = ui.add(pill_btn(&text, false)).on_hover_text("Сортировка");
+            egui::Popup::menu(&r).show(|ui| {
+                ui.set_min_width(180.0);
+                for (k, name) in opts {
+                    let on = *k == cur.as_str() || (k.is_empty() && !opts.iter().any(|o| o.0 == cur));
+                    if ui.selectable_label(on, *name).clicked() { acts.push(Act::Sort(key.clone(), k.to_string())); ui.close(); }
+                }
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if pill(ui, "\u{E2E2}  По ссылке", false).clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
                 if pill(ui, "\u{E25A}  Папка", false).clicked() { acts.push(Act::ImportFolder); }
@@ -2585,6 +2654,22 @@ fn reveal(path: &str) {
     #[cfg(windows)] { let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn(); }
     #[cfg(target_os = "macos")] { let _ = std::process::Command::new("open").args(["-R", path]).spawn(); }
     #[cfg(all(unix, not(target_os = "macos")))] { if let Some(d) = Path::new(path).parent() { let _ = std::process::Command::new("xdg-open").arg(d).spawn(); } }
+}
+
+/// Своя обложка плейлиста: квадрат по центру, до 600 px, JPEG в папке обложек
+/// (новое имя каждый раз — чтобы не показалась старая картинка из кэша миниатюр).
+fn playlist_cover(src: &Path, covers: &Path, id: &str) -> Result<PathBuf, String> {
+    let img = image::open(src).map_err(|e| format!("не открылась картинка: {e}"))?;
+    let (w, h) = (img.width(), img.height());
+    let side = w.min(h);
+    let img = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
+    let img = if side > 600 { img.resize_exact(600, 600, image::imageops::FilterType::Triangle) } else { img };
+    std::fs::create_dir_all(covers).map_err(|e| e.to_string())?;
+    let path = covers.join(format!("{id}_{}.jpg", wavy_core::now_ms()));
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode_image(&img.to_rgb8()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 fn open_folder(dir: &Path) {
