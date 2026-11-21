@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Минимальный ffmpeg для Wavy: только то, что не умеет встроенный декодер — видео HEVC/H.265 (в т.ч. 10 бит),
 # 10-битное H.264, VP9, AV1, MPEG-4 и звук Opus, AC3/E-AC3, DTS, TrueHD, — плюс аппаратное декодирование
-# видеокартой (D3D11VA/DXVA2) на Windows. Получается один ffmpeg(.exe) на несколько МБ вместо готовых сборок на 80–180 МБ.
+# видеокартой (D3D11VA/DXVA2) на Windows, и кодировщик MP3 (LAME) для экспорта плейлистов. Получается один ffmpeg(.exe) на несколько МБ вместо готовых сборок на 80–180 МБ.
 #
 #   scripts/build-ffmpeg.sh windows <папка>   — ffmpeg.exe (кросс-сборка mingw, так собирает CI)
 #   scripts/build-ffmpeg.sh linux <папка>     — ffmpeg для проверок на Linux
@@ -22,6 +22,25 @@ if [ -z "${SRC:-}" ]; then
 fi
 BUILD="$WORK/build-$TARGET"
 mkdir -p "$BUILD"
+
+# LAME — кодировщик MP3 (экспорт песен), собирается статически и вшивается в ffmpeg
+LAME_VER=3.100
+LAME_SHA=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+LAME_SRC="$WORK/lame-$LAME_VER"
+LAME_OUT="$WORK/lame-$TARGET"
+if [ ! -f "$LAME_OUT/lib/libmp3lame.a" ]; then
+  if [ ! -d "$LAME_SRC" ]; then
+    curl -fsSL -o "$WORK/lame.tar.gz" "https://downloads.sourceforge.net/project/lame/lame/$LAME_VER/lame-$LAME_VER.tar.gz"
+    echo "$LAME_SHA  $WORK/lame.tar.gz" | sha256sum -c -
+    tar xzf "$WORK/lame.tar.gz" -C "$WORK"
+  fi
+  mkdir -p "$WORK/lame-build-$TARGET"
+  ( cd "$WORK/lame-build-$TARGET"
+    HOST=(); [ "$TARGET" = windows ] && HOST=(--host=x86_64-w64-mingw32)
+    "$LAME_SRC/configure" "${HOST[@]}" --prefix="$LAME_OUT" --enable-static --disable-shared --disable-frontend \
+      --disable-decoder --disable-gtktest --disable-analyzer-hooks >/dev/null
+    make -j"$(nproc)" >/dev/null && make install >/dev/null )
+fi
 cd "$BUILD"
 
 COMMON=(
@@ -30,13 +49,14 @@ COMMON=(
   --disable-avdevice --disable-postproc
   --enable-swscale --enable-swresample --enable-avfilter
   --enable-protocol=file,pipe
-  --enable-demuxer=matroska,mov,avi,mpegts,flv,ogg
+  --enable-demuxer=matroska,mov,avi,mpegts,flv,ogg,mp3,flac,wav,aac,aiff
   --enable-decoder=hevc,h264,vp8,vp9,av1,mpeg4,mpeg2video,msmpeg4v3
-  --enable-decoder=aac,aac_latm,ac3,eac3,dca,truehd,mlp,opus,vorbis,flac,mp3,mp2,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le
+  --enable-decoder=aac,aac_latm,ac3,eac3,dca,truehd,mlp,opus,vorbis,flac,mp3,mp3float,mp2,alac,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_s16be,pcm_s24be
   --enable-parser=hevc,h264,vp8,vp9,av1,mpeg4video,mpegvideo,aac,aac_latm,ac3,dca,mlp,opus,vorbis,flac,mpegaudio
   --enable-filter=scale,format,showinfo,null,anull,aresample,aformat
-  --enable-encoder=rawvideo,pcm_f32le
-  --enable-muxer=rawvideo,pcm_f32le
+  --enable-encoder=rawvideo,pcm_f32le,libmp3lame
+  --enable-muxer=rawvideo,pcm_f32le,mp3
+  --enable-libmp3lame --extra-cflags=-I$WORK/lame-$TARGET/include --extra-ldflags=-L$WORK/lame-$TARGET/lib
   --enable-small
 )
 

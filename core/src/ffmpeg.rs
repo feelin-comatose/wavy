@@ -40,6 +40,10 @@ impl Ffmpeg {
             let _ = std::fs::create_dir_all(&bin_dir);
             if std::fs::rename(&old, &local).is_err() { let _ = std::fs::remove_file(&old); }
         }
+        // старые копии, которые не удалось стереть при обновлении (Windows не даёт удалить запущенный exe)
+        if let Ok(rd) = std::fs::read_dir(&bin_dir) {
+            for e in rd.flatten() { if e.file_name().to_string_lossy().starts_with("ffmpeg.old") { let _ = std::fs::remove_file(e.path()); } }
+        }
         let state = if local.exists() { State::Ready(local) }
             else if !cfg!(windows) && cmd(Path::new("ffmpeg")).arg("-version").output().is_ok_and(|o| o.status.success()) { State::Ready("ffmpeg".into()) }
             else { State::Missing };
@@ -65,6 +69,35 @@ impl Ffmpeg {
             on_change();
         }).ok();
     }
+
+    /// ffmpeg с кодировщиком MP3 (экспорт). Ждёт идущую загрузку; если готовый ffmpeg старый, без MP3 (сборки
+    /// до 23-й), — скачивает новый. Блокирует: вызывать из фонового потока.
+    pub fn ready_with_mp3(&self, progress: impl Fn(u8)) -> Result<PathBuf, String> {
+        loop {
+            {
+                let mut st = self.state.lock().unwrap();
+                match &*st {
+                    State::Downloading(_) => {}
+                    State::Ready(p) if has_encoder(p, "libmp3lame") => return Ok(p.clone()),
+                    _ if !cfg!(windows) => return Err("нужен ffmpeg с кодировщиком MP3 — поставь его из пакетов системы (apt install ffmpeg)".into()),
+                    _ => { *st = State::Downloading(0); break; }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        let r = download(&self.bin_dir, |p| { *self.state.lock().unwrap() = State::Downloading(p); progress(p); });
+        crate::log(&format!("ffmpeg (MP3): {}", match &r { Ok(p) => format!("скачан в {}", p.display()), Err(e) => format!("ошибка: {e}") }));
+        let had_old = self.bin_dir.join(exe());
+        *self.state.lock().unwrap() = match &r { Ok(p) => State::Ready(p.clone()), Err(_) if had_old.exists() => State::Ready(had_old), Err(e) => State::Failed(e.clone()) };
+        let p = r?;
+        if has_encoder(&p, "libmp3lame") { Ok(p) } else { Err("в декодере с сайта ещё нет MP3 — новая сборка Wavy выйдет через несколько минут, попробуй позже".into()) }
+    }
+}
+
+/// Есть ли в этом ffmpeg кодировщик `name`.
+pub fn has_encoder(bin: &Path, name: &str) -> bool {
+    cmd(bin).args(["-hide_banner", "-h", &format!("encoder={name}")]).output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("Encoder {name}")))
 }
 
 fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
@@ -88,6 +121,10 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
     }
     drop(f);
     if got < 1_000_000 { let _ = std::fs::remove_file(&part); return Err("скачался не тот файл (слишком маленький)".into()); }
+    if dest.exists() && std::fs::remove_file(&dest).is_err() {
+        // старый ffmpeg сейчас работает (идёт видео) — удалить нельзя, но переименовать Windows разрешает
+        let _ = std::fs::rename(&dest, dir.join(format!("ffmpeg.old{}.exe", crate::now_ms())));
+    }
     std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {

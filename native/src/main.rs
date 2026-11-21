@@ -6,6 +6,7 @@ mod update;
 mod video;
 mod player;
 mod thumbs;
+mod export;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use egui_extras::{Column, TableBuilder};
@@ -63,6 +64,7 @@ enum Bg {
     OpenAnime(Option<String>),
     ShikiResults(Result<Vec<ShikiAnime>, String>),
     Shazam(Result<Option<Found>, String>),
+    Exported(Result<export::Report, String>),
 }
 
 enum Modal {
@@ -87,6 +89,8 @@ enum Act {
     Modal(Modal), YtUpdate, SyncExport, SyncImport(Option<PathBuf>), ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
     ImportAnime(Vec<PathBuf>), ImportAnimeFiles, ImportAnimeFolder, PlayAnime(String, Option<String>), AnimeSearch(String), AnimeApply(String, ShikiAnime),
     DeleteAnime(String), MarkWatched(String, bool), AudioTrack(usize), Subs(Option<usize>), Shazam, ShazamAdd(Found, bool),
+    /// треки → MP3 в папку; Some(название) — плейлист целиком (своя подпапка)
+    Export(Vec<String>, Option<String>),
 }
 
 struct App {
@@ -160,6 +164,7 @@ struct App {
     ff: wavy_core::ffmpeg::Ffmpeg,
     /// звук не открылся без ffmpeg — переоткрыть трек, когда он скачается
     reload_after_ff: bool,
+    exporting: bool,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
     cjk_check: Instant,
@@ -217,7 +222,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -609,6 +614,23 @@ impl App {
                     Ok(())
                 });
             }
+            Act::Export(ids, name) => {
+                if self.exporting { self.toast("Экспорт уже идёт — дождись, пока закончится", true); return; }
+                let tracks: Vec<Track> = ids.iter().filter_map(|i| self.track(i)).collect();
+                if tracks.is_empty() { return; }
+                let title = match &name { Some(n) => format!("Куда сохранить плейлист «{n}»? (создам в ней папку)"), None => "Куда сохранить MP3".into() };
+                let Some(base) = rfd::FileDialog::new().set_title(title).pick_folder() else { return };
+                let dir = match &name { Some(n) => base.join(export::safe_name(n)), None => base };
+                self.exporting = true;
+                self.toast(format!("Экспорт MP3: {} трек(ов)…", tracks.len()), false);
+                let (ff, yt, cache) = (self.ff.clone(), self.yt.clone(), self.cache.clone());
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                std::thread::Builder::new().name("export".into()).spawn(move || {
+                    let r = export::run(&tracks, &dir, &ff, &yt, &cache, |s| { let _ = tx.send(Bg::Status(s)); c.request_repaint(); });
+                    let _ = tx.send(Bg::Exported(r));
+                    c.request_repaint();
+                }).ok();
+            }
             Act::Reveal(p) => reveal(&p),
             Act::OpenUrl(u) => open_url(&u),
             Act::Settings(patch) => {
@@ -852,6 +874,18 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Bg::Status(s) => self.toast(s, false),
+                Bg::Exported(r) => {
+                    self.exporting = false;
+                    match r {
+                        Ok(rep) => {
+                            let msg = if rep.failed.is_empty() { format!("Готово: {} MP3 в папке «{}»", rep.done, rep.dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()) }
+                                else { format!("Сохранено {} MP3, не вышло {}: {} — {}", rep.done, rep.failed.len(), rep.failed[0].0, rep.failed[0].1) };
+                            self.toast(msg, !rep.failed.is_empty());
+                            if rep.done > 0 { open_folder(&rep.dir); }
+                        }
+                        Err(e) => self.toast(format!("Экспорт не вышел: {e}"), true),
+                    }
+                }
                 Bg::OpenPlaylist(id) => {
                     self.view = View::Playlist(id);
                     if matches!(self.modal, Some(Modal::ImportUrl { .. })) { self.modal = None; }
@@ -1253,6 +1287,7 @@ impl App {
                     }
                     if let Some(p) = &pl {
                         if p.is_remote() && pill(ui, "\u{E094}  Синхронизировать", false).clicked() { acts.push(Act::Sync(p.id.clone())); }
+                        if !ids.is_empty() && pill(ui, "\u{E20C}  Скачать MP3", false).on_hover_text("Сохранить весь плейлист в MP3 в одну папку").clicked() { acts.push(Act::Export(ids.to_vec(), Some(p.name.clone()))); }
                         if pill(ui, "\u{E3B4}  Переименовать", false).clicked() { acts.push(Act::Modal(Modal::Rename { id: p.id.clone(), name: p.name.clone() })); }
                         if pill(ui, "\u{E4A6}  Удалить", false).clicked() { acts.push(Act::Modal(Modal::Delete { id: p.id.clone() })); }
                     }
@@ -2267,6 +2302,8 @@ fn track_menu(ui: &mut egui::Ui, ids: &[String], t: &Track, pid: Option<&str>, p
         if !pls.is_empty() { ui.separator(); }
         for (id, name) in pls { if ui.button(name).clicked() { acts.push(Act::AddTo(id.clone(), ids.clone())); ui.close(); } }
     });
+    let lbl = if ids.len() > 1 { format!("Сохранить как MP3 ({})…", ids.len()) } else { "Сохранить как MP3…".into() };
+    if ui.button(lbl).clicked() { acts.push(Act::Export(ids.clone(), None)); ui.close(); }
     if let Some(p) = pid { if ui.button("Убрать из плейлиста").clicked() { acts.push(Act::RemoveFrom(p.into(), ids.clone())); ui.close(); } }
     if ids.len() == 1 {
         if let Some(p) = &t.path { if ui.button("Показать в папке").clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
@@ -2502,6 +2539,12 @@ fn reveal(path: &str) {
     #[cfg(windows)] { let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn(); }
     #[cfg(target_os = "macos")] { let _ = std::process::Command::new("open").args(["-R", path]).spawn(); }
     #[cfg(all(unix, not(target_os = "macos")))] { if let Some(d) = Path::new(path).parent() { let _ = std::process::Command::new("xdg-open").arg(d).spawn(); } }
+}
+
+fn open_folder(dir: &Path) {
+    #[cfg(windows)] { let _ = std::process::Command::new("explorer").arg(dir).spawn(); }
+    #[cfg(target_os = "macos")] { let _ = std::process::Command::new("open").arg(dir).spawn(); }
+    #[cfg(all(unix, not(target_os = "macos")))] { let _ = std::process::Command::new("xdg-open").arg(dir).spawn(); }
 }
 
 fn open_url(url: &str) {
