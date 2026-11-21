@@ -47,3 +47,25 @@ html.edit .edit-hint { display: block; }
 
 .grip { display: none; position: fixed; right: 2px; bottom: 2px; width: 14px; height: 14px; border-right: 3px solid #f4f4f5; border-bottom: 3px solid #f4f4f5; cursor: se-resize; -webkit-app-region: no-drag; }
 html.edit .grip { display: block; }
+
+/* ---- compact: маленькая плашка в одну строку ---- */
+.t-compact .ov { max-width: 380px; padding: 6px 14px 6px 6px; gap: 10px; border-radius: 99px; }
+.t-compact .cover { width: 40px; height: 40px; border-radius: 50%; }
+.t-compact .label, .t-compact .times { display: none; }
+.t-compact .title { font-size: 14px; margin: 0; }
+.t-compact .artist { font-size: 12px; }
+.t-compact .bar { margin-top: 4px; height: 2px; }
+
+/* ---- vertical: обложка сверху, текст по центру ---- */
+.t-vertical .ov { flex-direction: column; max-width: 240px; text-align: center; padding: 14px; }
+.t-vertical .cover { width: 200px; height: 200px; border-radius: 14px; }
+.t-vertical .info { width: 100%; }
+.t-vertical .label { justify-content: center; }
+
+/* ---- text: только «Исполнитель — Название», без фона ---- */
+.t-text .ov { background: none; border: 0; box-shadow: none; backdrop-filter: none; padding: 0; gap: 0; }
+.t-text .cover, .t-text .label, .t-text .bar, .t-text .times { display: none; }
+.t-text .info { display: flex; gap: 8px; align-items: baseline; }
+.t-text .title { order: 2; font-size: 18px; margin: 0; text-shadow: 0 2px 6px rgba(0,0,0,.9); }
+.t-text .artist { order: 1; flex: none; max-width: 45%; font-size: 18px; color: #fff; font-weight: 700; text-shadow: 0 2px 6px rgba(0,0,0,.9); }
+.t-text .artist:not(:empty)::after { content: " —"; }

@@ -298,3 +298,47 @@ mod tests {
         let _ = std::fs::remove_file(marker(&path));
     }
 }
+
+/// Размер папки кэша (байты) и число файлов.
+pub fn dir_size(dir: &std::path::Path) -> (u64, usize) {
+    std::fs::read_dir(dir).map(|rd| rd.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(s, n), m| (s + m.len(), n + 1))).unwrap_or((0, 0))
+}
+
+/// Удалить старые файлы (по времени последнего изменения), пока кэш не станет меньше `limit` байт.
+/// `keep` — файлы, которые сейчас нужны (играет/качается), их не трогаем. Возвращает освобождённое.
+pub fn trim_dir(dir: &std::path::Path, limit: u64, keep: &[std::path::PathBuf]) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> = rd.flatten()
+        .filter_map(|e| { let m = e.metadata().ok()?; m.is_file().then(|| (e.path(), m.len(), m.modified().unwrap_or(std::time::UNIX_EPOCH))) }).collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    files.sort_by_key(|f| f.2);
+    let mut freed = 0;
+    for (p, len, _) in files {
+        if total <= limit { break; }
+        let stem = p.file_stem().map(|s| s.to_string_lossy().split('.').next().unwrap_or("").to_string()).unwrap_or_default();
+        if keep.iter().any(|k| k.file_stem().map(|s| s.to_string_lossy().split('.').next().unwrap_or("").to_string()).as_deref() == Some(stem.as_str())) { continue; }
+        if std::fs::remove_file(&p).is_ok() { total -= len; freed += len; }
+    }
+    freed
+}
+
+#[cfg(test)]
+mod trim_tests {
+    #[test]
+    fn trims_oldest_first() {
+        let d = std::env::temp_dir().join(format!("wavy-trim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for (i, n) in ["a.m4a", "b.m4a", "c.m4a"].iter().enumerate() {
+            std::fs::write(d.join(n), vec![0u8; 1000]).unwrap();
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(1000 - i as u64 * 100);
+            std::fs::File::options().write(true).open(d.join(n)).unwrap().set_modified(t).unwrap();
+        }
+        // a — самый старый, но он «играет»: удалиться должен b
+        let freed = super::trim_dir(&d, 2000, &[d.join("a.m4a")]);
+        assert_eq!(freed, 1000);
+        assert!(d.join("a.m4a").exists() && !d.join("b.m4a").exists() && d.join("c.m4a").exists());
+        assert_eq!(super::dir_size(&d), (2000, 2));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

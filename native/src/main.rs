@@ -76,6 +76,8 @@ enum Bg {
     Skips(String, Vec<wavy_core::aniskip::Skip>),
     /// вход/синхронизация с Шикимори: обновлённый аккаунт (токены) или ошибка
     Shiki(Result<wavy_core::shikimori::Account, String>, bool),
+    SongRequest(String, Result<Track, String>),
+    CacheSize(u64, usize),
 }
 
 enum Modal {
@@ -215,6 +217,15 @@ struct App {
     next_ep: Option<(String, Instant)>,
     stay_ep: Option<String>,
     shiki_code: String,
+    /// чат Twitch: (канал, флаг остановки), заказы, кто когда заказывал, id заказанных в очереди
+    twitch: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
+    sr_tx: Sender<wavy_core::twitch::Request>,
+    sr_rx: Receiver<wavy_core::twitch::Request>,
+    sr_last: std::collections::HashMap<String, Instant>,
+    sr_ids: HashSet<String>,
+    cache_size: Option<(u64, usize)>,
+    cache_trimmed: Instant,
+    cache_counting: bool,
     /// трек, для которого уже начат кроссфейд
     xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
@@ -230,6 +241,7 @@ impl App {
         let dir = wavy_core::data_dir();
         let store = Store::open(&dir);
         let (tx, rx) = channel();
+        let (sr_tx, sr_rx) = channel();
         let (t2, c2) = (tx.clone(), ctx.clone());
         let discord = Discord::start(move |s| { let _ = t2.send(Bg::Discord(s.clone())); c2.request_repaint(); });
         let overlay = OverlayServer::new();
@@ -275,7 +287,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -554,6 +566,10 @@ impl App {
         self.pushed_clock = (st.position, st.playing, Instant::now());
         self.discord.update(&st);
         self.overlay.update(&st);
+        if self.settings().now_playing_file {
+            let text = st.track.as_ref().map(|t| if t.artist.is_empty() { t.title.clone() } else { format!("{} — {}", t.artist, t.title) }).unwrap_or_default();
+            let _ = std::fs::write(wavy_core::data_dir().join("now_playing.txt"), text);
+        }
     }
 
     /// Оверлей (OBS) и системный плеер сами досчитывают время от последнего обновления. Если трек долго
@@ -810,6 +826,7 @@ impl App {
             }
             Act::JumpQueue(i) => { self.resume = None; self.qi = i; self.load_current(ctx); }
             Act::Modal(m) => {
+                if matches!(m, Modal::Settings { .. }) { self.cache_size = None; self.cache_counting = false; }
                 if matches!(m, Modal::Settings { .. }) && self.yt_version.is_none() {
                     let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
                     std::thread::spawn(move || { let _ = tx.send(Bg::YtVersion(yt.version())); c.request_repaint(); });
@@ -1080,6 +1097,8 @@ impl App {
                     }
                     Err(e) => self.toast(e, true),
                 },
+                Bg::SongRequest(user, r) => self.song_request(user, r, ctx),
+                Bg::CacheSize(b, n) => self.cache_size = Some((b, n)),
                 Bg::Changes(r) => if let Some(Modal::WhatsNew { items, .. }) = &mut self.modal { *items = Some(r); },
                 Bg::Exported(r) => {
                     self.exporting = false;
@@ -1212,6 +1231,7 @@ impl App {
             }
         }
         self.anime_tick(ctx);
+        self.stream_tick(ctx);
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
         self.audio.poll();
         if self.audio.buffering() { ctx.request_repaint_after(Duration::from_millis(200)); }
@@ -2253,6 +2273,53 @@ impl App {
         }
     }
 
+    /// Чат Twitch (заказы) и лимит кэша.
+    fn stream_tick(&mut self, ctx: &egui::Context) {
+        let st = self.settings();
+        let want = (st.twitch_sr && !st.twitch_channel.trim().is_empty()).then(|| st.twitch_channel.trim().to_lowercase());
+        if self.twitch.as_ref().map(|t| &t.0) != want.as_ref() {
+            if let Some((_, stop)) = self.twitch.take() { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+            if let Some(ch) = want {
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (tx, c) = (self.sr_tx.clone(), ctx.clone());
+                wavy_core::twitch::listen(&ch, "!sr", stop.clone(), move |r| { let _ = tx.send(r); c.request_repaint(); });
+                self.twitch = Some((ch, stop));
+            }
+        }
+        while let Ok(r) = self.sr_rx.try_recv() {
+            // не чаще раза в 30 с от одного человека
+            if self.sr_last.get(&r.user).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) { continue; }
+            self.sr_last.insert(r.user.clone(), Instant::now());
+            let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
+            std::thread::spawn(move || { let _ = tx.send(Bg::SongRequest(r.user, yt.lookup(&r.query))); c.request_repaint(); });
+        }
+        // лимит кэша: проверяем раз в 10 минут
+        if st.cache_limit_gb > 0 && self.cache_trimmed.elapsed() > Duration::from_secs(600) {
+            self.cache_trimmed = Instant::now();
+            let keep: Vec<PathBuf> = [self.queue.get(self.qi), self.queue.get(self.qi + 1)].into_iter().flatten().filter_map(|id| self.track(id))
+                .filter_map(|t| t.url.map(|u| self.cache.join(wavy_core::sha16(u.as_bytes())))).collect();
+            let (dir, limit) = (self.cache.clone(), st.cache_limit_gb as u64 * 1_073_741_824);
+            std::thread::spawn(move || { let f = wavy_core::stream::trim_dir(&dir, limit, &keep); if f > 0 { wavy_core::log(&format!("кэш: удалено {} МБ старого", f / 1_048_576)); } });
+        }
+    }
+
+    fn song_request(&mut self, user: String, r: Result<Track, String>, ctx: &egui::Context) {
+        let t = match r { Ok(t) => t, Err(e) => { wavy_core::log(&format!("заказ от {user}: {e}")); return; } };
+        let max = self.settings().twitch_max_min as f64 * 60.0;
+        if max > 0.0 && t.duration > max { self.toast(format!("{user} заказал слишком длинный трек ({})", fmt_time(t.duration)), true); return; }
+        if self.queue.iter().skip(self.qi).any(|q| *q == t.id) { return; }
+        self.toast(format!("\u{E340}  {user} заказал: {} — {}", t.artist, t.title), false);
+        let id = t.id.clone();
+        self.radio.retain(|x| x.id != id);
+        self.radio.push(t);
+        self.sr_ids.insert(id.clone());
+        if self.current.is_none() || self.queue.is_empty() { self.play_list(vec![id], 0, false, ctx); return; }
+        // после текущего и уже заказанных — по очереди
+        let mut at = self.qi + 1;
+        while at < self.queue.len() && self.sr_ids.contains(&self.queue[at]) { at += 1; }
+        self.queue.insert(at, id);
+    }
+
     /// Отметить на Шикимори, сколько серий тайтла просмотрено.
     fn shiki_sync(&mut self, anime_id: String, ctx: &egui::Context) {
         let mut acc = self.settings().shiki;
@@ -2457,7 +2524,8 @@ impl App {
     fn modal_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
         let Some(mut m) = self.modal.take() else { return };
         let mut close = false;
-        let pls_name = |id: &str| self.store.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
+        let store_ = self.store.clone();
+        let pls_name = move |id: &str| store_.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
         let cur_pl = self.cur_playlist();
         let s = self.settings();
         let resp = egui::Modal::new(Id::unique("modal")).frame(egui::Frame::popup(&ctx.global_style()).fill(BG2).inner_margin(22).corner_radius(16)).show(ctx, |ui| {
@@ -2705,15 +2773,14 @@ impl App {
                             ui.add(egui::TextEdit::singleline(&mut u).desired_width(340.0).margin(egui::Margin::symmetric(10, 7)));
                             if pill(ui, "Копировать", false).clicked() { ui.ctx().copy_text(url.clone()); acts.push(Act::Settings(json!({}))); self.toast = Some(("Ссылка скопирована — вставь в OBS → Browser Source".into(), false, Instant::now())); }
                         });
-                        ui.label(RichText::new("Ширина 500, высота 160. Можно добавить ?theme=minimal или ?theme=vinyl").color(MUTED).size(12.0));
+                        ui.label(RichText::new("Ширина 500, высота 160 (вертикальный — 260×320). Стиль можно задать и в ссылке: ?theme=compact, vertical, minimal, text, vinyl").color(MUTED).size(12.0));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.label("Стиль OBS:");
                             let mut th = s.overlay.theme.clone();
-                            egui::ComboBox::from_id_salt("theme").selected_text(match th.as_str() { "minimal" => "Минимал", "vinyl" => "Винил", _ => "Карточка" }).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut th, "card".into(), "Карточка");
-                                ui.selectable_value(&mut th, "minimal".into(), "Минимал");
-                                ui.selectable_value(&mut th, "vinyl".into(), "Винил");
+                            const THEMES: [(&str, &str); 6] = [("card", "Карточка"), ("compact", "Компакт"), ("vertical", "Вертикальный"), ("minimal", "Минимал"), ("text", "Только текст"), ("vinyl", "Винил")];
+                            egui::ComboBox::from_id_salt("theme").selected_text(THEMES.iter().find(|t| t.0 == th).map(|t| t.1).unwrap_or("Карточка")).show_ui(ui, |ui| {
+                                for (k, name) in THEMES { ui.selectable_value(&mut th, k.into(), name); }
                             });
                             if th != s.overlay.theme { acts.push(Act::Settings(json!({"overlay": {"theme": th}}))); }
                             ui.add_space(12.0);
@@ -2756,6 +2823,52 @@ impl App {
                         });
                         ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
 
+                        section(ui, "\u{E4DA}  Стрим");
+                        ui.horizontal(|ui| {
+                            let mut sr = s.twitch_sr;
+                            if ui.checkbox(&mut sr, "Заказы из чата Twitch: !sr ссылка или название").changed() { acts.push(Act::Settings(json!({"twitchSr": sr}))); }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Канал:");
+                            let mut ch = s.twitch_channel.clone();
+                            if ui.add(egui::TextEdit::singleline(&mut ch).hint_text("avice").desired_width(160.0)).changed() { acts.push(Act::Settings(json!({"twitchChannel": ch.trim()}))); }
+                            ui.label("не длиннее, мин:");
+                            let mut m = s.twitch_max_min;
+                            if ui.add(egui::DragValue::new(&mut m).range(0..=60)).changed() { acts.push(Act::Settings(json!({"twitchMaxMin": m}))); }
+                        });
+                        if let Some((ch, _)) = &self.twitch { ui.label(RichText::new(format!("Слушаю чат #{ch}. Заказ встаёт в очередь после текущего трека, от одного зрителя — не чаще раза в 30 с.")).color(OK).size(12.0)); }
+                        let mut np = s.now_playing_file;
+                        if ui.checkbox(&mut np, "Писать текущий трек в файл (для OBS → Текст → «Читать из файла»)").changed() { acts.push(Act::Settings(json!({"nowPlayingFile": np}))); }
+                        if s.now_playing_file {
+                            let f = wavy_core::data_dir().join("now_playing.txt").to_string_lossy().into_owned();
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&f).color(MUTED).size(12.0));
+                                if pill(ui, "Копировать путь", false).clicked() { ui.ctx().copy_text(f.clone()); }
+                            });
+                        }
+                        section(ui, "\u{E248}  Кэш");
+                        match self.cache_size {
+                            Some((b, n)) => { ui.label(RichText::new(format!("Скачано с YouTube: {} ({n} файлов)", fmt_bytes(b))).color(TEXT)); }
+                            None => {
+                                ui.label(RichText::new("Считаю…").color(MUTED));
+                                if !self.cache_counting { self.cache_counting = true; let (dir, tx, c) = (self.cache.clone(), self.tx.clone(), ui.ctx().clone()); std::thread::spawn(move || { let (b, n) = wavy_core::stream::dir_size(&dir); let _ = tx.send(Bg::CacheSize(b, n)); c.request_repaint(); }); }
+                            }
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Лимит:");
+                            let mut l = s.cache_limit_gb;
+                            egui::ComboBox::from_id_salt("cache-limit").selected_text(if l == 0 { "без лимита".to_string() } else { format!("{l} ГБ") }).show_ui(ui, |ui| {
+                                for v in [0u32, 1, 2, 5, 10, 20] { ui.selectable_value(&mut l, v, if v == 0 { "без лимита".to_string() } else { format!("{v} ГБ") }); }
+                            });
+                            if l != s.cache_limit_gb { acts.push(Act::Settings(json!({"cacheLimitGb": l}))); self.cache_trimmed = Instant::now() - Duration::from_secs(3600); }
+                            if pill(ui, "Очистить", false).on_hover_text("Удалить скачанное (кроме того, что играет сейчас) — при прослушивании скачается снова").clicked() {
+                                let keep: Vec<PathBuf> = self.current.as_ref().and_then(|t| t.url.clone()).map(|u| self.cache.join(wavy_core::sha16(u.as_bytes()))).into_iter().collect();
+                                let freed = wavy_core::stream::trim_dir(&self.cache, 0, &keep);
+                                self.toast(format!("Освобождено {}", fmt_bytes(freed)), false);
+                                self.cache_size = None;
+                                self.cache_counting = false;
+                            }
+                        });
                         section(ui, "\u{E754}  Аниме");
                         let mut a = s.anime_autoskip;
                         if ui.checkbox(&mut a, "Сам пропускать опенинги (время берётся из AniSkip)").changed() { acts.push(Act::Settings(json!({"animeAutoskip": a}))); }
@@ -3023,7 +3136,8 @@ impl App {
             let Some(t) = self.current.clone() else { return };
             let fade = if hide_after > 0 && locked { let e = self.shown_at.elapsed().as_secs_f32() - hide_after as f32; (1.0 - e.max(0.0) / 0.5).clamp(0.0, 1.0) } else { 1.0 };
             if fade <= 0.0 { return; }
-            let theme = s.overlay.theme.as_str();
+            // в окне-оверлее свои три вида: новые стили OBS показываем ближайшим
+            let theme = match s.overlay.theme.as_str() { "text" => "minimal", "compact" | "vertical" => "card", t => t };
             let playing = self.audio.is_playing();
             let card = rect.shrink2(Vec2::new(8.0, 8.0)).with_min_y(rect.min.y + if locked { 8.0 } else { 20.0 });
             let a = |c: Color32| c.gamma_multiply(fade);
@@ -3462,4 +3576,8 @@ fn fmt_date(ms: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
     format!("{d:02}.{m:02}.{y}")
+}
+
+fn fmt_bytes(b: u64) -> String {
+    if b >= 1 << 30 { format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64) } else { format!("{} МБ", b / (1 << 20)) }
 }

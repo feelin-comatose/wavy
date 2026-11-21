@@ -79,10 +79,18 @@ pub struct Settings {
     pub anime_autoskip: bool,
     pub anime_next: bool,
     pub shiki: crate::shikimori::Account,
+    /// Заказы из чата Twitch: канал, включено ли, макс. длина трека (мин).
+    pub twitch_channel: String,
+    pub twitch_sr: bool,
+    pub twitch_max_min: u32,
+    /// Писать «Исполнитель — Название» в файл now_playing.txt (для OBS «Текст из файла»).
+    pub now_playing_file: bool,
+    /// Лимит кэша (ГБ, 0 — без лимита): старое удаляется само.
+    pub cache_limit_gb: u32,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, now_playing_file: false, cache_limit_gb: 0 }
     }
 }
 

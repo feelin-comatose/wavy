@@ -13,6 +13,7 @@ pub mod shikimori;
 pub mod spotify;
 pub mod stream;
 pub mod sync;
+pub mod twitch;
 pub mod store;
 pub mod youtube;
 

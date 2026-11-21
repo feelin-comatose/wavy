@@ -236,6 +236,17 @@ impl YouTube {
         Ok(json.get("entries").and_then(Value::as_array).map(|a| a.iter().filter(|e| !e.is_null() && !is_live(e)).map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
     }
 
+    /// Один трек по ссылке или по названию (первый результат поиска) — для заказов из чата.
+    pub fn lookup(&self, query: &str) -> Result<Track, String> {
+        if query.starts_with("http") {
+            let json: Value = serde_json::from_str(&self.run(&["--flat-playlist", "-J", "--no-warnings", "--playlist-end", "1", query])?).map_err(|e| e.to_string())?;
+            let e = json.get("entries").and_then(Value::as_array).and_then(|a| a.first()).cloned().unwrap_or_else(|| json.clone());
+            if e.is_null() || is_live(&e) { return Err("по ссылке нет видео".into()); }
+            return Ok(to_track(&e, &json, false));
+        }
+        self.search(query, 1)?.into_iter().next().ok_or_else(|| "ничего не нашлось".into())
+    }
+
     /// Радио по треку: микс YouTube (похожие песни), без самого трека.
     pub fn radio(&self, video_id: &str, limit: u32) -> Result<Vec<Track>, String> {
         let url = format!("https://www.youtube.com/watch?v={video_id}&list=RD{video_id}");
