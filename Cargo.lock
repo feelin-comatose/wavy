@@ -5170,6 +5170,7 @@ dependencies = [
  "egui_extras",
  "global-hotkey",
  "image",
+ "lofty",
  "matroska-demuxer",
  "mp4",
  "openh264",
