@@ -7,6 +7,7 @@ mod video;
 mod player;
 mod thumbs;
 mod export;
+mod tray;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use egui_extras::{Column, TableBuilder};
@@ -37,7 +38,7 @@ const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a
 const OPENINGS: &str = "Опенинги";
 
 #[derive(Clone, PartialEq)]
-enum View { Library, Playlist(String), Search, Anime, AnimeTitle(String) }
+enum View { Library, Liked, Playlist(String), Search, Anime, AnimeTitle(String) }
 
 #[derive(Clone)]
 enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
@@ -65,6 +66,7 @@ enum Bg {
     ShikiResults(Result<Vec<ShikiAnime>, String>),
     Shazam(Result<Option<Found>, String>),
     Exported(Result<export::Report, String>),
+    Changes(Result<Vec<(String, String)>, String>),
 }
 
 enum Modal {
@@ -76,6 +78,8 @@ enum Modal {
     AnimeMatch { id: String, query: String, results: Vec<ShikiAnime>, busy: bool, err: Option<String> },
     DeleteAnime { id: String },
     Shazam { state: ShazamState, to_openings: bool },
+    /// изменения между сборками: (с, по, загруженный список)
+    WhatsNew { from: u32, to: u32, items: Option<Result<Vec<(String, String)>, String>> },
 }
 
 enum Act {
@@ -94,6 +98,11 @@ enum Act {
     /// (ключ: "library" или id плейлиста, способ)
     Sort(String, String),
     PlaylistCover(String), PlaylistCoverReset(String),
+    Like(Vec<String>, bool),
+    /// перетаскивание в текущем списке (плейлист / «Любимое»): треки, куда (индекс)
+    Move(Vec<String>, usize),
+    MoveQueue(usize, usize),
+    WhatsNew(u32, u32), ToggleMini, ShowWindow, Quit,
 }
 
 struct App {
@@ -172,6 +181,15 @@ struct App {
     cut_retries: Option<(String, u8)>,
     /// трек, прослушивание которого уже засчитано (после 30 секунд)
     counted: Option<String>,
+    /// перетаскиваемые треки и куда бросить; строка под мышью (для сердечка)
+    drag_ids: Option<Vec<String>>,
+    drop_at: Option<usize>,
+    hover_row: Option<String>,
+    drag_queue: Option<usize>,
+    muted_vol: f32,
+    focus_filter: bool,
+    quitting: bool,
+    tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
     cjk_check: Instant,
@@ -229,10 +247,16 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
+        app.tray = tray::new(cc);
+        // после обновления — показать, что поменялось
+        if let Some(cur) = update::current_build() {
+            match s.last_build { Some(m) if m < cur => app.apply(Act::WhatsNew(m, cur), &ctx), _ => {} }
+            if s.last_build != Some(cur) { app.store.lock().unwrap().patch_settings(&json!({"lastBuild": cur})); }
+        }
         app.restore_session(&ctx);
         // «Открыть с помощью Wavy»
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
@@ -301,11 +325,12 @@ impl App {
         let s = self.store.lock().unwrap();
         let ids = match &self.view {
             View::Library => s.library_ids(),
+            View::Liked => s.lib.liked.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect(),
             View::Playlist(id) => s.lib.playlists.iter().find(|p| &p.id == id).map(|p| p.track_ids.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect()).unwrap_or_default(),
             View::Search => return self.results.iter().map(|t| t.id.clone()).collect(),
             View::Anime | View::AnimeTitle(_) => return vec![],
         };
-        let (key, pl) = match &self.view { View::Playlist(id) => (id.clone(), true), _ => ("library".to_string(), false) };
+        let (key, pl) = match &self.view { View::Playlist(id) => (id.clone(), true), View::Liked => ("liked".to_string(), true), _ => ("library".to_string(), false) };
         let ids = s.sorted(ids, s.lib.settings.sort.get(&key).map(String::as_str).unwrap_or(""), pl);
         let q = self.filter.trim().to_lowercase();
         if q.is_empty() { return ids; }
@@ -684,6 +709,30 @@ impl App {
                 if let Some(old) = s.lib.playlists.iter_mut().find(|p| p.id == id).and_then(|p| p.cover.take()) { let _ = std::fs::remove_file(old); }
                 s.save();
             }
+            Act::Like(ids, on) => self.store.lock().unwrap().set_liked(&ids, on),
+            Act::Move(ids, to) => {
+                let mut s = self.store.lock().unwrap();
+                match &self.view { View::Playlist(p) => s.move_in_playlist(p, &ids, to), View::Liked => s.move_liked(&ids, to), _ => {} }
+            }
+            Act::MoveQueue(from, to) => {
+                if from < self.queue.len() && from != to {
+                    // двигаем номера позиций, чтобы играющий трек остался тем же (в очереди бывают повторы)
+                    let mut idx: Vec<usize> = (0..self.queue.len()).collect();
+                    let x = idx.remove(from);
+                    idx.insert(if to > from { to - 1 } else { to }.min(idx.len()), x);
+                    let old = self.queue.clone();
+                    self.queue = idx.iter().map(|&i| old[i].clone()).collect();
+                    self.qi = idx.iter().position(|&i| i == self.qi).unwrap_or(self.qi);
+                }
+            }
+            Act::WhatsNew(from, to) => {
+                self.modal = Some(Modal::WhatsNew { from, to, items: None });
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || { let _ = tx.send(Bg::Changes(update::changes(from, to))); c.request_repaint(); });
+            }
+            Act::ToggleMini => { let on = !self.settings().mini; self.store.lock().unwrap().patch_settings(&json!({"mini": on})); }
+            Act::ShowWindow => tray::show(ctx),
+            Act::Quit => { self.quitting = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             Act::Reveal(p) => reveal(&p),
             Act::OpenUrl(u) => open_url(&u),
             Act::Settings(patch) => {
@@ -927,6 +976,7 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Bg::Status(s) => self.toast(s, false),
+                Bg::Changes(r) => if let Some(Modal::WhatsNew { items, .. }) = &mut self.modal { *items = Some(r); },
                 Bg::Exported(r) => {
                     self.exporting = false;
                     match r {
@@ -1214,6 +1264,16 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.tick(&ctx);
         let mut acts = Vec::new();
+        if let Some((_, rx)) = &self.tray {
+            while let Ok(c) = rx.try_recv() {
+                acts.push(match c { tray::Cmd::Show => continue, tray::Cmd::Toggle => Act::TogglePlay, tray::Cmd::Next => Act::Next, tray::Cmd::Prev => Act::Prev, tray::Cmd::Quit => Act::Quit });
+            }
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray.is_some() && self.settings().close_to_tray {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            tray::hide(&ctx);
+        }
+        if self.settings().mini { self.mini_window(&ctx, &mut acts); }
         self.keys(&ctx, &mut acts);
 
         if self.fullscreen {
@@ -1254,6 +1314,20 @@ impl App {
             else if i.key_pressed(egui::Key::ArrowRight) { acts.push(Act::Seek(self.audio.position() + 5.0)); }
             if i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) { acts.push(Act::Prev); }
             else if i.key_pressed(egui::Key::ArrowLeft) { acts.push(Act::Seek((self.audio.position() - 5.0).max(0.0))); }
+            let vol = self.settings().volume;
+            if i.key_pressed(egui::Key::ArrowUp) { acts.push(Act::Volume((vol + 0.05).min(1.0))); acts.push(Act::SaveVolume); }
+            if i.key_pressed(egui::Key::ArrowDown) { acts.push(Act::Volume((vol - 0.05).max(0.0))); acts.push(Act::SaveVolume); }
+            if i.key_pressed(egui::Key::M) {
+                if vol > 0.0 { self.muted_vol = vol; acts.push(Act::Volume(0.0)); } else { acts.push(Act::Volume(if self.muted_vol > 0.0 { self.muted_vol } else { 0.8 })); }
+                acts.push(Act::SaveVolume);
+            }
+            if i.key_pressed(egui::Key::L) {
+                if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_none()) { let on = self.store.lock().unwrap().is_liked(&t.id); acts.push(Act::Like(vec![t.id.clone()], !on)); }
+            }
+            if i.key_pressed(egui::Key::Q) { self.show_queue = !self.show_queue; }
+            if i.key_pressed(egui::Key::S) && !i.modifiers.ctrl { acts.push(Act::Shuffle); }
+            if i.key_pressed(egui::Key::R) && !i.modifiers.ctrl { acts.push(Act::Repeat); }
+            if i.modifiers.command && i.key_pressed(egui::Key::F) { self.focus_filter = true; }
             for ev in &i.events {
                 if let egui::Event::Paste(t) = ev { if t.trim().starts_with("http") { acts.push(Act::Modal(Modal::ImportUrl { url: t.trim().into(), into: false, busy: false, err: None })); } }
             }
@@ -1270,6 +1344,8 @@ impl App {
         });
         ui.add_space(14.0);
         if nav(ui, "\u{E340}  Библиотека", self.view == View::Library, None).clicked() { acts.push(Act::View(View::Library)); }
+        let n_liked = { let s = self.store.lock().unwrap(); s.lib.liked.iter().filter(|t| s.lib.tracks.contains_key(*t)).count() };
+        if nav(ui, "\u{E2A8}  Любимое", self.view == View::Liked, (n_liked > 0).then_some(n_liked)).clicked() { acts.push(Act::View(View::Liked)); }
         if nav(ui, "\u{E30C}  Поиск на YouTube", self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
         let n_anime = self.store.lock().unwrap().lib.anime.len();
         if nav(ui, "\u{E754}  Аниме", matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
@@ -1310,6 +1386,7 @@ impl App {
             let s = self.store.lock().unwrap();
             match &self.view {
                 View::Library => ("КОЛЛЕКЦИЯ", "Библиотека".to_string(), None),
+                View::Liked => ("КОЛЛЕКЦИЯ", "Любимое".to_string(), None),
                 View::Search => ("YOUTUBE", "Поиск".to_string(), None),
                 View::Anime | View::AnimeTitle(_) => ("АНИМЕ", "Аниме".to_string(), None),
                 View::Playlist(id) => {
@@ -1337,7 +1414,7 @@ impl App {
                 None => {
                     ui.painter().rect_filled(r, 14, BG3);
                     ui.painter().rect_stroke(r, 14, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
-                    ui.painter().text(r.center(), Align2::CENTER_CENTER, if self.view == View::Search { "\u{E30C}" } else { "\u{E340}" }, FontId::proportional(44.0), ACCENT);
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, match self.view { View::Search => "\u{E30C}", View::Liked => "\u{E2A8}", _ => "\u{E340}" }, FontId::new(44.0, if self.view == View::Liked { egui::FontFamily::Name("fill".into()) } else { egui::FontFamily::Proportional }), ACCENT);
                 }
             }
             if hovered {
@@ -1400,12 +1477,14 @@ impl App {
             return self.search_results(ui, acts);
         }
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Фильтр по названию, артисту, альбому…").desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
+            let fr = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Фильтр (Ctrl+F)…").desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
+            if std::mem::take(&mut self.focus_filter) { fr.request_focus(); }
+            if fr.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.filter.clear(); fr.surrender_focus(); }
             // сортировка (своя для библиотеки и для каждого плейлиста)
-            let (key, is_pl) = match &self.view { View::Playlist(id) => (id.clone(), true), _ => ("library".to_string(), false) };
+            let (key, is_pl) = match &self.view { View::Playlist(id) => (id.clone(), true), View::Liked => ("liked".to_string(), true), _ => ("library".to_string(), false) };
             let cur = self.settings().sort.get(&key).cloned().unwrap_or_default();
             let opts: &[(&str, &str)] = if is_pl {
-                &[("", "Как в плейлисте"), ("plays", "Часто слушаю"), ("newest", "Сначала новые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
+                &[("", if key == "liked" { "Как лайкал" } else { "Как в плейлисте" }), ("plays", "Часто слушаю"), ("newest", "Сначала новые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
             } else {
                 &[("", "Сначала новые"), ("plays", "Часто слушаю"), ("oldest", "Сначала старые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
             };
@@ -1447,17 +1526,25 @@ impl App {
         let pid = self.cur_playlist();
         let pls: Vec<(String, String)> = self.store.lock().unwrap().lib.playlists.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
         let mods = ui.input(|i| i.modifiers);
+        let liked: HashSet<String> = self.store.lock().unwrap().lib.liked.iter().cloned().collect();
+        // перетаскивать можно в плейлисте и «Любимом», если порядок свой (без сортировки и фильтра)
+        let key = match &self.view { View::Playlist(id) => Some(id.clone()), View::Liked => Some("liked".to_string()), _ => None };
+        let can_drag = key.as_ref().is_some_and(|k| self.settings().sort.get(k).is_none_or(|v| v.is_empty())) && self.filter.trim().is_empty();
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut line: Option<(f32, f32, f32)> = None;
+        let hover_prev = self.hover_row.take();
         TableBuilder::new(ui)
             .striped(false)
-            .sense(Sense::click())
+            .sense(if can_drag { Sense::click_and_drag() } else { Sense::click() })
             .cell_layout(Layout::left_to_right(Align::Center))
             .column(Column::exact(36.0))
             .column(Column::remainder().at_least(200.0).clip(true))
             .column(Column::exact(220.0).clip(true))
+            .column(Column::exact(34.0))
             .column(Column::exact(56.0))
             .max_scroll_height(f32::INFINITY)
             .header(26.0, |mut h| {
-                for t in ["#", "НАЗВАНИЕ", "АЛЬБОМ", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); }
+                for t in ["#", "НАЗВАНИЕ", "АЛЬБОМ", "", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); }
             })
             .body(|body| {
                 body.rows(52.0, ids.len(), |mut row| {
@@ -1483,8 +1570,32 @@ impl App {
                         let album = if !t.album.is_empty() { t.album.clone() } else if t.kind == "youtube" { "YouTube".into() } else if t.kind == "stream" { "Стрим".into() } else { String::new() };
                         ui.add(egui::Label::new(RichText::new(album).color(MUTED).size(13.0)).truncate());
                     });
+                    row.col(|ui| {
+                        let on = liked.contains(id);
+                        if on || hover_prev.as_deref() == Some(id.as_str()) {
+                            let (r, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                            let fam = if on { egui::FontFamily::Name("fill".into()) } else { egui::FontFamily::Proportional };
+                            glyph(ui.painter(), r.center(), "\u{E2A8}", FontId::new(16.0, fam), if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED });
+                            if resp.on_hover_text(if on { "Убрать из «Любимого»" } else { "В «Любимое»" }).clicked() { acts.push(Act::Like(vec![id.clone()], !on)); }
+                        }
+                    });
                     row.col(|ui| { ui.label(RichText::new(fmt_time(t.duration)).color(MUTED)); });
                     let r = row.response();
+                    if r.hovered() || r.contains_pointer() { self.hover_row = Some(id.clone()); }
+                    if can_drag {
+                        if r.drag_started() {
+                            let sel: Vec<String> = if self.selected.contains(id) { ids.iter().filter(|x| self.selected.contains(*x)).cloned().collect() } else { vec![id.clone()] };
+                            self.drag_ids = Some(sel);
+                        }
+                        if let (Some(_), Some(p)) = (&self.drag_ids, pointer) {
+                            if r.rect.y_range().contains(p.y) {
+                                let below = p.y > r.rect.center().y;
+                                let to = if below { i + 1 } else { i };
+                                self.drop_at = Some(to);
+                                line = Some((if below { r.rect.bottom() } else { r.rect.top() }, r.rect.left(), r.rect.right()));
+                            }
+                        }
+                    }
                     if r.double_clicked() { acts.push(Act::Play(ids.to_vec(), i, false)); }
                     else if r.clicked() {
                         if mods.shift { if let Some(a) = self.last_clicked.as_ref().and_then(|l| ids.iter().position(|x| x == l)) { let (x, y) = (a.min(i), a.max(i)); self.selected.extend(ids[x..=y].iter().cloned()); } }
@@ -1493,9 +1604,25 @@ impl App {
                     }
                     if r.secondary_clicked() && !self.selected.contains(id) { self.selected = HashSet::from([id.clone()]); }
                     let sel: Vec<String> = if self.selected.contains(id) { ids.iter().filter(|x| self.selected.contains(*x)).cloned().collect() } else { vec![id.clone()] };
-                    r.context_menu(|ui| track_menu(ui, &sel, &t, pid.as_deref(), &pls, acts));
+                    let is_liked = liked.contains(id);
+                    r.context_menu(|ui| {
+                        let lbl = if is_liked { "Убрать из «Любимого»" } else { "В «Любимое»" };
+                        if ui.button(lbl).clicked() { acts.push(Act::Like(sel.clone(), !is_liked)); ui.close(); }
+                        track_menu(ui, &sel, &t, pid.as_deref(), &pls, acts)
+                    });
                 });
             });
+        if self.drag_ids.is_some() {
+            if let Some((y, x0, x1)) = line {
+                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("drop-line"))).line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(2.0, ACCENT));
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if ui.input(|i| i.pointer.any_released()) {
+                if let (Some(ids), Some(to)) = (self.drag_ids.take(), self.drop_at.take()) { acts.push(Act::Move(ids, to)); }
+                self.drag_ids = None;
+                self.drop_at = None;
+            }
+        }
     }
 
     /// Постер (2:3) с обрезкой по центру; без постера — заглушка.
@@ -1786,7 +1913,15 @@ impl App {
                 if let Some(f) = new { acts.push(Act::Volume(f)); }
                 if r.drag_stopped() || r.clicked() { acts.push(Act::SaveVolume); }
                 ui.label(RichText::new(if v == 0.0 { "\u{E45C}" } else { "\u{E44A}" }).color(MUTED));
-                if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь").clicked() { self.show_queue = !self.show_queue; }
+                if icon_btn(ui, "\u{E64C}", 34.0, s.mini).on_hover_text("Мини-плеер поверх окон").clicked() { acts.push(Act::ToggleMini); }
+                if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь (Q)").clicked() { self.show_queue = !self.show_queue; }
+                if let Some(t) = self.current.clone().filter(|t| t.anime.is_none() && self.store.lock().unwrap().lib.tracks.contains_key(&t.id)) {
+                    let on = self.store.lock().unwrap().is_liked(&t.id);
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
+                    if resp.hovered() { ui.painter().circle_filled(r.center(), 17.0, BG3); }
+                    glyph(ui.painter(), r.center(), "\u{E2A8}", FontId::new(17.0, if on { egui::FontFamily::Name("fill".into()) } else { egui::FontFamily::Proportional }), if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED });
+                    if resp.on_hover_text(if on { "Убрать из «Любимого» (L)" } else { "В «Любимое» (L)" }).clicked() { acts.push(Act::Like(vec![t.id.clone()], !on)); }
+                }
                 if self.current.is_some() && icon_btn(ui, "\u{E802}", 34.0, false).on_hover_text("Что это играет? (Shazam) — например, опенинг в аниме").clicked() { acts.push(Act::Shazam); }
             });
         });
@@ -1920,7 +2055,10 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_queue = false; } });
         });
         ui.separator();
+        ui.label(RichText::new("тяни трек — переставить").size(11.0).color(MUTED));
         let q = self.queue.clone();
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut target: Option<(usize, f32, f32, f32)> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 44.0, q.len(), |ui, range| {
             for i in range {
                 let Some(t) = self.track(&q[i]) else { continue };
@@ -1932,10 +2070,26 @@ impl App {
                         ui.add(egui::Label::new(RichText::new(&t.title).color(c)).truncate());
                         ui.add(egui::Label::new(RichText::new(&t.artist).color(MUTED).size(12.0)).truncate());
                     });
-                }).response.interact(Sense::click());
+                }).response.interact(Sense::click_and_drag());
                 if r.clicked() { acts.push(Act::JumpQueue(i)); }
+                if r.drag_started() { self.drag_queue = Some(i); }
+                if let (Some(_), Some(p)) = (self.drag_queue, pointer) {
+                    if r.rect.y_range().contains(p.y) {
+                        let below = p.y > r.rect.center().y;
+                        target = Some((if below { i + 1 } else { i }, if below { r.rect.bottom() } else { r.rect.top() }, r.rect.left(), r.rect.right()));
+                    }
+                }
             }
         });
+        if let Some(from) = self.drag_queue {
+            if let Some((_, y, x0, x1)) = target {
+                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("q-drop"))).line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(2.0, ACCENT));
+            }
+            if ui.input(|i| i.pointer.any_released()) {
+                self.drag_queue = None;
+                if let Some((to, ..)) = target { acts.push(Act::MoveQueue(from, to)); }
+            }
+        }
     }
 
     fn modal_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
@@ -1997,6 +2151,27 @@ impl App {
                         if pill(ui, "Удалить", true).clicked() { acts.push(Act::DeletePlaylist(id.clone())); close = true; }
                         if pill(ui, "Отмена", false).clicked() { close = true; }
                     });
+                }
+                Modal::WhatsNew { from, to, items } => {
+                    ui.label(RichText::new("Что нового в Wavy").size(20.0).family(bold()));
+                    ui.label(RichText::new(format!("Сборки {} → {}", *from + 1, to)).color(MUTED));
+                    ui.add_space(8.0);
+                    match items {
+                        None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Загружаю…").color(MUTED)); }); }
+                        Some(Err(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
+                        Some(Ok(v)) if v.is_empty() => { ui.label(RichText::new("Только мелкие технические правки").color(MUTED)); }
+                        Some(Ok(v)) => {
+                            egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                                for (title, body) in v.iter() {
+                                    ui.label(RichText::new(format!("• {title}")).family(semi()).color(TEXT));
+                                    if !body.is_empty() { ui.label(RichText::new(body).color(MUTED).size(12.5)); }
+                                    ui.add_space(8.0);
+                                }
+                            });
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Круто", true).clicked() { close = true; } });
                 }
                 Modal::AnimeMatch { id, query, results, busy, err } => {
                     ui.label(RichText::new("Какое это аниме?").size(20.0).family(bold()));
@@ -2202,6 +2377,14 @@ impl App {
                             if r.lost_focus() || (r.changed() && sp_secret.len() == 32) { acts.push(Act::Settings(json!({"spotify": {"clientSecret": sp_secret.as_str()}}))); }
                         });
 
+                        section(ui, "\u{E272}  Удобство");
+                        if cfg!(windows) {
+                            let mut ct = s.close_to_tray;
+                            if ui.checkbox(&mut ct, "Крестик сворачивает в трей (музыка продолжает играть)").changed() { acts.push(Act::Settings(json!({"closeToTray": ct}))); }
+                        }
+                        let mut mini = s.mini;
+                        if ui.checkbox(&mut mini, "Мини-плеер поверх всех окон").changed() { acts.push(Act::ToggleMini); }
+                        ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск").color(MUTED).size(12.0));
                         section(ui, "\u{E036}  Обновления");
                         match update::current_build() {
                             Some(b) => { ui.label(RichText::new(format!("Версия: сборка {b}")).color(TEXT)); }
@@ -2221,6 +2404,7 @@ impl App {
                             let busy = matches!(self.upd, Some(UpdState::Checking | UpdState::Downloading(_)));
                             if ui.add_enabled(update::current_build().is_some() && !busy, pill_btn("Проверить обновления", false)).clicked() { acts.push(Act::CheckUpdate); }
                             if matches!(self.upd, Some(UpdState::Ready(_))) && pill(ui, "Перезапустить", true).clicked() { acts.push(Act::Restart); }
+                            if let Some(b) = update::current_build() { if pill(ui, "Что нового", false).clicked() { acts.push(Act::WhatsNew(b.saturating_sub(5).max(1), b)); } }
                         });
                     });
                     ui.add_space(8.0);
@@ -2243,6 +2427,72 @@ impl App {
     }
 
     /// Игровой оверлей: отдельное прозрачное окно поверх всего.
+    /// Мини-плеер: маленькое окно поверх всех, тянется мышкой.
+    fn mini_window(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        let s = self.settings();
+        let pos = s.mini_pos.unwrap_or([60.0, 60.0]);
+        let vb = egui::ViewportBuilder::default().with_title("Wavy mini").with_decorations(false).with_always_on_top()
+            .with_taskbar(false).with_resizable(false).with_position(pos).with_inner_size([360.0, 84.0]);
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("wavy-mini"), vb, |ui, _| {
+            let ctx = ui.ctx().clone();
+            let rect = ui.max_rect();
+            let p = ui.painter().clone();
+            p.rect_filled(rect, 0, BG2);
+            p.rect_stroke(rect, 0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+            if ctx.input(|i| i.viewport().close_requested()) { acts.push(Act::ToggleMini); }
+            // перетаскивание за любое пустое место
+            let drag = ui.interact(rect, Id::unique("mini-drag"), Sense::click_and_drag());
+            if drag.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag); }
+            if drag.double_clicked() { acts.push(Act::ShowWindow); }
+            if let Some(o) = ctx.input(|i| i.viewport().outer_rect) {
+                let b = [o.min.x, o.min.y];
+                if b != pos && !ctx.input(|i| i.pointer.any_down()) { acts.push(Act::Settings(json!({"miniPos": b}))); }
+            }
+            let cr = Rect::from_min_size(rect.min + Vec2::new(12.0, 12.0), Vec2::splat(60.0));
+            match self.current.clone() {
+                Some(t) => {
+                    match t.cover.clone().and_then(|c| self.thumbs.get(&c, 120)) {
+                        Some(tex) => { egui::Image::new(&tex).corner_radius(8).paint_at(ui, cr); }
+                        None => { p.rect_filled(cr, 8, BG3); glyph(&p, cr.center(), "\u{E33C}", FontId::proportional(22.0), MUTED); }
+                    }
+                    let tx = cr.right() + 12.0;
+                    let w = rect.right() - 128.0 - tx;
+                    let clip = Rect::from_min_max(Pos2::new(tx, rect.top()), Pos2::new(tx + w, rect.bottom()));
+                    let pc = p.with_clip_rect(clip);
+                    pc.text(Pos2::new(tx, cr.top() + 12.0), Align2::LEFT_CENTER, &t.title, FontId::new(14.0, semi()), TEXT);
+                    pc.text(Pos2::new(tx, cr.top() + 32.0), Align2::LEFT_CENTER, &t.artist, FontId::proportional(12.0), MUTED);
+                    // прогресс
+                    let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+                    let f = if dur > 0.0 { (self.audio.position() / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
+                    let bar = Rect::from_min_size(Pos2::new(tx, cr.bottom() - 6.0), Vec2::new(w, 3.0));
+                    p.rect_filled(bar, 2, BG3);
+                    p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * f, 3.0)), 2, TEXT);
+                }
+                None => { p.text(Pos2::new(cr.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, "Ничего не играет", FontId::proportional(13.0), MUTED); }
+            }
+            // кнопки
+            let mut x = rect.right() - 120.0;
+            let cy = rect.center().y;
+            for (icon, act, big) in [("\u{E5A4}", 0, false), (if self.audio.is_playing() { "\u{E39E}" } else { "\u{E3D0}" }, 1, true), ("\u{E5A6}", 2, false)] {
+                let sz = if big { 40.0 } else { 32.0 };
+                let r = Rect::from_center_size(Pos2::new(x + sz / 2.0, cy), Vec2::splat(sz));
+                let resp = ui.interact(r, Id::unique(("mini-btn", act)), Sense::click());
+                if big { p.circle_filled(r.center(), sz / 2.0, if resp.hovered() { Color32::WHITE } else { TEXT }); }
+                else if resp.hovered() { p.circle_filled(r.center(), sz / 2.0, BG3); }
+                let font = if big { FontId::new(18.0, egui::FontFamily::Name("fill".into())) } else { FontId::proportional(16.0) };
+                glyph(&p, r.center(), icon, font, if big { Color32::BLACK } else { TEXT });
+                if resp.clicked() { acts.push([Act::Prev, Act::TogglePlay, Act::Next].into_iter().nth(act).unwrap()); }
+                x += sz + 2.0;
+            }
+            // закрыть
+            let xr = Rect::from_min_size(Pos2::new(rect.right() - 18.0, rect.top() + 2.0), Vec2::splat(16.0));
+            let xresp = ui.interact(xr, Id::unique("mini-x"), Sense::click());
+            p.text(xr.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), if xresp.hovered() { TEXT } else { MUTED });
+            if xresp.clicked() { acts.push(Act::ToggleMini); }
+            if self.audio.is_playing() { ctx.request_repaint_after(Duration::from_millis(500)); }
+        });
+    }
+
     fn overlay_window(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
         let s = self.settings();
         let locked = s.overlay_window.locked;

@@ -59,10 +59,17 @@ pub struct Settings {
     pub spotify: SpotifySettings,
     /// Сортировка: "library" или id плейлиста → способ (см. Sort).
     pub sort: HashMap<String, String>,
+    /// Сборка, которую человек уже видел (для окна «Что нового» после обновления).
+    pub last_build: Option<u32>,
+    /// Мини-плеер: открыт ли и где.
+    pub mini: bool,
+    pub mini_pos: Option<[f32; 2]>,
+    /// Крестик сворачивает в трей, а не закрывает (Windows).
+    pub close_to_tray: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false }
     }
 }
 
@@ -76,6 +83,8 @@ pub struct Library {
     pub anime: Vec<crate::anime::Anime>,
     /// Сколько раз трек слушали (больше 30 секунд) — для сортировки «Часто слушаю».
     pub plays: HashMap<String, u32>,
+    /// Лайкнутые треки, свежие первыми (раздел «Любимое»).
+    pub liked: Vec<String>,
 }
 
 pub struct Store {
@@ -126,6 +135,19 @@ impl Store {
         for p in &mut self.lib.playlists {
             p.track_ids.retain(|t| !ids.contains(t));
         }
+        self.lib.liked.retain(|t| !ids.contains(t));
+        self.save();
+    }
+
+    /// Переставить треки внутри плейлиста: `moving` встают перед позицией `to` (индекс в исходном списке).
+    pub fn move_in_playlist(&mut self, pid: &str, moving: &[String], to: usize) {
+        let Some(p) = self.lib.playlists.iter_mut().find(|p| p.id == pid) else { return };
+        p.track_ids = move_items(&p.track_ids, moving, to);
+        self.save();
+    }
+
+    pub fn move_liked(&mut self, moving: &[String], to: usize) {
+        self.lib.liked = move_items(&self.lib.liked, moving, to);
         self.save();
     }
 
@@ -172,6 +194,15 @@ impl Store {
     }
 
     /// Треки библиотеки (без серий аниме), новые сверху.
+    pub fn is_liked(&self, id: &str) -> bool { self.lib.liked.iter().any(|x| x == id) }
+
+    /// Лайкнуть/снять лайк. Новые лайки — наверх «Любимого».
+    pub fn set_liked(&mut self, ids: &[String], on: bool) {
+        self.lib.liked.retain(|x| !ids.contains(x));
+        if on { for id in ids.iter().rev() { self.lib.liked.insert(0, id.clone()); } }
+        self.save();
+    }
+
     /// Засчитать прослушивание.
     pub fn count_play(&mut self, id: &str) {
         *self.lib.plays.entry(id.to_string()).or_default() += 1;
@@ -273,6 +304,16 @@ impl Store {
     }
 }
 
+/// Список с перенесёнными элементами: `moving` (в их исходном порядке) встают перед позицией `to`.
+pub fn move_items(list: &[String], moving: &[String], to: usize) -> Vec<String> {
+    let before = list.iter().take(to).filter(|x| moving.contains(x)).count();
+    let mut rest: Vec<String> = list.iter().filter(|x| !moving.contains(x)).cloned().collect();
+    let at = (to - before).min(rest.len());
+    let moved: Vec<String> = list.iter().filter(|x| moving.contains(x)).cloned().collect();
+    rest.splice(at..at, moved);
+    rest
+}
+
 fn rand16() -> u16 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -313,5 +354,18 @@ mod sort_tests {
         s.lib.plays.insert("c".into(), 5);
         s.lib.plays.insert("a".into(), 2);
         assert_eq!(j(s.sorted(ids, "plays", true)), "cab");
+    }
+
+    #[test]
+    fn moves() {
+        let l: Vec<String> = "abcde".chars().map(String::from).collect();
+        let j = |v: Vec<String>| v.join("");
+        let m = |x: &str| x.chars().map(String::from).collect::<Vec<_>>();
+        assert_eq!(j(move_items(&l, &m("a"), 3)), "bcade");
+        assert_eq!(j(move_items(&l, &m("e"), 0)), "eabcd");
+        assert_eq!(j(move_items(&l, &m("bd"), 5)), "acebd");
+        assert_eq!(j(move_items(&l, &m("bd"), 0)), "bdace");
+        assert_eq!(j(move_items(&l, &m("c"), 2)), "abcde");
+        assert_eq!(j(move_items(&l, &m("c"), 3)), "abcde");
     }
 }

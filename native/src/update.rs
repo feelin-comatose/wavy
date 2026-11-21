@@ -56,3 +56,43 @@ pub fn restart() {
         let _ = std::process::Command::new(exe).arg("--restarted").spawn();
     }
 }
+
+/// «Что нового» между сборками: заголовки и описания коммитов (без служебных строк).
+pub fn changes(from: u32, to: u32) -> Result<Vec<(String, String)>, String> {
+    let mut r = wavy_core::http()
+        .get(&format!("https://api.github.com/repos/{REPO}/compare/build-{from}...build-{to}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "wavy-player")
+        .call()
+        .map_err(|e| format!("не удалось загрузить список изменений: {e}"))?;
+    let v: Value = serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let commits = v["commits"].as_array().ok_or("непонятный ответ GitHub")?;
+    Ok(parse_changes(commits.iter().rev().filter_map(|c| c["commit"]["message"].as_str())))
+}
+
+fn parse_changes<'a>(msgs: impl Iterator<Item = &'a str>) -> Vec<(String, String)> {
+    msgs.filter_map(|m| {
+        let mut lines = m.lines();
+        let title = lines.next()?.trim().to_string();
+        // мелочи сборки людям не интересны
+        if title.starts_with("Cargo.lock") || title.starts_with("Merge ") || title.is_empty() { return None; }
+        let body: Vec<&str> = lines.map(str::trim_end)
+            .filter(|l| !l.starts_with("Co-Authored-By:") && !l.starts_with("Claude-Session:") && !l.starts_with("Signed-off-by:"))
+            .collect();
+        // абзацы: строки внутри абзаца склеиваем
+        let body = body.split(|l| l.trim().is_empty()).map(|p| p.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" ")).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
+        Some((title, body))
+    }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn changes_text() {
+        let m = "Плеер: ровные кнопки\n\nКнопки: ряд центрировал\nкаждую кнопку.\n\nОбрыв: теперь\nдокачивается.\n\nCo-Authored-By: X <x@y>\nClaude-Session: https://x";
+        let v = super::parse_changes([m, "Cargo.lock: lofty"].into_iter());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].0, "Плеер: ровные кнопки");
+        assert_eq!(v[0].1, "Кнопки: ряд центрировал каждую кнопку.\n\nОбрыв: теперь докачивается.");
+    }
+}
