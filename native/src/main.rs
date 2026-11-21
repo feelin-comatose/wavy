@@ -119,6 +119,8 @@ struct App {
     pending_next: bool,
     seek_drag: Option<f64>,
     last_pushed: (Option<String>, bool),
+    /// Что и когда последний раз ушло в оверлей: (позиция, играло ли, когда) — оверлей досчитывает время сам, мы сверяем.
+    pushed_clock: (f64, bool, Instant),
     shown_at: Instant,
 
     modal: Option<Modal>,
@@ -209,7 +211,7 @@ impl App {
             view: View::Library, filter: String::new(), search_q: String::new(), searching: false, results: vec![],
             selected: HashSet::new(), last_clicked: None,
             queue: vec![], qi: 0, current: None, token: 0, loading: false, errors_in_row: 0, pending_next: false, seek_drag: None,
-            last_pushed: (None, false), shown_at: Instant::now(),
+            last_pushed: (None, false), pushed_clock: (0.0, false, Instant::now()), shown_at: Instant::now(),
             modal: None, toast, show_queue: false, yt_version: None,
             media, media_rx, resume: None, session_saved: Instant::now(), spin: 0.0,
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
@@ -461,7 +463,24 @@ impl App {
         let st = PlayerState { track: self.current.clone(), playing: self.audio.is_playing(), position, duration };
         self.media.update(st.track.as_ref(), st.playing, st.position, st.duration);
         self.last_pushed = (st.track.as_ref().map(|t| t.id.clone()), st.playing);
+        self.pushed_clock = (st.position, st.playing, Instant::now());
         self.discord.update(&st);
+        self.overlay.update(&st);
+    }
+
+    /// Оверлей (OBS) и системный плеер сами досчитывают время от последнего обновления. Если трек долго
+    /// грузился или позиция ушла (докачка, перемотка в недокачанное), их часы расходятся со звуком —
+    /// раз в секунду сверяем и поправляем. Discord не трогаем: у него лимит на частоту обновлений.
+    fn sync_clock(&mut self) {
+        let (pos, playing, at) = self.pushed_clock;
+        if self.loading || self.current.is_none() || at.elapsed().as_secs_f64() < 1.0 { return; }
+        let expected = pos + if playing { at.elapsed().as_secs_f64() } else { 0.0 };
+        let actual = self.audio.position();
+        if (expected - actual).abs() < 0.75 { return; }
+        let duration = if self.audio.duration > 0.0 { self.audio.duration } else { self.current.as_ref().map(|t| t.duration).unwrap_or(0.0) };
+        let st = PlayerState { track: self.current.clone(), playing: self.audio.is_playing(), position: actual, duration };
+        self.media.update(st.track.as_ref(), st.playing, st.position, st.duration);
+        self.pushed_clock = (actual, st.playing, Instant::now());
         self.overlay.update(&st);
     }
 
@@ -902,6 +921,7 @@ impl App {
         if self.audio.finished() && !self.loading { self.next(true, ctx); }
         let state = (self.current.as_ref().map(|t| t.id.clone()), self.audio.is_playing());
         if state != self.last_pushed && !self.loading { self.push_state(); }
+        self.sync_clock();
 
         while let Ok(cmd) = self.media_rx.try_recv() {
             use media::MediaCmd::*;
