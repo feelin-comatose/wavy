@@ -8,6 +8,7 @@ mod player;
 mod thumbs;
 mod export;
 mod tray;
+mod fx;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use egui_extras::{Column, TableBuilder};
@@ -36,6 +37,9 @@ const OK: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "mkv", "m3u", "m3u8"];
 /// Плейлист, куда Shazam складывает распознанные опенинги.
 const OPENINGS: &str = "Опенинги";
+
+#[derive(Clone, Copy, PartialEq)]
+enum Sleep { At(Instant), EndOfTrack }
 
 #[derive(Clone, PartialEq)]
 enum View { Library, Liked, Playlist(String), Search, Anime, AnimeTitle(String) }
@@ -189,6 +193,9 @@ struct App {
     muted_vol: f32,
     focus_filter: bool,
     quitting: bool,
+    sleep: Option<Sleep>,
+    /// трек, для которого уже начат кроссфейд
+    xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
@@ -247,7 +254,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -973,6 +980,26 @@ impl App {
     /// Сообщения фоновых потоков, конец трека, хоткеи, drag & drop.
     fn tick(&mut self, ctx: &egui::Context) {
         self.thumbs.poll(ctx);
+        let st = self.settings();
+        self.audio.fx.set(fx::Settings { speed: st.speed, eq_on: st.eq_on, eq: st.eq, normalize: st.normalize });
+        if self.audio.tick() { ctx.request_repaint_after(Duration::from_millis(40)); }
+        // таймер сна
+        if let Some(Sleep::At(t)) = self.sleep {
+            if Instant::now() >= t { self.sleep = None; if self.audio.is_playing() { self.audio.pause(); self.push_state(); } self.toast("Таймер сна: спокойной ночи", false); }
+            else { ctx.request_repaint_after(Duration::from_secs(1)); }
+        }
+        // кроссфейд: за N секунд до конца запускаем следующий трек, этот плавно затихает
+        if st.crossfade > 0.0 && !self.loading && self.audio.is_playing() && self.sleep != Some(Sleep::EndOfTrack) && st.repeat != "one" {
+            if let Some(t) = self.current.clone() {
+                let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+                let has_next = self.qi + 1 < self.queue.len() || st.repeat == "all";
+                if has_next && dur > st.crossfade as f64 * 3.0 && self.audio.position() >= dur - st.crossfade as f64 && self.xfaded.as_deref() != Some(t.id.as_str()) {
+                    self.xfaded = Some(t.id.clone());
+                    self.audio.begin_crossfade(st.crossfade);
+                    self.next(true, ctx);
+                }
+            }
+        }
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Bg::Status(s) => self.toast(s, false),
@@ -1056,7 +1083,13 @@ impl App {
         }
         if std::mem::take(&mut self.pending_next) { self.next(true, ctx); }
         if self.audio.finished() && !self.loading {
-            if !self.recover_cut(ctx) { self.next(true, ctx); }
+            if self.recover_cut(ctx) {}
+            else if self.sleep == Some(Sleep::EndOfTrack) {
+                self.sleep = None;
+                self.audio.stop();
+                self.push_state();
+                self.toast("Таймер сна: трек доиграл, спокойной ночи", false);
+            } else { self.next(true, ctx); }
         }
         let state = (self.current.as_ref().map(|t| t.id.clone()), self.audio.is_playing());
         if state != self.last_pushed && !self.loading { self.push_state(); }
@@ -1914,6 +1947,25 @@ impl App {
                 if r.drag_stopped() || r.clicked() { acts.push(Act::SaveVolume); }
                 ui.label(RichText::new(if v == 0.0 { "\u{E45C}" } else { "\u{E44A}" }).color(MUTED));
                 if icon_btn(ui, "\u{E64C}", 34.0, s.mini).on_hover_text("Мини-плеер поверх окон").clicked() { acts.push(Act::ToggleMini); }
+                // звук: скорость, кроссфейд, громкость, эквалайзер
+                let fx_on = (s.speed - 1.0).abs() > 0.01 || s.crossfade > 0.0 || s.normalize || s.eq_on;
+                let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text("Звук: скорость, кроссфейд, эквалайзер");
+                egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
+                // таймер сна
+                let r = icon_btn(ui, "\u{E330}", 34.0, self.sleep.is_some()).on_hover_text(match self.sleep {
+                    Some(Sleep::At(t)) => format!("Таймер сна: через {} мин", (t.saturating_duration_since(Instant::now()).as_secs() + 59) / 60),
+                    Some(Sleep::EndOfTrack) => "Таймер сна: после этого трека".into(),
+                    None => "Таймер сна".into(),
+                });
+                egui::Popup::menu(&r).show(|ui| {
+                    ui.set_min_width(170.0);
+                    ui.label(RichText::new("Выключить музыку").color(MUTED).size(12.0));
+                    for m in [15u64, 30, 45, 60, 90] {
+                        if ui.button(format!("через {m} мин")).clicked() { self.sleep = Some(Sleep::At(Instant::now() + Duration::from_secs(m * 60))); ui.close(); }
+                    }
+                    if ui.button("после этого трека").clicked() { self.sleep = Some(Sleep::EndOfTrack); ui.close(); }
+                    if self.sleep.is_some() && ui.button(RichText::new("отменить таймер").color(BAD)).clicked() { self.sleep = None; ui.close(); }
+                });
                 if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь (Q)").clicked() { self.show_queue = !self.show_queue; }
                 if let Some(t) = self.current.clone().filter(|t| t.anime.is_none() && self.store.lock().unwrap().lib.tracks.contains_key(&t.id)) {
                     let on = self.store.lock().unwrap().is_liked(&t.id);
@@ -2427,6 +2479,54 @@ impl App {
     }
 
     /// Игровой оверлей: отдельное прозрачное окно поверх всего.
+    fn sound_ui(&mut self, ui: &mut egui::Ui, s: &wavy_core::store::Settings, acts: &mut Vec<Act>) {
+        ui.set_width(330.0);
+        ui.label(RichText::new("Скорость").family(semi()));
+        ui.horizontal(|ui| {
+            for (name, v) in [("Slowed", 0.85f32), ("Обычно", 1.0), ("Nightcore", 1.25)] {
+                if ui.selectable_label((s.speed - v).abs() < 0.01, name).clicked() { acts.push(Act::Settings(json!({"speed": v}))); }
+            }
+        });
+        let mut sp = s.speed;
+        if ui.add(egui::Slider::new(&mut sp, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("×{v:.2}"))).changed() { acts.push(Act::Settings(json!({"speed": sp}))); }
+        ui.label(RichText::new("Тон меняется вместе со скоростью — как в nightcore/slowed").color(MUTED).size(11.5));
+        ui.separator();
+        let mut cf = s.crossfade;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Кроссфейд").family(semi()));
+            if ui.add(egui::Slider::new(&mut cf, 0.0..=12.0).step_by(1.0).custom_formatter(|v, _| if v == 0.0 { "выкл".into() } else { format!("{v:.0} с") })).changed() { acts.push(Act::Settings(json!({"crossfade": cf}))); }
+        });
+        let mut nz = s.normalize;
+        if ui.checkbox(&mut nz, "Выравнивать громкость (тихие треки громче, громкие тише)").changed() { acts.push(Act::Settings(json!({"normalize": nz}))); }
+        ui.separator();
+        let mut on = s.eq_on;
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut on, RichText::new("Эквалайзер").family(semi())).changed() { acts.push(Act::Settings(json!({"eqOn": on}))); }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.menu_button("Пресеты", |ui| {
+                    for (name, eq) in fx::PRESETS {
+                        if ui.button(*name).clicked() { acts.push(Act::Settings(json!({"eq": eq, "eqOn": true}))); ui.close(); }
+                    }
+                });
+            });
+        });
+        ui.add_enabled_ui(s.eq_on, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let mut eq = s.eq;
+                let mut changed = false;
+                for (i, f) in fx::BANDS.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.set_width(28.0);
+                        changed |= ui.add(egui::Slider::new(&mut eq[i], -12.0..=12.0).vertical().step_by(1.0).show_value(false)).on_hover_text(format!("{:+.0} дБ", eq[i])).changed();
+                        ui.label(RichText::new(if *f >= 1000.0 { format!("{}k", f / 1000.0) } else { format!("{f}") }).size(10.0).color(MUTED));
+                    });
+                }
+                if changed { acts.push(Act::Settings(json!({"eq": eq}))); }
+            });
+        });
+    }
+
     /// Мини-плеер: маленькое окно поверх всех, тянется мышкой.
     fn mini_window(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
         let s = self.settings();

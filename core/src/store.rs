@@ -66,10 +66,16 @@ pub struct Settings {
     pub mini_pos: Option<[f32; 2]>,
     /// Крестик сворачивает в трей, а не закрывает (Windows).
     pub close_to_tray: bool,
+    /// Звук: скорость (1.0 — как есть), кроссфейд в секундах (0 — выкл), выравнивание громкости, эквалайзер.
+    pub speed: f32,
+    pub crossfade: f32,
+    pub normalize: bool,
+    pub eq_on: bool,
+    pub eq: [f32; 10],
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10] }
     }
 }
 

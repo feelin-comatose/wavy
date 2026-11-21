@@ -15,11 +15,17 @@ pub struct Audio {
     play_after: bool,
     /// ffmpeg для звука, который не умеет symphonia (Opus, AC3, DTS…)
     pub ffmpeg: Option<std::path::PathBuf>,
+    /// эффекты (скорость, эквалайзер, громкость) и позиция в треке
+    pub fx: crate::fx::Shared,
+    pos: crate::fx::Pos,
+    /// кроссфейд: уходящие треки (плеер, его громкость, начало, длительность, их загрузка) и нарастание нового
+    fading: Vec<(rodio::Player, f32, std::time::Instant, f32, Option<wavy_core::stream::Download>)>,
+    fade_in: Option<(std::time::Instant, f32)>,
 }
 
 impl Audio {
     pub fn new() -> Self {
-        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, play_after: false, ffmpeg: None };
+        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, play_after: false, ffmpeg: None, fx: Default::default(), pos: Default::default(), fading: Vec::new(), fade_in: None };
         a.open();
         a
     }
@@ -52,8 +58,8 @@ impl Audio {
         let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint("m4a")
             .build().map_err(|e| format!("не удалось декодировать поток: {e}"))?;
         self.duration = 0.0; // у потока длительность неизвестна — берём из трека
-        p.append(dec);
-        p.set_volume(volume);
+        p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
+        p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
         p.play();
         self.loaded = true;
         self.stream = Some((dl, None));
@@ -106,16 +112,16 @@ impl Audio {
         if wavy_core::local::VIDEO_EXT.contains(&ext.as_str()) {
             // видеофайл: rodio взял бы первую дорожку (видео), поэтому выбираем звуковую сами
             match AudioOfVideo::open(path, audio) {
-                Ok(src) => { self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0); p.append(src); }
+                Ok(src) => { self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0); p.append(crate::fx::Fx::new(src, self.fx.clone(), self.pos.clone())); }
                 Err(e) if e.starts_with(wavy_core::ffmpeg::NEED) => {
                     let ff = self.ffmpeg.clone().ok_or(e)?;
                     let src = FfAudio::open(ff, path, audio, 0.0)?;
                     self.duration = src.duration.unwrap_or(0.0);
-                    p.append(src);
+                    p.append(crate::fx::Fx::new(src, self.fx.clone(), self.pos.clone()));
                 }
                 Err(e) => return Err(e),
             }
-            p.set_volume(volume);
+            p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
             p.play();
             self.loaded = true;
             return Ok(());
@@ -131,16 +137,16 @@ impl Audio {
                 let Some(ff) = self.ffmpeg.clone() else { return Err(format!("{}не удалось декодировать: {e}", wavy_core::ffmpeg::NEED)) };
                 let src = FfAudio::open(ff, path, 0, 0.0)?;
                 self.duration = src.duration.unwrap_or(0.0);
-                p.append(src);
-                p.set_volume(volume);
+                p.append(crate::fx::Fx::new(src, self.fx.clone(), self.pos.clone()));
+                p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
                 p.play();
                 self.loaded = true;
                 return Ok(());
             }
         };
         self.duration = rodio::Source::total_duration(&dec).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-        p.append(dec);
-        p.set_volume(volume);
+        p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
+        p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
         p.play();
         self.loaded = true;
         Ok(())
@@ -157,10 +163,51 @@ impl Audio {
         if self.buffering() { self.play_after = true; return; } // заиграет с нужного места, когда докачается
         if let Some(p) = &self.player { p.play() }
     }
-    pub fn pause(&mut self) { self.play_after = false; if let Some(p) = &self.player { p.pause() } }
+    pub fn pause(&mut self) {
+        self.play_after = false;
+        for (p, ..) in self.fading.drain(..) { p.stop(); } // пауза посреди кроссфейда — тишина сразу
+        if let Some(p) = &self.player { p.pause() }
+    }
     pub fn is_playing(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| !p.is_paused() && !p.empty()) }
-    pub fn position(&self) -> f64 { self.player.as_ref().map(|p| p.get_pos().as_secs_f64()).unwrap_or(0.0) }
-    pub fn set_volume(&mut self, v: f32) { self.volume = v * v; if let Some(p) = &self.player { p.set_volume(v * v) } } // квадратичная кривая — естественнее на слух
+    /// Позиция в треке (время трека, с учётом скорости).
+    pub fn position(&self) -> f64 { if self.player.is_some() { self.pos.get() } else { 0.0 } }
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume = v * v; // квадратичная кривая — естественнее на слух
+        if self.fade_in.is_none() { if let Some(p) = &self.player { p.set_volume(v * v) } }
+    }
+
+    /// Кроссфейд: текущий трек уходит на отдельный плеер и затихает за `secs`, следующий будет нарастать.
+    pub fn begin_crossfade(&mut self, secs: f32) {
+        let Some(sink) = &self._sink else { return };
+        let Some(old) = self.player.take() else { return };
+        let dl = self.stream.take().map(|(d, _)| d);
+        self.fading.push((old, self.volume, std::time::Instant::now(), secs, dl));
+        let p = rodio::Player::connect_new(sink.mixer());
+        p.set_volume(0.0);
+        self.player = Some(p);
+        self.pos = Default::default();
+        self.fade_in = Some((std::time::Instant::now(), secs));
+        self.loaded = false;
+        self.play_after = false;
+    }
+
+    /// Вызывать каждый кадр: громкость уходящего и приходящего треков при кроссфейде.
+    pub fn tick(&mut self) -> bool {
+        self.fading.retain(|(p, v0, t0, d, _)| {
+            let t = (t0.elapsed().as_secs_f32() / d.max(0.1)).min(1.0);
+            p.set_volume(v0 * (1.0 - t) * (1.0 - t));
+            if t >= 1.0 || p.empty() { p.stop(); false } else { true }
+        });
+        if let Some((t0, d)) = self.fade_in {
+            // нарастание начинается, когда новый трек реально заиграл
+            if self.is_playing() {
+                let t = (t0.elapsed().as_secs_f32() / d.max(0.1)).min(1.0);
+                if let Some(p) = &self.player { p.set_volume(self.volume * t.sqrt()); }
+                if t >= 1.0 { self.fade_in = None; }
+            } else if !self.loaded { self.fade_in = Some((std::time::Instant::now(), d)); }
+        }
+        !self.fading.is_empty() || self.fade_in.is_some()
+    }
     pub fn seek(&mut self, sec: f64) {
         if let Some((dl, pending)) = &mut self.stream {
             if dl.done() {
