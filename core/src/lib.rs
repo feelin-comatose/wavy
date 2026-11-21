@@ -14,6 +14,7 @@ pub mod spotify;
 pub mod stream;
 pub mod sync;
 pub mod twitch;
+pub mod wifisync;
 pub mod store;
 pub mod youtube;
 

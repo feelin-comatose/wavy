@@ -226,6 +226,7 @@ struct App {
     cache_size: Option<(u64, usize)>,
     cache_trimmed: Instant,
     cache_counting: bool,
+    wifi: Option<(String, wavy_core::wifisync::Server)>,
     /// трек, для которого уже начат кроссфейд
     xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
@@ -287,7 +288,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -2293,6 +2294,18 @@ impl App {
             let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
             std::thread::spawn(move || { let _ = tx.send(Bg::SongRequest(r.user, yt.lookup(&r.query))); c.request_repaint(); });
         }
+        // синхронизация с телефоном по Wi-Fi
+        let want = (st.wifi_sync && !st.wifi_pin.is_empty()).then(|| st.wifi_pin.clone());
+        if self.wifi.as_ref().map(|w| &w.0) != want.as_ref() {
+            self.wifi = None;
+            if let Some(pin) = want {
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                match wavy_core::wifisync::start(self.store.clone(), pin.clone(), move |m| { let _ = tx.send(Bg::Status(m)); c.request_repaint(); }) {
+                    Ok(srv) => self.wifi = Some((pin, srv)),
+                    Err(e) => { self.toast(format!("Синхронизация по Wi-Fi: {e}"), true); self.store.lock().unwrap().patch_settings(&json!({"wifiSync": false})); }
+                }
+            }
+        }
         // лимит кэша: проверяем раз в 10 минут
         if st.cache_limit_gb > 0 && self.cache_trimmed.elapsed() > Duration::from_secs(600) {
             self.cache_trimmed = Instant::now();
@@ -2919,6 +2932,16 @@ impl App {
                             if pill(ui, "Экспорт для телефона", true).clicked() { acts.push(Act::SyncExport); }
                             if pill(ui, "Импорт с телефона", false).clicked() { acts.push(Act::SyncImport(None)); }
                         });
+                        let mut w = s.wifi_sync;
+                        if ui.checkbox(&mut w, "По Wi-Fi без файлов (телефон и ПК в одной сети)").changed() {
+                            let pin = if s.wifi_pin.is_empty() { wavy_core::wifisync::new_pin() } else { s.wifi_pin.clone() };
+                            acts.push(Act::Settings(json!({"wifiSync": w, "wifiPin": pin})));
+                        }
+                        if self.wifi.is_some() {
+                            let addr = format!("{}:{}", wavy_core::wifisync::local_ip().unwrap_or_else(|| "IP-адрес ПК".into()), wavy_core::wifisync::PORT);
+                            ui.label(RichText::new(format!("В приложении на телефоне: Настройки → Синхронизация с ПК → адрес {addr}, PIN {}", s.wifi_pin)).color(OK));
+                            ui.label(RichText::new("Windows может спросить разрешение для сети — разреши для частных сетей.").color(MUTED).size(12.0));
+                        }
 
                         section(ui, "\u{E340}  Spotify");
                         ui.label(RichText::new("Ссылки на плейлисты, альбомы и треки Spotify импортируются без настроек: каждый трек находится на YouTube. Без ключа — до 100 треков из плейлиста.").color(MUTED).size(12.5));
