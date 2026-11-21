@@ -1,5 +1,8 @@
 //! Проверка Shazam: cargo run -p wavy-native --example shazam_file -- <файл> [секунда] [дорожка]
 #[allow(dead_code)]
+#[path = "../src/fx.rs"]
+#[allow(dead_code)]
+mod fx;
 #[path = "../src/player.rs"]
 mod player;
 

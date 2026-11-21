@@ -4,6 +4,9 @@
 #[path = "../src/video.rs"]
 mod video;
 #[allow(dead_code)]
+#[path = "../src/fx.rs"]
+#[allow(dead_code)]
+mod fx;
 #[path = "../src/player.rs"]
 mod player;
 
