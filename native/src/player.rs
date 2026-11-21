@@ -11,13 +11,15 @@ pub struct Audio {
     /// играем из потока, который ещё догружается: (загрузка, отложенная перемотка)
     stream: Option<(wavy_core::stream::Download, Option<f64>)>,
     volume: f32,
+    /// перемотка в недокачанное: звук на паузе, пока кусок не докачается, потом снова играть
+    play_after: bool,
     /// ffmpeg для звука, который не умеет symphonia (Opus, AC3, DTS…)
     pub ffmpeg: Option<std::path::PathBuf>,
 }
 
 impl Audio {
     pub fn new() -> Self {
-        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, ffmpeg: None };
+        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, play_after: false, ffmpeg: None };
         a.open();
         a
     }
@@ -66,7 +68,10 @@ impl Audio {
         let ready = match &self.stream { Some((dl, Some(_))) => dl.done(), _ => false };
         if ready {
             let (dl, pending) = self.stream.take().unwrap();
-            if let Some(sec) = pending { self.reopen_at(&dl.path, sec); }
+            if let Some(sec) = pending {
+                self.reopen_at(&dl.path, sec);
+                if std::mem::take(&mut self.play_after) { if let Some(p) = &self.player { p.play(); } }
+            }
         }
     }
 
@@ -142,13 +147,17 @@ impl Audio {
     }
 
     pub fn stop(&mut self) {
+        self.play_after = false;
         if let Some(p) = &self.player { p.clear(); }
         self.loaded = false;
         // недокачанный поток прошлого трека больше не нужен
         if let Some((dl, _)) = self.stream.take() { if !dl.done() { dl.cancel(); } }
     }
-    pub fn play(&self) { if let Some(p) = &self.player { p.play() } }
-    pub fn pause(&self) { if let Some(p) = &self.player { p.pause() } }
+    pub fn play(&mut self) {
+        if self.buffering() { self.play_after = true; return; } // заиграет с нужного места, когда докачается
+        if let Some(p) = &self.player { p.play() }
+    }
+    pub fn pause(&mut self) { self.play_after = false; if let Some(p) = &self.player { p.pause() } }
     pub fn is_playing(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| !p.is_paused() && !p.empty()) }
     pub fn position(&self) -> f64 { self.player.as_ref().map(|p| p.get_pos().as_secs_f64()).unwrap_or(0.0) }
     pub fn set_volume(&mut self, v: f32) { self.volume = v * v; if let Some(p) = &self.player { p.set_volume(v * v) } } // квадратичная кривая — естественнее на слух
@@ -160,6 +169,8 @@ impl Audio {
                 self.reopen_at(&path, sec);
             } else {
                 *pending = Some(sec); // перемотаем, когда докачается
+                // а пока молчим: иначе играло бы старое место (после обрыва — песня заново с начала)
+                if let Some(p) = &self.player { if !p.is_paused() { p.pause(); self.play_after = true; } }
             }
             return;
         }

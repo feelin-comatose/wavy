@@ -165,6 +165,8 @@ struct App {
     /// звук не открылся без ffmpeg — переоткрыть трек, когда он скачается
     reload_after_ff: bool,
     exporting: bool,
+    /// (трек, сколько раз уже восстанавливали после обрыва)
+    cut_retries: Option<(String, u8)>,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
     cjk_check: Instant,
@@ -222,7 +224,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -460,6 +462,25 @@ impl App {
         if self.audio.position() > 3.0 { self.audio.seek(0.0); self.push_state(); return; }
         self.qi = if self.qi > 0 { self.qi - 1 } else { self.queue.len() - 1 };
         self.load_current(ctx);
+    }
+
+    /// Трек «доиграл», хотя до конца далеко: оборвалась загрузка с YouTube (ссылка протухла, 403, сеть).
+    /// Раньше плеер в этот момент просто включал следующую песню. Теперь перезапускает загрузку и
+    /// продолжает с того же места — до двух раз на трек, потом уже следующая.
+    fn recover_cut(&mut self, ctx: &egui::Context) -> bool {
+        let Some(t) = self.current.clone() else { return false };
+        if t.is_local() || t.duration < 15.0 { return false; }
+        let pos = self.audio.position();
+        let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+        if pos >= dur - 6.0 { return false; }
+        let n = match &self.cut_retries { Some((id, n)) if *id == t.id => *n, _ => 0 };
+        if n >= 2 { wavy_core::log(&format!("«{}» снова оборвался на {pos:.0} с — дальше", t.title)); return false; }
+        self.cut_retries = Some((t.id.clone(), n + 1));
+        wavy_core::log(&format!("«{}» оборвался на {pos:.0} из {dur:.0} с — докачиваю и продолжаю с того же места", t.title));
+        if let Some(v) = &t.video_id { self.yt.forget(v); }
+        self.resume = Some((t.id.clone(), pos, true));
+        self.load_current(ctx);
+        true
     }
 
     fn push_state(&mut self) {
@@ -952,7 +973,9 @@ impl App {
             }
         }
         if std::mem::take(&mut self.pending_next) { self.next(true, ctx); }
-        if self.audio.finished() && !self.loading { self.next(true, ctx); }
+        if self.audio.finished() && !self.loading {
+            if !self.recover_cut(ctx) { self.next(true, ctx); }
+        }
         let state = (self.current.as_ref().map(|t| t.id.clone()), self.audio.is_playing());
         if state != self.last_pushed && !self.loading { self.push_state(); }
         self.sync_clock();
@@ -1646,6 +1669,8 @@ impl App {
             // кнопки + перемотка
             mid.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
+                    // высота ряда — сразу по большой кнопке: иначе кнопки до неё центрируются по 34 px, а после — по 44
+                    ui.set_min_height(44.0);
                     let bw = 34.0 * 4.0 + 44.0 + 4.0 * 14.0;
                     ui.add_space(((ui.available_width() - bw) / 2.0).max(0.0));
                     ui.spacing_mut().item_spacing.x = 14.0;
@@ -1653,7 +1678,18 @@ impl App {
                     if icon_btn(ui, "\u{E5A4}", 34.0, false).clicked() { acts.push(Act::Prev); }
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 21.0, if resp.hovered() { Color32::WHITE } else { TEXT });
-                    ui.painter().text(r.center(), Align2::CENTER_CENTER, if self.loading { "…" } else if self.audio.is_playing() { "\u{E39E}" } else { "\u{E3D0}" }, FontId::new(20.0, egui::FontFamily::Name("fill".into())), Color32::BLACK);
+                    if self.loading || self.audio.buffering() {
+                        ui.ctx().request_repaint_after(Duration::from_millis(33));
+                        // загрузка: три точки «бегут» по кругу вместо смещённого символа «…»
+                        let t = ui.input(|i| i.time) as f32;
+                        for k in 0..3 {
+                            let a = (k as f32 - 1.0) * 7.0;
+                            let lift = ((t * 6.0 - k as f32 * 0.9).sin().max(0.0)) * 3.0;
+                            ui.painter().circle_filled(r.center() + Vec2::new(a, -lift), 2.4, Color32::BLACK);
+                        }
+                    } else {
+                        glyph(ui.painter(), r.center(), if self.audio.is_playing() { "\u{E39E}" } else { "\u{E3D0}" }, FontId::new(20.0, egui::FontFamily::Name("fill".into())), Color32::BLACK);
+                    }
                     if resp.clicked() { acts.push(Act::TogglePlay); }
                     if icon_btn(ui, "\u{E5A6}", 34.0, false).clicked() { acts.push(Act::Next); }
                     let rep = match s.repeat.as_str() { "one" => "\u{E3F8}", _ => "\u{E3F6}" };
@@ -2343,9 +2379,19 @@ fn icon_btn(ui: &mut egui::Ui, icon: &str, size: f32, on: bool) -> egui::Respons
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     if resp.hovered() { ui.painter().circle_filled(r.center(), size / 2.0, BG3); }
     let c = if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED };
-    ui.painter().text(r.center(), Align2::CENTER_CENTER, icon, FontId::proportional(size * 0.5), c);
+    // с точкой-индикатором иконка чуть приподнята, чтобы пара «иконка + точка» стояла по центру
+    glyph(ui.painter(), r.center() - Vec2::new(0.0, if on { 2.0 } else { 0.0 }), icon, FontId::proportional(size * 0.5), c);
     if on { ui.painter().circle_filled(r.center_bottom() - Vec2::new(0.0, 2.0), 2.0, ACCENT); }
     resp
+}
+
+/// Иконка точно по центру: по контуру самого значка, а не по высоте строки шрифта
+/// (у шрифта иконок значки сидят в строке по-разному — отсюда «чутка оффсетнутые» кнопки).
+fn glyph(p: &egui::Painter, center: Pos2, icon: &str, font: FontId, color: Color32) {
+    let g = p.layout_no_wrap(icon.to_string(), font, color);
+    let b = g.mesh_bounds;
+    let at = if b.is_positive() { center - b.center().to_vec2() } else { center - g.rect.center().to_vec2() };
+    p.galley(at, g, color);
 }
 
 fn pill_btn(text: &str, primary: bool) -> egui::Button<'_> {
