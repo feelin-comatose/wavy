@@ -236,6 +236,16 @@ impl YouTube {
         Ok(json.get("entries").and_then(Value::as_array).map(|a| a.iter().filter(|e| !e.is_null() && !is_live(e)).map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
     }
 
+    /// Радио по треку: микс YouTube (похожие песни), без самого трека.
+    pub fn radio(&self, video_id: &str, limit: u32) -> Result<Vec<Track>, String> {
+        let url = format!("https://www.youtube.com/watch?v={video_id}&list=RD{video_id}");
+        let end = (limit + 1).to_string();
+        let json: Value = serde_json::from_str(&self.run(&["--flat-playlist", "-J", "--no-warnings", "--playlist-end", &end, &url])?).map_err(|e| e.to_string())?;
+        Ok(json.get("entries").and_then(Value::as_array).map(|a| a.iter()
+            .filter(|e| !e.is_null() && !is_live(e) && e["id"].as_str() != Some(video_id))
+            .map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
+    }
+
     /// Прямая ссылка на аудиопоток (для webview-плеера).
     pub fn resolve_stream(&self, track: &Track) -> Result<String, String> {
         let key = track.url.clone().ok_or("У трека нет ссылки")?;

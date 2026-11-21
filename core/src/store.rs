@@ -17,6 +17,9 @@ pub struct Playlist {
     /// своя картинка обложки (файл в data_dir/covers)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<String>,
+    /// папка в боковой панели
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 impl Playlist {
@@ -91,6 +94,8 @@ pub struct Library {
     pub plays: HashMap<String, u32>,
     /// Лайкнутые треки, свежие первыми (раздел «Любимое»).
     pub liked: Vec<String>,
+    /// История прослушиваний: (трек, когда, мс) — для «Итогов». Хранится последние 50 000.
+    pub history: Vec<(String, u64)>,
 }
 
 pub struct Store {
@@ -158,7 +163,7 @@ impl Store {
     }
 
     pub fn create_playlist(&mut self, name: &str, track_ids: Vec<String>, source: Option<String>) -> Playlist {
-        let p = Playlist { id: format!("pl_{:x}{:04x}", now_ms(), rand16()), name: name.into(), track_ids, source, created_at: now_ms(), cover: None };
+        let p = Playlist { id: format!("pl_{:x}{:04x}", now_ms(), rand16()), name: name.into(), track_ids, source, created_at: now_ms(), cover: None, folder: None };
         self.lib.playlists.push(p.clone());
         self.save();
         p
@@ -212,6 +217,92 @@ impl Store {
     /// Засчитать прослушивание.
     pub fn count_play(&mut self, id: &str) {
         *self.lib.plays.entry(id.to_string()).or_default() += 1;
+        self.lib.history.push((id.to_string(), now_ms()));
+        if self.lib.history.len() > 50_000 { self.lib.history.drain(..10_000); }
+        self.save();
+    }
+
+    /// Итоги за период (с `since` мс): всего прослушиваний, минут, топ треков и артистов.
+    pub fn stats(&self, since: u64) -> Stats {
+        let mut st = Stats::default();
+        let mut tracks: HashMap<&str, u32> = HashMap::new();
+        let mut artists: HashMap<String, u32> = HashMap::new();
+        let music = |id: &String| self.lib.tracks.get(id).is_none_or(|t| t.anime.is_none());
+        for (id, at) in self.lib.history.iter().filter(|(id, at)| *at >= since && music(id)) {
+            st.plays += 1;
+            *tracks.entry(id).or_default() += 1;
+            if let Some(t) = self.lib.tracks.get(id) {
+                st.minutes += t.duration / 60.0;
+                let a = t.artist.split([',', '&']).next().unwrap_or("").trim().trim_end_matches(" - Topic").to_string();
+                if !a.is_empty() { *artists.entry(a).or_default() += 1; }
+            }
+            let _ = at;
+        }
+        let mut tv: Vec<(String, u32)> = tracks.into_iter().filter(|(id, _)| self.lib.tracks.contains_key(*id)).map(|(k, v)| (k.to_string(), v)).collect();
+        tv.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut av: Vec<(String, u32)> = artists.into_iter().collect();
+        av.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        st.top_tracks = tv.into_iter().take(10).collect();
+        st.top_artists = av.into_iter().take(10).collect();
+        st
+    }
+
+    /// Поправить название / исполнителя / альбом / обложку трека.
+    pub fn edit_track(&mut self, id: &str, title: &str, artist: &str, album: &str, cover: Option<Option<String>>) {
+        if let Some(t) = self.lib.tracks.get_mut(id) {
+            t.title = title.trim().to_string();
+            t.artist = artist.trim().to_string();
+            t.album = album.trim().to_string();
+            if let Some(c) = cover { t.cover = c; }
+            self.save();
+        }
+    }
+
+    /// Группы дублей: одно и то же видео YouTube или тот же файл, либо совпадают исполнитель+название
+    /// и длительность (±3 с). Внутри группы первым — самый старый трек (его и оставляем).
+    pub fn duplicates(&self) -> Vec<Vec<String>> {
+        let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+        let mut groups: Vec<Vec<&Track>> = Vec::new();
+        let mut all: Vec<&Track> = self.lib.tracks.values().filter(|t| t.anime.is_none()).collect();
+        all.sort_by(|a, b| a.added_at.cmp(&b.added_at).then(a.id.cmp(&b.id)));
+        'outer: for t in all {
+            for g in groups.iter_mut() {
+                let f = g[0];
+                let same_src = (t.video_id.is_some() && t.video_id == f.video_id) || (t.path.is_some() && t.path == f.path);
+                let same_song = !t.title.is_empty() && norm(&t.title) == norm(&f.title) && norm(&t.artist) == norm(&f.artist)
+                    && (t.duration - f.duration).abs() <= 3.0;
+                if same_src || same_song { g.push(t); continue 'outer; }
+            }
+            groups.push(vec![t]);
+        }
+        groups.into_iter().filter(|g| g.len() > 1).map(|g| g.into_iter().map(|t| t.id.clone()).collect()).collect()
+    }
+
+    /// Оставить по одному из каждой группы: в плейлистах и «Любимом» лишние заменяются оставленным.
+    pub fn merge_duplicates(&mut self, groups: &[Vec<String>]) -> usize {
+        let mut removed = 0;
+        for g in groups {
+            let Some(keep) = g.first() else { continue };
+            for d in &g[1..] {
+                for p in &mut self.lib.playlists {
+                    for x in p.track_ids.iter_mut() { if x == d { *x = keep.clone(); } }
+                    let mut seen = std::collections::HashSet::new();
+                    p.track_ids.retain(|x| seen.insert(x.clone()));
+                }
+                if self.lib.liked.contains(d) && !self.lib.liked.contains(keep) { self.lib.liked.push(keep.clone()); }
+                self.lib.liked.retain(|x| x != d);
+                let n = self.lib.plays.remove(d).unwrap_or(0);
+                *self.lib.plays.entry(keep.clone()).or_default() += n;
+                for h in &mut self.lib.history { if &h.0 == d { h.0 = keep.clone(); } }
+                if self.lib.tracks.remove(d).is_some() { removed += 1; }
+            }
+        }
+        self.save();
+        removed
+    }
+
+    pub fn set_folder(&mut self, pid: &str, folder: Option<String>) {
+        if let Some(p) = self.lib.playlists.iter_mut().find(|p| p.id == pid) { p.folder = folder.map(|f| f.trim().to_string()).filter(|f| !f.is_empty()); }
         self.save();
     }
 
@@ -310,6 +401,14 @@ impl Store {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Stats {
+    pub plays: u32,
+    pub minutes: f64,
+    pub top_tracks: Vec<(String, u32)>,
+    pub top_artists: Vec<(String, u32)>,
+}
+
 /// Список с перенесёнными элементами: `moving` (в их исходном порядке) встают перед позицией `to`.
 pub fn move_items(list: &[String], moving: &[String], to: usize) -> Vec<String> {
     let before = list.iter().take(to).filter(|x| moving.contains(x)).count();
@@ -360,6 +459,28 @@ mod sort_tests {
         s.lib.plays.insert("c".into(), 5);
         s.lib.plays.insert("a".into(), 2);
         assert_eq!(j(s.sorted(ids, "plays", true)), "cab");
+    }
+
+    #[test]
+    fn dupes_and_stats() {
+        let mut s = Store { file: std::env::temp_dir().join(format!("wavy-dup-{}.json", std::process::id())), lib: Library::default() };
+        let mut a = tr("a", "Gurenge", "LiSA", ""); a.duration = 237.0; a.added_at = 1;
+        let mut b = tr("b", "gurenge", "lisa", "X"); b.duration = 236.0; b.added_at = 2;
+        let mut c = tr("c", "Other", "LiSA", ""); c.duration = 200.0; c.added_at = 3;
+        for t in [a, b, c] { s.lib.tracks.insert(t.id.clone(), t); }
+        s.lib.playlists.push(Playlist { id: "p".into(), name: "P".into(), track_ids: vec!["b".into(), "c".into(), "a".into()], source: None, created_at: 0, cover: None, folder: None });
+        s.lib.liked = vec!["b".into()];
+        let g = s.duplicates();
+        assert_eq!(g, vec![vec!["a".to_string(), "b".to_string()]]);
+        s.count_play("b"); s.count_play("b"); s.count_play("c");
+        assert_eq!(s.merge_duplicates(&g), 1);
+        assert_eq!(s.lib.playlists[0].track_ids, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(s.lib.liked, vec!["a".to_string()]);
+        let st = s.stats(0);
+        assert_eq!(st.plays, 3);
+        assert_eq!(st.top_tracks[0], ("a".to_string(), 2));
+        assert_eq!(st.top_artists[0], ("LiSA".to_string(), 3));
+        let _ = std::fs::remove_file(&s.file);
     }
 
     #[test]

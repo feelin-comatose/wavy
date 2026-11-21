@@ -4,6 +4,7 @@ pub mod anime;
 pub mod discord;
 pub mod ffmpeg;
 pub mod local;
+pub mod lyrics;
 pub mod media;
 pub mod overlay;
 pub mod shazam;
