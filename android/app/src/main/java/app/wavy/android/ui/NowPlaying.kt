@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
@@ -97,10 +98,10 @@ fun MiniPlayer(onExpand: () -> Unit) {
             Cover(t.thumb, 44.dp)
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(t.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
-                Text(if (st.buffering) "загрузка…" else t.artist, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
+                Text(if (st.buffering) L("загрузка…", "loading…") else t.artist, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
             }
-            IconButton({ PlayerConn.toggle() }) { Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Играть/пауза", Modifier.size(30.dp)) }
-            IconButton({ PlayerConn.next() }) { Icon(Icons.Rounded.SkipNext, "Следующий") }
+            IconButton({ PlayerConn.toggle() }) { Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, L("Играть/пауза", "Play/pause"), Modifier.size(30.dp)) }
+            IconButton({ PlayerConn.next() }) { Icon(Icons.Rounded.SkipNext, L("Следующий", "Next")) }
         }
     }
 }
@@ -115,13 +116,13 @@ fun FullPlayer(onClose: () -> Unit) {
     var drag by remember { mutableStateOf<Float?>(null) }
     Column(Modifier.fillMaxSize().background(Bg).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", Modifier.size(30.dp)) }
-            Text("Сейчас играет", Modifier.weight(1f), color = Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-            if (t?.hasVideo == true) IconButton({ showVideo = !showVideo }) { Icon(if (showVideo) Icons.Rounded.Image else Icons.Rounded.Videocam, "Видео / обложка") }
-            IconButton({ AppState.startShazam() }) { Icon(Icons.Rounded.GraphicEq, "Что за песня? (Shazam)", tint = Muted) }
-            IconButton({ showQueue = !showQueue }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Очередь", tint = if (showQueue) Accent else Muted) }
+            IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, L("Свернуть", "Collapse"), Modifier.size(30.dp)) }
+            Text(L("Сейчас играет", "Now playing"), Modifier.weight(1f), color = Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            if (t?.hasVideo == true) IconButton({ showVideo = !showVideo }) { Icon(if (showVideo) Icons.Rounded.Image else Icons.Rounded.Videocam, L("Видео / обложка", "Video / cover")) }
+            IconButton({ AppState.startShazam() }) { Icon(Icons.Rounded.GraphicEq, L("Что за песня? (Shazam)", "What's this song? (Shazam)"), tint = Muted) }
+            IconButton({ showQueue = !showQueue }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, L("Очередь", "Queue"), tint = if (showQueue) Accent else Muted) }
         }
-        if (t == null) { Empty("Ничего не играет", "Выбери трек в библиотеке"); return@Column }
+        if (t == null) { Empty(L("Ничего не играет", "Nothing is playing"), L("Выбери трек в библиотеке", "Pick a track in the library")); return@Column }
         if (showQueue) {
             LazyColumn(Modifier.weight(1f)) {
                 itemsIndexed(st.queue) { i, id ->
@@ -145,7 +146,7 @@ fun FullPlayer(onClose: () -> Unit) {
             Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(t.artist, color = Muted, fontSize = 15.sp, maxLines = 1)
             val st2 = st.error
-            if (st2 != null) Text("Ошибка: $st2", color = Bad, fontSize = 12.sp, maxLines = 2)
+            if (st2 != null) Text(L("Ошибка: $st2", "Error: $st2"), color = Bad, fontSize = 12.sp, maxLines = 2)
             Slider(
                 value = drag ?: (if (dur > 0) pos.toFloat() / dur else 0f),
                 onValueChange = { drag = it }, onValueChangeFinished = { drag?.let { PlayerConn.seek((it * dur).toLong()) }; drag = null },
@@ -156,15 +157,15 @@ fun FullPlayer(onClose: () -> Unit) {
                 Text(fmtTime(dur / 1000.0), color = Muted, fontSize = 12.sp)
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton({ PlayerConn.setShuffle(!st.shuffle) }) { Icon(Icons.Rounded.Shuffle, "Перемешать", tint = if (st.shuffle) Accent else Muted) }
-                IconButton({ PlayerConn.prev() }) { Icon(Icons.Rounded.SkipPrevious, "Назад", Modifier.size(36.dp)) }
+                IconButton({ PlayerConn.setShuffle(!st.shuffle) }) { Icon(Icons.Rounded.Shuffle, L("Перемешать", "Shuffle"), tint = if (st.shuffle) Accent else Muted) }
+                IconButton({ PlayerConn.prev() }) { Icon(Icons.Rounded.SkipPrevious, L("Назад", "Back"), Modifier.size(36.dp)) }
                 Box(Modifier.size(68.dp).clip(CircleShape).background(Accent).clickable { PlayerConn.toggle() }, contentAlignment = Alignment.Center) {
                     if (st.buffering) CircularProgressIndicator(Modifier.size(28.dp), color = Bg, strokeWidth = 3.dp)
-                    else Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Играть/пауза", Modifier.size(38.dp), tint = Bg)
+                    else Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, L("Играть/пауза", "Play/pause"), Modifier.size(38.dp), tint = Bg)
                 }
-                IconButton({ PlayerConn.next() }) { Icon(Icons.Rounded.SkipNext, "Вперёд", Modifier.size(36.dp)) }
+                IconButton({ PlayerConn.next() }) { Icon(Icons.Rounded.SkipNext, L("Вперёд", "Next"), Modifier.size(36.dp)) }
                 IconButton({ PlayerConn.cycleRepeat() }) {
-                    Icon(if (st.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Повтор", tint = if (st.repeat != Player.REPEAT_MODE_OFF) Accent else Muted)
+                    Icon(if (st.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, L("Повтор", "Repeat"), tint = if (st.repeat != Player.REPEAT_MODE_OFF) Accent else Muted)
                 }
             }
         }
@@ -198,7 +199,7 @@ fun VideoArea(t: Track, playing: Boolean) {
     val u = url
     Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(Color.Black), contentAlignment = Alignment.Center) {
         when {
-            err != null -> Text("Видео не загрузилось: $err", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
+            err != null -> Text(L("Видео не загрузилось: $err", "The video didn't load: $err"), color = Muted, fontSize = 13.sp, modifier = Modifier.padding(16.dp))
             u == null -> CircularProgressIndicator(color = Accent)
             else -> {
                 val vp = remember(u) { ExoPlayer.Builder(ctx).build().apply { volume = 0f; setMediaItem(MediaItem.fromUri(u)); prepare() } }

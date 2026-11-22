@@ -100,10 +100,10 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
     let f = Fonts::load(cjk);
     let mut img = RgbaImage::from_pixel(W, H, BG);
     let m = 72.0;
-    text(&mut img, &f, &f.semi, 26.0, m, 64.0, "WAVY · ИТОГИ", MUTED, 900.0);
+    text(&mut img, &f, &f.semi, 26.0, m, 64.0, l!("WAVY · ИТОГИ", "WAVY · RECAP"), MUTED, 900.0);
     text(&mut img, &f, &f.bold, 84.0, m, 100.0, &r.period, TEXT, 940.0);
     // три плитки с цифрами
-    let tiles = [(r.hours.clone(), "музыки"), (r.plays.to_string(), "прослушиваний"), (r.top_artist.clone().unwrap_or_else(|| "—".into()), "артист №1")];
+    let tiles = [(r.hours.clone(), l!("музыки", "of music")), (r.plays.to_string(), l!("прослушиваний", "plays")), (r.top_artist.clone().unwrap_or_else(|| "—".into()), l!("артист №1", "top artist"))];
     let tw = (W as f32 - 2.0 * m - 2.0 * 20.0) / 3.0;
     for (i, (big, small)) in tiles.iter().enumerate() {
         let x = m + i as f32 * (tw + 20.0);
@@ -112,7 +112,7 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
         text(&mut img, &f, &f.regular, 24.0, x + 26.0, 330.0, small, MUTED, tw - 52.0);
     }
     // топ треков
-    text(&mut img, &f, &f.semi, 32.0, m, 430.0, "Топ треков", TEXT, 900.0);
+    text(&mut img, &f, &f.semi, 32.0, m, 430.0, l!("Топ треков", "Top tracks"), TEXT, 900.0);
     for (i, e) in r.tracks.iter().take(5).enumerate() {
         let y = 490.0 + i as f32 * 104.0;
         text(&mut img, &f, &f.bold, 30.0, m, y + 24.0, &(i + 1).to_string(), MUTED, 40.0);
@@ -122,7 +122,7 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
     }
     // топ артистов — полосками
     let ay = 1032.0;
-    text(&mut img, &f, &f.semi, 32.0, m, ay, "Топ артистов", TEXT, 900.0);
+    text(&mut img, &f, &f.semi, 32.0, m, ay, l!("Топ артистов", "Top artists"), TEXT, 900.0);
     let max = r.artists.first().map(|a| a.1).unwrap_or(1).max(1) as f32;
     for (i, (a, n)) in r.artists.iter().take(4).enumerate() {
         let y = ay + 56.0 + i as f32 * 52.0;

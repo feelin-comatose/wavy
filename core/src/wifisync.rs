@@ -38,7 +38,7 @@ impl Drop for Server { fn drop(&mut self) { self.srv.unblock(); } }
 
 /// Запустить сервер. `on_sync` — после приёма данных с телефона (обновить экран).
 pub fn start(store: Arc<Mutex<Store>>, pin: String, remote: Remote, on_sync: impl Fn(String) + Send + Sync + 'static) -> Result<Server, String> {
-    let srv = Arc::new(tiny_http::Server::http(("0.0.0.0", PORT)).map_err(|e| format!("порт {PORT} занят: {e}"))?);
+    let srv = Arc::new(tiny_http::Server::http(("0.0.0.0", PORT)).map_err(|e| lf!("порт {PORT} занят: {e}", "port {PORT} is busy: {e}"))?);
     let s2 = srv.clone();
     let on_sync = Arc::new(on_sync);
     std::thread::Builder::new().name("wifi-sync".into()).spawn(move || {
@@ -83,7 +83,7 @@ pub fn start(store: Arc<Mutex<Store>>, pin: String, remote: Remote, on_sync: imp
                     let r = crate::sync::import(&mut store.lock().unwrap(), &text);
                     match r {
                         Ok(s) => {
-                            let msg = format!("Телефон: {} треков, новых плейлистов {}, обновлено {}", s.tracks, s.new_playlists, s.updated_playlists);
+                            let msg = lf!("Телефон: {} треков, новых плейлистов {}, обновлено {}", "Phone: {} tracks, new playlists {}, updated {}", s.tracks, s.new_playlists, s.updated_playlists);
                             crate::log(&format!("wi-fi синхронизация: {msg}"));
                             on_sync(msg);
                             let _ = req.respond(json(200, serde_json::json!({"tracks": s.tracks, "newPlaylists": s.new_playlists, "updatedPlaylists": s.updated_playlists}).to_string()));

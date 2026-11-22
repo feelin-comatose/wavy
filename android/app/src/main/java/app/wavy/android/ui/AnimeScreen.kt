@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -61,13 +62,13 @@ fun AnimeScreen(openId: String?, onOpen: (String?) -> Unit, onScan: () -> Unit, 
     val open = openId?.let { id -> lib.anime.firstOrNull { it.id == id } }
     if (open != null) return AnimeTitle(open, back = { onOpen(null) }, onWatch = onWatch)
     Column(Modifier.fillMaxSize()) {
-        Header("Аниме", if (lib.anime.isEmpty()) null else "${lib.anime.size} тайтл(ов)") {
-            IconButton(onShazam) { Icon(Icons.Rounded.GraphicEq, "Что за песня? (Shazam)") }
-            IconButton(onScan) { Icon(Icons.Rounded.PhoneAndroid, "Найти серии на телефоне") }
+        Header(L("Аниме", "Anime"), if (lib.anime.isEmpty()) null else L("${lib.anime.size} тайтл(ов)", "${lib.anime.size} title(s)")) {
+            IconButton(onShazam) { Icon(Icons.Rounded.GraphicEq, L("Что за песня? (Shazam)", "What's this song? (Shazam)")) }
+            IconButton(onScan) { Icon(Icons.Rounded.PhoneAndroid, L("Найти серии на телефоне", "Find episodes on the phone")) }
         }
         if (lib.anime.isEmpty()) {
-            Empty("Пока пусто", "Положи серии (mp4, mkv) в память телефона — например, в папку с названием аниме — и нажми «Найти на телефоне». Номер серии Wavy поймёт из имени файла, обложку и название возьмёт с Шикимори.") {
-                Pill("Найти на телефоне", Icons.Rounded.Search, primary = true) { onScan() }
+            Empty(L("Пока пусто", "Nothing here yet"), L("Положи серии (mp4, mkv) в память телефона — например, в папку с названием аниме — и нажми «Найти на телефоне». Номер серии Wavy поймёт из имени файла, обложку и название возьмёт с Шикимори.", "Put episodes (mp4, mkv) in the phone's storage — e.g. in a folder named after the anime — and tap “Find on phone”. Wavy will get the episode number from the file name, and the cover and title from Shikimori.")) {
+                Pill(L("Найти на телефоне", "Find on phone"), Icons.Rounded.Search, primary = true) { onScan() }
             }
             return@Column
         }
@@ -106,11 +107,11 @@ private fun AnimeTitle(a: Anime, back: () -> Unit, onWatch: () -> Unit) {
                 Column(Modifier.padding(start = 14.dp)) {
                     if (a.name.isNotEmpty() && a.name != a.display) Text(a.name, color = Muted, fontSize = 13.sp)
                     if (a.meta.isNotEmpty()) Text(a.meta, color = Muted, fontSize = 13.sp)
-                    Text("серий: ${a.episodes.size} · просмотрено ${a.watched.size}", color = Muted, fontSize = 13.sp)
+                    Text(L("серий: ${a.episodes.size} · просмотрено ${a.watched.size}", "episodes: ${a.episodes.size} · watched ${a.watched.size}"), color = Muted, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     val next = a.last?.let { l -> a.episodes.indexOf(l).takeIf { it >= 0 } }
-                    Pill(if (next != null) "Продолжить" else "Смотреть", Icons.Rounded.PlayArrow, primary = true) { AppState.playAnime(a.id); onWatch() }
-                    a.url?.let { u -> Spacer(Modifier.height(6.dp)); Pill("Шикимори", Icons.AutoMirrored.Rounded.OpenInNew) { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u))) } }
+                    Pill(if (next != null) L("Продолжить", "Continue") else L("Смотреть", "Watch"), Icons.Rounded.PlayArrow, primary = true) { AppState.playAnime(a.id); onWatch() }
+                    a.url?.let { u -> Spacer(Modifier.height(6.dp)); Pill(L("Шикимори", "Shikimori"), Icons.AutoMirrored.Rounded.OpenInNew) { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u))) } }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -124,7 +125,7 @@ private fun AnimeTitle(a: Anime, back: () -> Unit, onWatch: () -> Unit) {
                     Text(t.title, color = if (playing) Accent else if (seen) Muted else TextC, fontWeight = if (playing) FontWeight.Bold else FontWeight.Medium)
                     Text(fmtTime(t.duration), color = Muted, fontSize = 12.sp)
                 }
-                if (seen) Icon(Icons.Rounded.CheckCircle, "Просмотрено", tint = Muted, modifier = Modifier.size(18.dp))
+                if (seen) Icon(Icons.Rounded.CheckCircle, L("Просмотрено", "Watched"), tint = Muted, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -136,27 +137,27 @@ fun ShazamDialog(dismiss: () -> Unit) {
     val s by AppState.shazam.collectAsState()
     AlertDialog(
         onDismissRequest = dismiss, containerColor = Bg2,
-        title = { Text("Что за песня?") },
+        title = { Text(L("Что за песня?", "What's this song?")) },
         text = {
             when (val v = s) {
-                AppState.Shz.Listening -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Text("   Слушаю 12 секунд…") }
-                AppState.Shz.Adding -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Text("   Ищу на YouTube…") }
+                AppState.Shz.Listening -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Text(L("   Слушаю 12 секунд…", "   Listening for 12 seconds…")) }
+                AppState.Shz.Adding -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Text(L("   Ищу на YouTube…", "   Searching YouTube…")) }
                 is AppState.Shz.Found -> Row(verticalAlignment = Alignment.CenterVertically) {
                     Cover(v.f.cover, 64.dp)
                     Column(Modifier.padding(start = 12.dp)) { Text(v.f.title, fontWeight = FontWeight.Bold); Text(v.f.artist, color = Muted) }
                 }
-                AppState.Shz.NotFound -> Text("Не узнал. Поднеси телефон ближе к звуку и попробуй ещё раз.", color = Muted)
+                AppState.Shz.NotFound -> Text(L("Не узнал. Поднеси телефон ближе к звуку и попробуй ещё раз.", "Didn't recognize it. Hold the phone closer to the sound and try again."), color = Muted)
                 is AppState.Shz.Error -> Text(v.msg, color = Bad)
-                AppState.Shz.Idle -> Text("Поднеси телефон к звуку — например, к опенингу аниме.", color = Muted)
+                AppState.Shz.Idle -> Text(L("Поднеси телефон к звуку — например, к опенингу аниме.", "Hold the phone near the sound — e.g. an anime opening."), color = Muted)
             }
         },
         confirmButton = {
             when (val v = s) {
-                is AppState.Shz.Found -> TextButton({ AppState.addFound(v.f) }) { Text("В «Опенинги»") }
+                is AppState.Shz.Found -> TextButton({ AppState.addFound(v.f) }) { Text(L("В «Опенинги»", "To “Openings”")) }
                 AppState.Shz.Listening, AppState.Shz.Adding -> {}
-                else -> TextButton({ AppState.startShazam() }) { Text(if (s == AppState.Shz.Idle) "Слушать" else "Ещё раз") }
+                else -> TextButton({ AppState.startShazam() }) { Text(if (s == AppState.Shz.Idle) L("Слушать", "Play") else L("Ещё раз", "Listen")) }
             }
         },
-        dismissButton = { TextButton(dismiss) { Text("Закрыть") } },
+        dismissButton = { TextButton(dismiss) { Text(L("Закрыть", "Close")) } },
     )
 }

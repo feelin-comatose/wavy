@@ -45,8 +45,8 @@ object Offline {
             while (true) {
                 val req = Request.Builder().url(url).header("User-Agent", Http.UA).header("Range", "bytes=$pos-${pos + chunk - 1}").build()
                 val total = Http.client.newCall(req).execute().use { r ->
-                    if (r.code != 206 && r.code != 200) throw java.io.IOException("YouTube ответил ${r.code}")
-                    val body = r.body ?: throw java.io.IOException("пустой ответ")
+                    if (r.code != 206 && r.code != 200) throw java.io.IOException(L("YouTube ответил ${r.code}", "YouTube replied ${r.code}"))
+                    val body = r.body ?: throw java.io.IOException(L("пустой ответ", "empty response"))
                     val n = body.byteStream().copyTo(out)
                     pos += n
                     // 200 — сервер отдал всё сразу; иначе общий размер из Content-Range

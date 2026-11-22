@@ -59,6 +59,8 @@ pub struct Settings {
     pub overlay_window: OverlayWindowSettings,
     /// Сам скачивать и ставить новые версии с GitHub Releases.
     pub auto_update: bool,
+    /// Язык интерфейса: "ru" или "en".
+    pub lang: String,
     pub spotify: SpotifySettings,
     /// Сортировка: "library" или id плейлиста → способ (см. Sort).
     pub sort: HashMap<String, String>,
@@ -107,7 +109,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new(), lastfm: Default::default(), backup_dir: String::new(), last_backup: 0 }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, lang: "ru".into(), spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new(), lastfm: Default::default(), backup_dir: String::new(), last_backup: 0 }
     }
 }
 
@@ -151,10 +153,10 @@ impl Store {
     /// Резервная копия библиотеки (плейлисты, треки, лайки, история, настройки) в `dir`.
     /// Хранит `keep` последних копий, старые удаляет.
     pub fn backup(&self, dir: &std::path::Path, name: &str, keep: usize) -> Result<std::path::PathBuf, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("папка недоступна: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| lf!("папка недоступна: {e}", "the folder is unavailable: {e}"))?;
         let path = dir.join(name);
         let s = serde_json::to_string(&self.lib).map_err(|e| e.to_string())?;
-        std::fs::write(&path, s).map_err(|e| format!("не записалось: {e}"))?;
+        std::fs::write(&path, s).map_err(|e| lf!("не записалось: {e}", "couldn't write: {e}"))?;
         let mut old: Vec<std::path::PathBuf> = std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten().map(|e| e.path())
             .filter(|p| p.file_name().is_some_and(|n| { let n = n.to_string_lossy(); n.starts_with("wavy-backup-") && n.ends_with(".json") })).collect();
         old.sort();
@@ -164,9 +166,9 @@ impl Store {
 
     /// Восстановить библиотеку из копии. Текущая библиотека сначала сохраняется рядом (library.before-restore.json).
     pub fn restore(&mut self, path: &std::path::Path) -> Result<usize, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("не читается: {e}"))?;
-        let lib: Library = serde_json::from_str(&text).map_err(|_| "это не резервная копия Wavy".to_string())?;
-        if lib.tracks.is_empty() && lib.playlists.is_empty() { return Err("копия пустая".into()); }
+        let text = std::fs::read_to_string(path).map_err(|e| lf!("не читается: {e}", "can't be read: {e}"))?;
+        let lib: Library = serde_json::from_str(&text).map_err(|_| l!("это не резервная копия Wavy", "this isn't a Wavy backup").to_string())?;
+        if lib.tracks.is_empty() && lib.playlists.is_empty() { return Err(l!("копия пустая", "the backup is empty").into()); }
         let _ = std::fs::copy(&self.file, self.file.with_file_name("library.before-restore.json"));
         let n = lib.tracks.len();
         self.lib = lib;

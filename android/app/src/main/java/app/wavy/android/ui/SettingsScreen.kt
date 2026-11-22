@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,70 +48,78 @@ fun SettingsScreen(
     val s = lib.settings
     val upd by AppState.update.collectAsState()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Header("Настройки")
+        Header(L("Настройки", "Settings"))
 
-        Section("Мини-плеер поверх приложений") {
+        Section("Язык · Language") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("ru" to "Русский", "en" to "English").forEach { (code, name) ->
+                    Pill(name, primary = s.lang == code) { Store.settings { it.copy(lang = code) } }
+                }
+            }
+        }
+
+        Section(L("Мини-плеер поверх приложений", "Mini player over apps")) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Показывать плавающий плеер, когда Wavy свёрнут (поверх игр и других приложений)", Modifier.weight(1f), color = Muted, fontSize = 13.sp)
+                Text(L("Показывать плавающий плеер, когда Wavy свёрнут (поверх игр и других приложений)", "Show a floating player when Wavy is minimized (over games and other apps)"), Modifier.weight(1f), color = Muted, fontSize = 13.sp)
                 Switch(s.floatingPlayer, onFloating, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Bg))
             }
         }
 
-        Section("Синхронизация с ПК") {
-            Text("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны: «Экспорт» здесь → открыть файл в Wavy на ПК (Настройки → Синхронизация), и наоборот. Локальные файлы не переносятся.", color = Muted, fontSize = 13.sp)
+        Section(L("Синхронизация с ПК", "Sync with PC")) {
+            Text(L("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны: «Экспорт» здесь → открыть файл в Wavy на ПК (Настройки → Синхронизация), и наоборот. Локальные файлы не переносятся.", "Playlists and YouTube / Spotify tracks are transferred in both directions with the wavy-export.json file: “Export” here → open the file in Wavy on the PC (Settings → Sync), and the other way round. Local files aren't transferred."), color = Muted, fontSize = 13.sp)
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Экспорт", Icons.Rounded.Upload, primary = true) { onExport() }
-                Pill("Импорт файла", Icons.Rounded.Download) { onImportFile() }
+                Pill(L("Экспорт", "Export"), Icons.Rounded.Upload, primary = true) { onExport() }
+                Pill(L("Импорт файла", "Import file"), Icons.Rounded.Download) { onImportFile() }
             }
             Spacer(Modifier.height(14.dp))
-            Text("По Wi-Fi, без файлов: в Wavy на ПК включи Настройки → Синхронизация → «По Wi-Fi» и впиши сюда адрес и PIN оттуда. Телефон и ПК — в одной сети.", color = Muted, fontSize = 13.sp)
+            Text(L("По Wi-Fi, без файлов: в Wavy на ПК включи Настройки → Синхронизация → «По Wi-Fi» и впиши сюда адрес и PIN оттуда. Телефон и ПК — в одной сети.", "Over Wi-Fi, without files: in Wavy on the PC turn on Settings → Sync → “Over Wi-Fi” and enter the address and PIN from there. The phone and the PC must be on the same network."), color = Muted, fontSize = 13.sp)
             var addr by remember(s.syncAddr) { mutableStateOf(s.syncAddr) }
             var pin by remember(s.syncPin) { mutableStateOf(s.syncPin) }
-            OutlinedTextField(addr, { v -> addr = v.trim(); Store.settings { it.copy(syncAddr = addr) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Адрес ПК (например 192.168.1.5:3738)") }, singleLine = true)
+            OutlinedTextField(addr, { v -> addr = v.trim(); Store.settings { it.copy(syncAddr = addr) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text(L("Адрес ПК (например 192.168.1.5:3738)", "PC address (e.g. 192.168.1.5:3738)")) }, singleLine = true)
             OutlinedTextField(pin, { v -> pin = v.filter { it.isDigit() }.take(6); Store.settings { it.copy(syncPin = pin) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("PIN") }, singleLine = true)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Синхронизировать", Icons.Rounded.Sync, primary = true) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.wifiSync(addr, pin) }
-                Pill("Пульт ПК", Icons.Rounded.SettingsRemote) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.remoteOpen.value = true }
+                Pill(L("Синхронизировать", "Sync"), Icons.Rounded.Sync, primary = true) { if (addr.isBlank() || pin.length < 6) AppState.say(L("Впиши адрес ПК и PIN из 6 цифр", "Enter the PC address and the 6-digit PIN")) else AppState.wifiSync(addr, pin) }
+                Pill(L("Пульт ПК", "PC remote"), Icons.Rounded.SettingsRemote) { if (addr.isBlank() || pin.length < 6) AppState.say(L("Впиши адрес ПК и PIN из 6 цифр", "Enter the PC address and the 6-digit PIN")) else AppState.remoteOpen.value = true }
             }
         }
 
-        Section("Без интернета") {
+        Section(L("Без интернета", "Offline")) {
             val saved by app.wavy.android.data.Offline.saved.collectAsState()
             val mb = remember(saved) { app.wavy.android.data.Offline.size() / 1_048_576 }
-            Text("Треки с YouTube можно скачать на телефон: кнопка «Скачать» в плейлисте. Скачанное играет без интернета, например в метро.", color = Muted, fontSize = 13.sp)
+            Text(L("Треки с YouTube можно скачать на телефон: кнопка «Скачать» в плейлисте. Скачанное играет без интернета, например в метро.", "YouTube tracks can be downloaded to the phone: the “Download” button in a playlist. Downloaded tracks play without internet, e.g. in the subway."), color = Muted, fontSize = 13.sp)
             Spacer(Modifier.height(8.dp))
-            Text("Скачано: ${saved.size} трек(ов), $mb МБ", fontSize = 14.sp)
-            if (saved.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Pill("Удалить скачанное") { app.wavy.android.data.Offline.clear() } }
+            Text(L("Скачано: ${saved.size} трек(ов), $mb МБ", "Downloaded: ${saved.size} track(s), $mb MB"), fontSize = 14.sp)
+            if (saved.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Pill(L("Удалить скачанное", "Delete downloads")) { app.wavy.android.data.Offline.clear() } }
         }
 
         Section("Spotify") {
-            Text("Ссылки Spotify работают без настроек (до 100 треков из плейлиста). Для больших плейлистов: developer.spotify.com → Create app → Client ID и Client Secret.", color = Muted, fontSize = 13.sp)
+            Text(L("Ссылки Spotify работают без настроек (до 100 треков из плейлиста). Для больших плейлистов: developer.spotify.com → Create app → Client ID и Client Secret.", "Spotify links work without setup (up to 100 tracks from a playlist). For big playlists: developer.spotify.com → Create app → Client ID and Client Secret."), color = Muted, fontSize = 13.sp)
             var id by remember(s.spotifyClientId) { mutableStateOf(s.spotifyClientId) }
             var sec by remember(s.spotifyClientSecret) { mutableStateOf(s.spotifyClientSecret) }
             OutlinedTextField(id, { v -> id = v.filter { it.isLetterOrDigit() }; Store.settings { it.copy(spotifyClientId = id) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Client ID") }, singleLine = true)
             OutlinedTextField(sec, { v -> sec = v.filter { it.isLetterOrDigit() }; Store.settings { it.copy(spotifyClientSecret = sec) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Client Secret") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
         }
 
-        Section("Обновления") {
-            Text("Версия: сборка ${Updater.currentBuild}", fontSize = 14.sp)
+        Section(L("Обновления", "Updates")) {
+            Text(L("Версия: сборка ${Updater.currentBuild}", "Version: build ${Updater.currentBuild}"), fontSize = 14.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Проверять обновления при запуске", Modifier.weight(1f), color = Muted, fontSize = 13.sp)
+                Text(L("Проверять обновления при запуске", "Check for updates on launch"), Modifier.weight(1f), color = Muted, fontSize = 13.sp)
                 Switch(s.autoUpdate, { v -> Store.settings { it.copy(autoUpdate = v) } }, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Bg))
             }
             Spacer(Modifier.height(6.dp))
             when (val u = upd) {
-                AppState.Upd.Checking -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Проверяю…", color = Muted) }
-                AppState.Upd.UpToDate -> Text("У тебя последняя версия", color = Muted)
-                is AppState.Upd.Available -> Pill("Скачать сборку ${u.rel.build}", Icons.Rounded.SystemUpdate, primary = true) { onInstallUpdate() }
-                is AppState.Upd.Downloading -> Text("Скачиваю… ${u.pct}%", color = Muted)
-                is AppState.Upd.Ready -> Pill("Установить", Icons.Rounded.SystemUpdate, primary = true) { onInstallUpdate() }
+                AppState.Upd.Checking -> Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text(L("  Проверяю…", "  Checking…"), color = Muted) }
+                AppState.Upd.UpToDate -> Text(L("У тебя последняя версия", "You have the latest version"), color = Muted)
+                is AppState.Upd.Available -> Pill(L("Скачать сборку ${u.rel.build}", "Download build ${u.rel.build}"), Icons.Rounded.SystemUpdate, primary = true) { onInstallUpdate() }
+                is AppState.Upd.Downloading -> Text(L("Скачиваю… ${u.pct}%", "Downloading… ${u.pct}%"), color = Muted)
+                is AppState.Upd.Ready -> Pill(L("Установить", "Install"), Icons.Rounded.SystemUpdate, primary = true) { onInstallUpdate() }
                 is AppState.Upd.Error -> Text(u.msg, color = Bad, fontSize = 13.sp)
                 AppState.Upd.Idle -> {}
             }
             if (upd !is AppState.Upd.Available && upd !is AppState.Upd.Ready && upd !is AppState.Upd.Downloading)
-                Pill("Проверить обновления", Icons.Rounded.SystemUpdate) { AppState.checkUpdate(manual = true) }
+                Pill(L("Проверить обновления", "Check for updates"), Icons.Rounded.SystemUpdate) { AppState.checkUpdate(manual = true) }
         }
         Spacer(Modifier.height(24.dp))
     }

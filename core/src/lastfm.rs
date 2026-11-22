@@ -42,7 +42,7 @@ fn call(params: &[(&str, &str)], secret: &str, post: bool) -> Result<Value, Stri
     } else {
         a.get(&format!("{API}?{body}")).config().http_status_as_error(false).build().header("User-Agent", "Wavy").call()
     };
-    let mut r = r.map_err(|e| format!("Last.fm недоступен: {e}"))?;
+    let mut r = r.map_err(|e| lf!("Last.fm недоступен: {e}", "Last.fm is unavailable: {e}"))?;
     let v: Value = r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
     if let Some(msg) = v["message"].as_str().filter(|_| v.get("error").is_some()) { return Err(format!("Last.fm: {msg}")); }
     Ok(v)
@@ -51,7 +51,7 @@ fn call(params: &[(&str, &str)], secret: &str, post: bool) -> Result<Value, Stri
 /// Шаг 1: токен и страница, где человек разрешает доступ.
 pub fn begin(acc: &Account) -> Result<(String, String), String> {
     let v = call(&[("method", "auth.getToken"), ("api_key", acc.api_key.trim())], acc.secret.trim(), false)?;
-    let token = v["token"].as_str().ok_or("Last.fm не выдал токен — проверь API key")?.to_string();
+    let token = v["token"].as_str().ok_or(l!("Last.fm не выдал токен — проверь API key", "Last.fm didn't give a token — check the API key"))?.to_string();
     let url = format!("https://www.last.fm/api/auth/?api_key={}&token={token}", acc.api_key.trim());
     Ok((token, url))
 }
@@ -59,8 +59,8 @@ pub fn begin(acc: &Account) -> Result<(String, String), String> {
 /// Шаг 2: после «Разрешить» на сайте — постоянная сессия.
 pub fn finish(acc: &mut Account, token: &str) -> Result<(), String> {
     let v = call(&[("method", "auth.getSession"), ("api_key", acc.api_key.trim()), ("token", token)], acc.secret.trim(), false)
-        .map_err(|e| if e.contains("not authorized") || e.contains("Unauthorized") { "сначала нажми «Разрешить» на странице Last.fm".to_string() } else { e })?;
-    acc.session = v["session"]["key"].as_str().ok_or("Last.fm не выдал сессию")?.to_string();
+        .map_err(|e| if e.contains("not authorized") || e.contains("Unauthorized") { l!("сначала нажми «Разрешить» на странице Last.fm", "first click “Allow access” on the Last.fm page").to_string() } else { e })?;
+    acc.session = v["session"]["key"].as_str().ok_or(l!("Last.fm не выдал сессию", "Last.fm didn't give a session"))?.to_string();
     acc.user = v["session"]["name"].as_str().unwrap_or("").to_string();
     acc.enabled = true;
     Ok(())

@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -69,8 +70,8 @@ object Remote {
     fun cmd(addr: String, pin: String, cmd: String, v: Double = 0.0): State {
         val req = Request.Builder().url("${base(addr)}/wavy/remote?pin=${pin.trim()}&cmd=$cmd&v=$v").post("".toRequestBody("text/plain".toMediaTypeOrNull())).build()
         Http.client.newCall(req).execute().use { r ->
-            if (r.code == 403) throw java.io.IOException("неверный PIN")
-            if (!r.isSuccessful) throw java.io.IOException("ПК ответил ${r.code}")
+            if (r.code == 403) throw java.io.IOException(L("неверный PIN", "wrong PIN"))
+            if (!r.isSuccessful) throw java.io.IOException(L("ПК ответил ${r.code}", "The PC replied ${r.code}"))
             return parse(r.body?.string() ?: "{}")
         }
     }
@@ -84,17 +85,17 @@ fun RemoteScreen(addr: String, pin: String, back: () -> Unit, initial: Remote.St
     var vol by remember { mutableStateOf<Float?>(null) }
     val scope = rememberCoroutineScope()
     fun send(c: String, v: Double = 0.0) = scope.launch {
-        try { st = withContext(Dispatchers.IO) { Remote.cmd(addr, pin, c, v) }; err = null } catch (e: Exception) { err = e.message ?: "ПК не отвечает" }
+        try { st = withContext(Dispatchers.IO) { Remote.cmd(addr, pin, c, v) }; err = null } catch (e: Exception) { err = e.message ?: L("ПК не отвечает", "The PC isn't responding") }
     }
     // раз в секунду спрашиваем ПК, что играет
     if (initial == null) LaunchedEffect(addr, pin) {
         while (true) {
-            try { st = withContext(Dispatchers.IO) { Remote.get(addr, pin) }; err = null } catch (e: Exception) { err = "ПК не отвечает: ${e.message ?: ""}. Включена ли синхронизация по Wi-Fi на ПК, и в одной ли вы сети?" }
+            try { st = withContext(Dispatchers.IO) { Remote.get(addr, pin) }; err = null } catch (e: Exception) { err = L("ПК не отвечает: ${e.message ?: ""}. Включена ли синхронизация по Wi-Fi на ПК, и в одной ли вы сети?", "The PC isn't responding: ${e.message ?: ""}. Is Wi-Fi sync on in the PC app, and are you on the same network?") }
             delay(1000)
         }
     }
     Column(Modifier.fillMaxSize().background(Bg)) {
-        Header("Пульт ПК", addr, back = back)
+        Header(L("Пульт ПК", "PC remote"), addr, back = back)
         err?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = Bad, fontSize = 13.sp) }
         val s = st ?: return@Column
         val t = s.track
@@ -102,7 +103,7 @@ fun RemoteScreen(addr: String, pin: String, back: () -> Unit, initial: Remote.St
             val cover = t?.cover?.let { if (it == "local") "${Remote.base(addr)}/wavy/remote/cover?pin=$pin&id=${t.id}" else it }
             Cover(cover, 220.dp, radius = 16.dp)
             Spacer(Modifier.height(14.dp))
-            Text(t?.title ?: "Ничего не играет", fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(t?.title ?: L("Ничего не играет", "Nothing is playing"), fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (!t?.artist.isNullOrEmpty()) Text(t!!.artist, color = Muted, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(8.dp))
             val dur = s.duration.toFloat().coerceAtLeast(1f)
@@ -114,20 +115,20 @@ fun RemoteScreen(addr: String, pin: String, back: () -> Unit, initial: Remote.St
                 Text(fmtTime(s.duration), color = Muted, fontSize = 12.sp)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                IconButton({ send("prev") }) { Icon(Icons.Rounded.SkipPrevious, "Предыдущий", Modifier.size(34.dp)) }
+                IconButton({ send("prev") }) { Icon(Icons.Rounded.SkipPrevious, L("Предыдущий", "Previous"), Modifier.size(34.dp)) }
                 Box(Modifier.size(68.dp).background(Accent, CircleShape).clickable { send("toggle") }, contentAlignment = Alignment.Center) {
-                    Icon(if (s.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (s.playing) "Пауза" else "Играть", tint = Bg, modifier = Modifier.size(36.dp))
+                    Icon(if (s.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (s.playing) L("Пауза", "Pause") else L("Играть", "Play"), tint = Bg, modifier = Modifier.size(36.dp))
                 }
-                IconButton({ send("next") }) { Icon(Icons.Rounded.SkipNext, "Следующий", Modifier.size(34.dp)) }
+                IconButton({ send("next") }) { Icon(Icons.Rounded.SkipNext, L("Следующий", "Next"), Modifier.size(34.dp)) }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Громкость", tint = Muted)
+                Icon(Icons.AutoMirrored.Rounded.VolumeUp, L("Громкость", "Volume"), tint = Muted)
                 Slider(vol ?: s.volume.toFloat(), { vol = it }, Modifier.weight(1f).padding(start = 8.dp),
                     onValueChangeFinished = { vol?.let { send("volume", it.toDouble()) }; vol = null },
                     colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent, inactiveTrackColor = Bg3))
             }
         }
-        if (s.queue.isNotEmpty()) Text("Очередь", Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.SemiBold)
+        if (s.queue.isNotEmpty()) Text(L("Очередь", "Queue"), Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.SemiBold)
         LazyColumn(Modifier.fillMaxWidth()) {
             items(s.queue, key = { it.i }) { q ->
                 Row(Modifier.fillMaxWidth().clickable { send("jump", q.i.toDouble()) }.padding(horizontal = 16.dp, vertical = 9.dp)) {

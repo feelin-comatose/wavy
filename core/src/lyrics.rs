@@ -73,7 +73,7 @@ fn get_json(url: &str) -> Result<Option<Value>, String> {
     match crate::http().get(url).header("User-Agent", "Wavy (https://github.com/feelin-comatose/wavy)").call() {
         Ok(mut r) => Ok(r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok())),
         Err(ureq::Error::StatusCode(404)) => Ok(None),
-        Err(e) => Err(format!("LRCLIB недоступен: {e}")),
+        Err(e) => Err(lf!("LRCLIB недоступен: {e}", "LRCLIB is unavailable: {e}")),
     }
 }
 

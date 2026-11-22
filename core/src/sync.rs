@@ -49,7 +49,7 @@ pub fn is_export(text: &str) -> bool {
 }
 
 pub fn import(store: &mut Store, text: &str) -> Result<Summary, String> {
-    let e: Export = serde_json::from_str(text).map_err(|err| format!("это не файл экспорта Wavy: {err}"))?;
+    let e: Export = serde_json::from_str(text).map_err(|err| lf!("это не файл экспорта Wavy: {err}", "this isn't a Wavy export file: {err}"))?;
     let all: Vec<Track> = e.tracks.iter().chain(e.playlists.iter().flat_map(|p| p.tracks.iter())).cloned().collect();
     let skipped_local = all.iter().filter(|t| t.is_local()).count();
     let mut seen = std::collections::HashSet::new();

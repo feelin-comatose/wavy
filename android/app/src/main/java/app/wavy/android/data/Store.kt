@@ -24,6 +24,7 @@ object Store {
         if (::file.isInitialized) return
         file = File(ctx.filesDir, "library.json")
         runCatching { _lib.value = json.decodeFromString(Library.serializer(), file.readText()) }
+        Lang.set(_lib.value.settings.lang)
     }
 
     /** Для тестов: хранилище во временной папке. */
@@ -76,7 +77,7 @@ object Store {
     fun removeFromPlaylist(id: String, ids: Set<String>) = editPlaylist(id) { p -> p.copy(trackIds = p.trackIds.filterNot { it in ids }) }
     fun deletePlaylist(id: String) = edit { l -> l.copy(playlists = l.playlists.filterNot { it.id == id }) }
 
-    fun settings(f: (Settings) -> Settings) = edit { it.copy(settings = f(it.settings)) }
+    fun settings(f: (Settings) -> Settings) { edit { it.copy(settings = f(it.settings)) }; Lang.set(_lib.value.settings.lang) }
     fun session(s: Session) = edit { it.copy(session = s) }
 
     /** Треки библиотеки, новые сверху (серии аниме живут в своём разделе). */

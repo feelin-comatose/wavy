@@ -76,7 +76,7 @@ impl YouTube {
                 Ok(c) => Some(c),
                 Err(e) => { crate::log(&format!("rustypipe: {e}")); None }
             }
-        }).as_ref().ok_or_else(|| "rustypipe недоступен".to_string())
+        }).as_ref().ok_or_else(|| l!("rustypipe недоступен", "rustypipe is unavailable").to_string())
     }
 
     /// Быстрый путь без yt-dlp: прямая ссылка через rustypipe (0.2–1 с).
@@ -93,11 +93,11 @@ impl YouTube {
         let player = rt().block_on(rp.query().player(video_id)).map_err(|e| format!("rustypipe: {e}"))?;
         let d = if video {
             let f = StreamFilter::new().video_formats(vec![VideoFormat::Mp4]).video_codecs(vec![VideoCodec::Avc1]).video_max_res(720);
-            let v = player.select_video_only_stream(&f).ok_or("нет видео H.264")?;
+            let v = player.select_video_only_stream(&f).ok_or(l!("нет видео H.264", "no H.264 video"))?;
             Direct { url: v.url.clone(), size: v.size }
         } else {
             let f = StreamFilter::new().audio_formats(vec![AudioFormat::M4a]);
-            let a = player.select_audio_stream(&f).ok_or("нет звука m4a")?;
+            let a = player.select_audio_stream(&f).ok_or(l!("нет звука m4a", "no m4a audio"))?;
             Direct { url: a.url.clone(), size: Some(a.size) }
         };
         crate::log(&format!("rustypipe {key}: ссылка за {:.2} с", t.elapsed().as_secs_f32()));
@@ -128,13 +128,13 @@ impl YouTube {
             *st = Deno::Ready(local.to_string_lossy().into_owned());
             return;
         }
-        let Some(target) = deno_target() else { *st = Deno::Failed("deno не поддерживает эту платформу".into()); return };
+        let Some(target) = deno_target() else { *st = Deno::Failed(l!("deno не поддерживает эту платформу", "deno doesn't support this platform").into()); return };
         *st = Deno::Installing;
         drop(st);
         let (state, dir) = (self.deno.clone(), self.bin_dir.clone());
         std::thread::Builder::new().name("deno-install".into()).spawn(move || {
             let r = install_deno(&dir, &local, target);
-            crate::log(&format!("deno: {}", match &r { Ok(()) => "скачан".to_string(), Err(e) => format!("ошибка: {e}") }));
+            crate::log(&format!("deno: {}", match &r { Ok(()) => "скачан".to_string(), Err(e) => lf!("ошибка: {e}", "error: {e}") }));
             *state.lock().unwrap() = match r { Ok(()) => Deno::Ready(local.to_string_lossy().into_owned()), Err(e) => Deno::Failed(e) };
         }).ok();
     }
@@ -168,7 +168,7 @@ impl YouTube {
         }
         let local = self.bin_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
         if !local.exists() {
-            status("Скачиваю yt-dlp (один раз)...");
+            status(l!("Скачиваю yt-dlp (один раз)...", "Downloading yt-dlp (once)..."));
             std::fs::create_dir_all(&self.bin_dir).map_err(|e| e.to_string())?;
             let resp = crate::http().get(&format!("{RELEASE}{}", Self::asset_name())).call().map_err(|e| { crate::log(&format!("yt-dlp: ошибка скачивания: {e}")); format!("Не удалось скачать yt-dlp: {e}") })?;
             let part = local.with_extension("part");
@@ -217,7 +217,7 @@ impl YouTube {
 
     pub fn update(&self) -> Result<String, String> {
         if self.ensure_binary(&|_| {})? == "yt-dlp" {
-            return Ok("yt-dlp установлен в системе — обнови его своим пакетным менеджером".into());
+            return Ok(l!("yt-dlp установлен в системе — обнови его своим пакетным менеджером", "yt-dlp is installed in the system — update it with your package manager").into());
         }
         Ok(self.run(&["-U"])?.trim().to_string())
     }
@@ -225,7 +225,7 @@ impl YouTube {
     /// Плейлист / альбом / одиночное видео по ссылке.
     pub fn import_url(&self, url: &str, status: &dyn Fn(&str)) -> Result<UrlImport, String> {
         self.ensure_binary(status)?;
-        status("Читаю плейлист...");
+        status(l!("Читаю плейлист...", "Reading the playlist..."));
         let json: Value = serde_json::from_str(&self.run(&["--flat-playlist", "-J", "--no-warnings", url])?).map_err(|e| e.to_string())?;
         let is_music = url.contains("music.youtube.com");
         let entries: Vec<&Value> = match json.get("entries").and_then(Value::as_array) {
@@ -239,7 +239,7 @@ impl YouTube {
             .map(|(i, e)| { let mut t = to_track(e, &json, is_music); t.added_at = base + n - i as u64; t })
             .collect();
         Ok(UrlImport {
-            name: json.get("entries").map(|_| s(&json, "title").unwrap_or_else(|| "Импортированный плейлист".into())),
+            name: json.get("entries").map(|_| s(&json, "title").unwrap_or_else(|| l!("Импортированный плейлист", "Imported playlist").into())),
             source: url.to_string(),
             tracks,
         })
@@ -256,10 +256,10 @@ impl YouTube {
         if query.starts_with("http") {
             let json: Value = serde_json::from_str(&self.run(&["--flat-playlist", "-J", "--no-warnings", "--playlist-end", "1", query])?).map_err(|e| e.to_string())?;
             let e = json.get("entries").and_then(Value::as_array).and_then(|a| a.first()).cloned().unwrap_or_else(|| json.clone());
-            if e.is_null() || is_live(&e) { return Err("по ссылке нет видео".into()); }
+            if e.is_null() || is_live(&e) { return Err(l!("по ссылке нет видео", "there's no video at the link").into()); }
             return Ok(to_track(&e, &json, false));
         }
-        self.search(query, 1)?.into_iter().next().ok_or_else(|| "ничего не нашлось".into())
+        self.search(query, 1)?.into_iter().next().ok_or_else(|| l!("ничего не нашлось", "nothing found").into())
     }
 
     /// Радио по треку: микс YouTube (похожие песни), без самого трека.
@@ -274,13 +274,13 @@ impl YouTube {
 
     /// Прямая ссылка на аудиопоток (для webview-плеера).
     pub fn resolve_stream(&self, track: &Track) -> Result<String, String> {
-        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         if let Some((u, exp)) = self.streams.lock().unwrap().get(&key) {
             if *exp > now_ms() + 60_000 { return Ok(u.clone()); }
         }
         let out = self.run(&["-f", "bestaudio[ext=m4a]/bestaudio/best", "-g", "--no-playlist", "--no-warnings", &key])?;
         let stream = out.lines().next().unwrap_or("").trim().to_string();
-        if stream.is_empty() { return Err("yt-dlp не вернул ссылку на поток".into()); }
+        if stream.is_empty() { return Err(l!("yt-dlp не вернул ссылку на поток", "yt-dlp didn't return a stream link").into()); }
         let exp = url::Url::parse(&stream).ok()
             .and_then(|u| u.query_pairs().find(|(k, _)| k == "expire").and_then(|(_, v)| v.parse::<u64>().ok()))
             .map(|e| e * 1000).unwrap_or(now_ms() + 3_600_000);
@@ -293,7 +293,7 @@ impl YouTube {
     /// `auth` — с куками (для видео 18+, если они заданы в настройках).
     pub fn stream_audio(&self, track: &Track, path: &Path, auth: bool) -> Result<crate::stream::Download, String> {
         use std::process::Stdio;
-        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let bin = self.ensure_binary(&|_| {})?;
         self.ensure_deno_background();
         // deno нужен для подписи ссылок; если он ещё качается — подождём немного
@@ -318,7 +318,7 @@ impl YouTube {
     /// Скачать аудио в кэш (для нативного плеера). Возвращает путь к файлу.
     /// Берём m4a (AAC) — его умеет декодировать symphonia.
     pub fn download_audio(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
-        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let lock = self.key_lock(&format!("a:{key}"));
         let _guard = lock.lock().unwrap();
         let _ = std::fs::create_dir_all(cache);
@@ -334,7 +334,7 @@ impl YouTube {
             "--print", "after_move:filepath", &key,
         ])?;
         let p = PathBuf::from(out.lines().last().unwrap_or("").trim());
-        if p.exists() { Ok(p) } else { Err("не удалось скачать (прямые эфиры не поддерживаются)".into()) }
+        if p.exists() { Ok(p) } else { Err(l!("не удалось скачать (прямые эфиры не поддерживаются)", "couldn't download (live streams aren't supported)").into()) }
     }
 }
 
@@ -347,7 +347,7 @@ impl YouTube {
     /// Скачать видеодорожку (без звука) для показа клипа. H.264 в MP4 до 720p —
     /// его умеет встроенный декодер, и он не грузит процессор.
     pub fn download_video(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
-        let key = track.url.clone().ok_or("У трека нет ссылки")?;
+        let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let lock = self.key_lock(&format!("v:{key}"));
         let _guard = lock.lock().unwrap();
         let _ = std::fs::create_dir_all(cache);
@@ -358,7 +358,7 @@ impl YouTube {
             "--no-playlist", "--no-warnings", "--no-progress", "--match-filter", "!is_live",
             "-o", &path.to_string_lossy(), &key,
         ])?;
-        if path.exists() { Ok(path) } else { Err("YouTube не отдал видео в формате H.264".into()) }
+        if path.exists() { Ok(path) } else { Err(l!("YouTube не отдал видео в формате H.264", "YouTube didn't serve the video in H.264").into()) }
     }
 }
 
@@ -410,7 +410,7 @@ fn deno_target() -> Option<&'static str> {
 fn install_deno(dir: &Path, dest: &Path, target: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let url = format!("https://github.com/denoland/deno/releases/latest/download/deno-{target}.zip");
-    let resp = crate::http().get(&url).call().map_err(|e| format!("Не удалось скачать deno: {e}"))?;
+    let resp = crate::http().get(&url).call().map_err(|e| lf!("Не удалось скачать deno: {e}", "Couldn't download deno: {e}"))?;
     let zip_path = dir.join("deno.zip.part");
     let mut f = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
     std::io::copy(&mut resp.into_body().into_reader(), &mut f).map_err(|e| e.to_string())?;
@@ -418,7 +418,7 @@ fn install_deno(dir: &Path, dest: &Path, target: &str) -> Result<(), String> {
     let res = (|| {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&zip_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let name = if cfg!(windows) { "deno.exe" } else { "deno" };
-        let mut entry = zip.by_name(name).map_err(|e| format!("в архиве нет {name}: {e}"))?;
+        let mut entry = zip.by_name(name).map_err(|e| lf!("в архиве нет {name}: {e}", "couldn't find {name} in the archive: {e}"))?;
         let part = dest.with_extension("part");
         let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
         std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;

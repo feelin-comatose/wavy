@@ -14,7 +14,7 @@ pub struct Skip {
 impl Skip {
     pub fn is_ed(&self) -> bool { self.kind.ends_with("ed") }
     pub fn label(&self) -> &'static str {
-        match self.kind.as_str() { "op" | "mixed-op" => "опенинг", "ed" | "mixed-ed" => "эндинг", "recap" => "пересказ", _ => "заставку" }
+        match self.kind.as_str() { "op" | "mixed-op" => l!("опенинг", "opening"), "ed" | "mixed-ed" => l!("эндинг", "ending"), "recap" => l!("пересказ", "recap"), _ => l!("заставку", "intro") }
     }
 }
 
@@ -36,7 +36,7 @@ pub fn fetch(mal_id: u64, ep: u32, length: f64, cache: &Path) -> Result<Vec<Skip
     let v: Value = match crate::http().get(&url).call() {
         Ok(mut r) => r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null),
         Err(ureq::Error::StatusCode(404)) => Value::Null,
-        Err(e) => return Err(format!("AniSkip недоступен: {e}")),
+        Err(e) => return Err(lf!("AniSkip недоступен: {e}", "AniSkip is unavailable: {e}")),
     };
     let _ = std::fs::create_dir_all(cache);
     let _ = std::fs::write(&file, v.to_string());

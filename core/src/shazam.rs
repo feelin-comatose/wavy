@@ -232,10 +232,10 @@ pub fn recognize(samples: &[f32]) -> Result<Option<Found>, String> {
         .header("Content-Language", "en_US")
         .config().http_status_as_error(false).build()
         .header("Content-Type", "application/json")
-        .send(body.to_string()).map_err(|e| format!("Shazam недоступен: {e}"))?;
-    if r.status().as_u16() == 429 { return Err("Shazam: слишком много запросов, попробуй через минуту".into()); }
-    if !r.status().is_success() { return Err(format!("Shazam ответил {}", r.status())); }
-    let v: Value = r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or("Shazam: непонятный ответ")?;
+        .send(body.to_string()).map_err(|e| lf!("Shazam недоступен: {e}", "Shazam is unavailable: {e}"))?;
+    if r.status().as_u16() == 429 { return Err(l!("Shazam: слишком много запросов, попробуй через минуту", "Shazam: too many requests, try again in a minute").into()); }
+    if !r.status().is_success() { return Err(lf!("Shazam ответил {}", "Shazam replied {}", r.status())); }
+    let v: Value = r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(l!("Shazam: непонятный ответ", "Shazam: unexpected response"))?;
     Ok(parse_response(&v))
 }
 

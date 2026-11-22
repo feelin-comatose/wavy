@@ -26,8 +26,8 @@ object LocalScanner {
                 val art = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), c.getLong(4))
                 out += Track(
                     id = "and_a_$id", type = "local", path = uri.toString(),
-                    title = c.getString(1) ?: "Без названия",
-                    artist = c.getString(2)?.takeIf { it != "<unknown>" } ?: "Неизвестный исполнитель",
+                    title = c.getString(1) ?: L("Без названия", "Untitled"),
+                    artist = c.getString(2)?.takeIf { it != "<unknown>" } ?: L("Неизвестный исполнитель", "Unknown artist"),
                     album = c.getString(3) ?: "", duration = c.getLong(5) / 1000.0,
                     cover = art.toString(), addedAt = c.getLong(6) * 1000,
                 )
@@ -43,8 +43,8 @@ object LocalScanner {
                 val file = (c.getString(4) ?: c.getString(1) ?: "").substringBeforeLast('.')
                 videoNames["and_v_$id"] = file to c.getString(5)
                 out += Track(
-                    id = "and_v_$id", type = "local", path = uri.toString(), title = c.getString(1) ?: "Видео",
-                    artist = "Видео", duration = c.getLong(2) / 1000.0, cover = uri.toString(),
+                    id = "and_v_$id", type = "local", path = uri.toString(), title = c.getString(1) ?: L("Видео", "Videos"),
+                    artist = L("Видео", "Videos"), duration = c.getLong(2) / 1000.0, cover = uri.toString(),
                     addedAt = c.getLong(3) * 1000, video = true,
                 )
             }

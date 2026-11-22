@@ -42,7 +42,7 @@ pub fn search(q: &str, limit: u32) -> Result<Vec<ShikiAnime>, String> {
         let r = crate::http().post(&format!("{host}/api/graphql")).header("User-Agent", UA).header("Content-Type", "application/json").send(query(q, limit).to_string());
         match r {
             Ok(mut resp) => {
-                let v: Value = resp.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or("Шикимори: непонятный ответ")?;
+                let v: Value = resp.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(l!("Шикимори: непонятный ответ", "Shikimori: unexpected response"))?;
                 if let Some(e) = v.get("errors") { return Err(format!("Шикимори: {e}")); }
                 let list = v["data"]["animes"].as_array().cloned().unwrap_or_default();
                 return Ok(list.iter().map(|a| parse(a, host)).collect());
@@ -50,7 +50,7 @@ pub fn search(q: &str, limit: u32) -> Result<Vec<ShikiAnime>, String> {
             Err(e) => last = e.to_string(),
         }
     }
-    Err(format!("Шикимори недоступен: {last}"))
+    Err(lf!("Шикимори недоступен: {last}", "Shikimori is unavailable: {last}"))
 }
 
 fn parse(a: &Value, host: &str) -> ShikiAnime {

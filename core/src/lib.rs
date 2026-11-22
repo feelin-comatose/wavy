@@ -1,5 +1,7 @@
 //! Общее ядро Wavy: библиотека, импорт, YouTube (yt-dlp), Discord RPC, сервер оверлея.
 //! Используется нативной версией (egui).
+#[macro_use]
+pub mod i18n;
 pub mod anime;
 pub mod animethemes;
 pub mod aniskip;

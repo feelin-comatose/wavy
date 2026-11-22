@@ -26,9 +26,9 @@ fn file_name(t: &Track, n: usize, total: usize) -> String {
 /// Исходный звук трека: локальный файл, готовый кэш или скачать.
 fn source(t: &Track, yt: &YouTube, cache: &Path) -> Result<PathBuf, String> {
     if let Some(p) = t.path.as_ref().map(PathBuf::from) {
-        return if p.exists() { Ok(p) } else { Err("файла больше нет на диске".into()) };
+        return if p.exists() { Ok(p) } else { Err(l!("файла больше нет на диске", "the file is no longer on disk").into()) };
     }
-    let key = t.url.clone().ok_or("у трека нет ни файла, ни ссылки")?;
+    let key = t.url.clone().ok_or(l!("у трека нет ни файла, ни ссылки", "the track has neither a file nor a link"))?;
     let streamed = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
     if wavy_core::stream::is_complete(&streamed) { return Ok(streamed); }
     yt.download_audio(t, cache)
@@ -71,17 +71,17 @@ fn tag(path: &Path, t: &Track, pic: Option<Vec<u8>>) -> Result<(), String> {
     }
     // ID3v2.3 — его понимают и Проводник, и старые плееры, и магнитолы
     let mut opts = WriteOptions::default();
-    tag.save_to_path(path, opts.use_id3v23(true)).map_err(|e| format!("теги: {e}"))
+    tag.save_to_path(path, opts.use_id3v23(true)).map_err(|e| lf!("теги: {e}", "tags: {e}"))
 }
 
 fn convert(ff: &Path, src: &Path, dest: &Path) -> Result<(), String> {
     let out = wavy_core::ffmpeg::cmd(ff)
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", "1", "-i"]).arg(src)
         .args(["-map", "0:a:0", "-vn", "-sn", "-map_metadata", "-1", "-c:a", "libmp3lame", "-q:a", "2", "-f", "mp3"]).arg(dest)
-        .output().map_err(|e| format!("ffmpeg не запустился: {e}"))?;
+        .output().map_err(|e| lf!("ffmpeg не запустился: {e}", "ffmpeg failed to start: {e}"))?;
     if out.status.success() { return Ok(()); }
     let err = String::from_utf8_lossy(&out.stderr);
-    Err(err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("ffmpeg: ошибка").trim().to_string())
+    Err(err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(l!("ffmpeg: ошибка", "ffmpeg: error")).trim().to_string())
 }
 
 /// Одна песня → dest. Уже готовый MP3 копируется как есть (без потерь), остальное перекодируется.
@@ -100,19 +100,19 @@ fn one(t: &Track, dest: &Path, ff: &Path, yt: &YouTube, cache: &Path) -> Result<
 
 /// Экспорт списка треков в папку `dir`. `status` получает строку прогресса.
 pub fn run(tracks: &[Track], dir: &Path, ff: &Ffmpeg, yt: &YouTube, cache: &Path, status: impl Fn(String)) -> Result<Report, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("не удалось создать папку: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| lf!("не удалось создать папку: {e}", "couldn't create the folder: {e}"))?;
     // MP3-исходники перекодировать не нужно — ffmpeg нужен, только если есть что-то кроме них
     let need_ff = tracks.iter().any(|t| t.path.as_deref().is_none_or(|p| !p.to_lowercase().ends_with(".mp3")));
     let ffp = if need_ff {
-        status("Экспорт: готовлю кодировщик MP3…".into());
-        ff.ready_with_mp3(|p| status(format!("Экспорт: качаю кодировщик MP3… {p}%")))?
+        status(l!("Экспорт: готовлю кодировщик MP3…", "Export: preparing the MP3 encoder…").into());
+        ff.ready_with_mp3(|p| status(lf!("Экспорт: качаю кодировщик MP3… {p}%", "Export: downloading the MP3 encoder… {p}%")))?
     } else { PathBuf::new() };
     let total = tracks.len();
     let mut rep = Report { dir: dir.to_path_buf(), done: 0, failed: Vec::new() };
     for (i, t) in tracks.iter().enumerate() {
         let dest = dir.join(file_name(t, i + 1, total));
         if dest.exists() { rep.done += 1; continue; }
-        status(format!("Экспорт MP3: {} / {total} — {}", i + 1, t.title));
+        status(lf!("Экспорт MP3: {} / {total} — {}", "MP3 export: {} / {total} — {}", i + 1, t.title));
         match one(t, &dest, &ffp, yt, cache) {
             Ok(()) => rep.done += 1,
             Err(e) => { wavy_core::log(&format!("экспорт «{}»: {e}", t.title)); rep.failed.push((t.title.clone(), e)); }

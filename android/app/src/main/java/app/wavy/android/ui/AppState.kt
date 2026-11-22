@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import android.content.Context
 import app.wavy.android.data.AnimeParse
 import app.wavy.android.data.LocalScanner
@@ -42,21 +43,21 @@ object AppState {
 
     private fun bg(label: String, block: suspend () -> Unit) = scope.launch {
         busy.value = label
-        try { block() } catch (e: Throwable) { say("Ошибка: ${e.message ?: e.javaClass.simpleName}") } finally { busy.value = null }
+        try { block() } catch (e: Throwable) { say(L("Ошибка: ${e.message ?: e.javaClass.simpleName}", "Error: ${e.message ?: e.javaClass.simpleName}")) } finally { busy.value = null }
     }
 
-    fun scanLocal(ctx: Context) = bg("Ищу музыку и видео на телефоне…") {
+    fun scanLocal(ctx: Context) = bg(L("Ищу музыку и видео на телефоне…", "Looking for music and videos on the phone…")) {
         val found = withContext(Dispatchers.IO) { LocalScanner.scan(ctx) }
         Store.addTracks(found)
         // серии аниме: видео с номером серии в имени → тайтлы, обложки и названия с Шикимори
         val ids = found.filter { it.video }.map { it.id }.toSet()
         val pending = Store.addEpisodes(LocalScanner.videoNames.filterKeys { it in ids })
-        say(if (found.isEmpty()) "На телефоне не нашлось музыки" else "Найдено: ${found.count { !it.video }} треков, ${found.count { it.video }} видео")
+        say(if (found.isEmpty()) L("На телефоне не нашлось музыки", "No music found on the phone") else L("Найдено: ${found.count { !it.video }} треков, ${found.count { it.video }} видео", "Found: ${found.count { !it.video }} tracks, ${found.count { it.video }} videos"))
         if (pending.isNotEmpty()) matchAnime(pending)
     }
 
     /** Найти тайтлы на Шикимори. Видео с одной «серией», которых там нет, — не аниме: возвращаем в библиотеку. */
-    fun matchAnime(list: List<app.wavy.android.data.Anime>) = bg("Ищу аниме на Шикимори…") {
+    fun matchAnime(list: List<app.wavy.android.data.Anime>) = bg(L("Ищу аниме на Шикимори…", "Looking up anime on Shikimori…")) {
         for (a in list) {
             val p = AnimeParse.Parsed(a.title, null, if ("#s" in a.key) a.key.substringAfter("#s").toIntOrNull() else null)
             val hit = runCatching { withContext(Dispatchers.IO) { Shikimori.bestMatch(a.title, p.season, a.episodes.size, Shikimori.search(AnimeParse.searchQuery(p))) } }.getOrNull()
@@ -82,31 +83,31 @@ object AppState {
 
     // ---------- синхронизация с ПК по Wi-Fi ----------
     /** Скачать треки для прослушивания без интернета. */
-    fun downloadOffline(ids: List<String>) = bg("Скачиваю для офлайна…") {
+    fun downloadOffline(ids: List<String>) = bg(L("Скачиваю для офлайна…", "Downloading for offline…")) {
         val tracks = ids.mapNotNull { Store.track(it) }.filter { it.videoId != null && !app.wavy.android.data.Offline.has(it) }
-        if (tracks.isEmpty()) { say("Всё уже скачано"); return@bg }
+        if (tracks.isEmpty()) { say(L("Всё уже скачано", "Everything is already downloaded")); return@bg }
         var ok = 0
         var failed = 0
         for ((i, t) in tracks.withIndex()) {
-            busy.value = "Скачиваю для офлайна: ${i + 1} из ${tracks.size} · ${t.title}"
+            busy.value = L("Скачиваю для офлайна: ${i + 1} из ${tracks.size} · ${t.title}", "Downloading for offline: ${i + 1} of ${tracks.size} · ${t.title}")
             try { withContext(Dispatchers.IO) { app.wavy.android.data.Offline.download(t) }; ok++ } catch (e: Exception) { failed++ }
         }
-        say("Скачано для офлайна: $ok" + if (failed > 0) ", не вышло: $failed" else "")
+        say(L("Скачано для офлайна: $ok", "Downloaded for offline: $ok") + if (failed > 0) L(", не вышло: $failed", ", failed: $failed") else "")
     }
 
     /** Открыт ли пульт ПК. */
     val remoteOpen = MutableStateFlow(false)
 
-    fun wifiSync(addr: String, pin: String) = bg("Синхронизация с ПК…") {
+    fun wifiSync(addr: String, pin: String) = bg(L("Синхронизация с ПК…", "Syncing with the PC…")) {
         val base = "http://" + addr.trim().removePrefix("http://").trimEnd('/').let { if (':' in it) it else "$it:3738" } + "/wavy/sync?pin=" + pin.trim()
         val r = withContext(Dispatchers.IO) {
             val fromPc = app.wavy.android.net.Http.get(base)
             val got = Sync.import(fromPc)
             val req = okhttp3.Request.Builder().url(base).post(okhttp3.RequestBody.create("application/json".toMediaTypeOrNull(), Sync.export())).build()
-            app.wavy.android.net.Http.client.newCall(req).execute().use { resp -> if (!resp.isSuccessful) throw java.io.IOException(if (resp.code == 403) "неверный PIN" else "ПК ответил ${resp.code}") }
+            app.wavy.android.net.Http.client.newCall(req).execute().use { resp -> if (!resp.isSuccessful) throw java.io.IOException(if (resp.code == 403) L("неверный PIN", "wrong PIN") else L("ПК ответил ${resp.code}", "The PC replied ${resp.code}")) }
             got
         }
-        say("С ПК: ${r.tracks} треков, новых плейлистов ${r.newPlaylists}. Плейлисты телефона отправлены на ПК")
+        say(L("С ПК: ${r.tracks} треков, новых плейлистов ${r.newPlaylists}. Плейлисты телефона отправлены на ПК", "From the PC: ${r.tracks} tracks, new playlists ${r.newPlaylists}. The phone's playlists were sent to the PC"))
     }
 
     // ---------- Shazam ----------
@@ -124,7 +125,7 @@ object AppState {
         shazam.value = try {
             val samples = withContext(Dispatchers.IO) { recordMic(Shazam.SECONDS) }
             withContext(Dispatchers.IO) { Shazam.recognize(samples) }?.let { Shz.Found(it) } ?: Shz.NotFound
-        } catch (e: Throwable) { Shz.Error(e.message ?: "не получилось") }
+        } catch (e: Throwable) { Shz.Error(e.message ?: L("не получилось", "didn't work")) }
     }
 
     @android.annotation.SuppressLint("MissingPermission")
@@ -132,7 +133,7 @@ object AppState {
         val rate = Shazam.RATE
         val min = android.media.AudioRecord.getMinBufferSize(rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT)
         val rec = android.media.AudioRecord(android.media.MediaRecorder.AudioSource.MIC, rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, maxOf(min, rate))
-        if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); throw IllegalStateException("микрофон недоступен") }
+        if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); throw IllegalStateException(L("микрофон недоступен", "the microphone is unavailable")) }
         val buf = ShortArray(rate * secs)
         rec.startRecording()
         try {
@@ -146,25 +147,25 @@ object AppState {
     fun addFound(f: Shazam.Found) = scope.launch {
         shazam.value = Shz.Adding
         try {
-            val t = withContext(Dispatchers.IO) { YouTube.search("${f.artist} ${f.title}", music = true, limit = 1).firstOrNull() } ?: throw IllegalStateException("на YouTube не нашлось")
+            val t = withContext(Dispatchers.IO) { YouTube.search("${f.artist} ${f.title}", music = true, limit = 1).firstOrNull() } ?: throw IllegalStateException(L("на YouTube не нашлось", "not found on YouTube"))
             Store.addTracks(listOf(t))
-            val pl = Store.lib.value.playlists.firstOrNull { it.name == "Опенинги" }?.id ?: Store.createPlaylist("Опенинги").id
+            val pl = Store.lib.value.playlists.firstOrNull { it.name == "Опенинги" || it.name == "Openings" }?.id ?: Store.createPlaylist(L("Опенинги", "Openings")).id
             Store.addToPlaylist(pl, listOf(t.id))
-            say("«${f.title}» — в библиотеке и плейлисте «Опенинги»")
+            say(L("«${f.title}» — в библиотеке и плейлисте «Опенинги»", "“${f.title}” — in the library and the playlist “Openings”"))
             shazam.value = Shz.Idle
-        } catch (e: Throwable) { shazam.value = Shz.Error(e.message ?: "не получилось добавить") }
+        } catch (e: Throwable) { shazam.value = Shz.Error(e.message ?: L("не получилось добавить", "couldn't add it")) }
     }
 
     /** Ссылка → треки (Spotify / YouTube / YouTube Music / SoundCloud…). onDone(playlistId). */
-    fun importUrl(url: String, intoPlaylist: String? = null, onDone: (String?) -> Unit = {}) = bg("Импорт…") {
+    fun importUrl(url: String, intoPlaylist: String? = null, onDone: (String?) -> Unit = {}) = bg(L("Импорт…", "Importing…")) {
         val progress: (String) -> Unit = { m -> scope.launch { busy.value = m } }
         val s = Store.lib.value.settings
         val (name, source, tracks, note) = withContext(Dispatchers.IO) {
             if (Spotify.isSpotify(url)) {
                 val r = Spotify.import(url, s.spotifyClientId, s.spotifyClientSecret, progress)
                 var note = ""
-                if (r.notFound.isNotEmpty()) note += ", не нашлось на YouTube: ${r.notFound.size}"
-                if (r.truncated) note += ". Без ключа Spotify — только первые 100 треков"
+                if (r.notFound.isNotEmpty()) note += L(", не нашлось на YouTube: ${r.notFound.size}", ", not found on YouTube: ${r.notFound.size}")
+                if (r.truncated) note += L(". Без ключа Spotify — только первые 100 треков", ". Without a key Spotify gives only the first 100 tracks")
                 Quad(if (r.kind == "track") null else r.name, r.source, r.tracks, note)
             } else {
                 val r = YouTube.importUrl(url.trim(), progress)
@@ -178,21 +179,21 @@ object AppState {
             name != null -> Store.createPlaylist(name, ids, source).id
             else -> null
         }
-        say("Добавлено ${tracks.size} трек(ов)$note")
+        say(L("Добавлено ${tracks.size} трек(ов)$note", "Added ${tracks.size} track(s)$note"))
         onDone(pid)
     }
 
     fun syncPlaylist(id: String) {
         val p = Store.lib.value.playlists.firstOrNull { it.id == id } ?: return
-        val src = p.source?.takeIf { it.startsWith("http") } ?: return say("У плейлиста нет ссылки-источника")
-        bg("Синхронизирую «${p.name}»…") {
+        val src = p.source?.takeIf { it.startsWith("http") } ?: return say(L("У плейлиста нет ссылки-источника", "The playlist has no source link"))
+        bg(L("Синхронизирую «${p.name}»…", "Syncing “${p.name}”…")) {
             val s = Store.lib.value.settings
             val tracks = withContext(Dispatchers.IO) {
                 if (Spotify.isSpotify(src)) Spotify.import(src, s.spotifyClientId, s.spotifyClientSecret).tracks else YouTube.importUrl(src).tracks
             }
             Store.addTracks(tracks)
             Store.setPlaylistTracks(id, tracks.map { it.id })
-            say("Синхронизировано: ${tracks.size} треков")
+            say(L("Синхронизировано: ${tracks.size} треков", "Synced: ${tracks.size} tracks"))
         }
     }
 
@@ -203,21 +204,21 @@ object AppState {
         scope.launch {
             searching.value = true
             try { searchResults.value = withContext(Dispatchers.IO) { YouTube.search(q, searchMusic.value) } }
-            catch (e: Throwable) { say("Поиск не удался: ${e.message}") }
+            catch (e: Throwable) { say(L("Поиск не удался: ${e.message}", "Search failed: ${e.message}")) }
             finally { searching.value = false }
         }
     }
 
-    fun importExport(text: String) = bg("Импорт плейлистов…") {
+    fun importExport(text: String) = bg(L("Импорт плейлистов…", "Importing playlists…")) {
         val r = withContext(Dispatchers.IO) { Sync.import(text) }
-        say("Импортировано: ${r.tracks} треков, новых плейлистов ${r.newPlaylists}, обновлено ${r.updatedPlaylists}" + if (r.skippedLocal > 0) " (локальные файлы с ПК не переносятся: ${r.skippedLocal})" else "")
+        say(L("Импортировано: ${r.tracks} треков, новых плейлистов ${r.newPlaylists}, обновлено ${r.updatedPlaylists}", "Imported: ${r.tracks} tracks, new playlists ${r.newPlaylists}, updated ${r.updatedPlaylists}") + if (r.skippedLocal > 0) L(" (локальные файлы с ПК не переносятся: ${r.skippedLocal})", " (local files from the PC aren't transferred: ${r.skippedLocal})") else "")
     }
 
     fun checkUpdate(manual: Boolean) = scope.launch {
         update.value = Upd.Checking
         update.value = try {
             withContext(Dispatchers.IO) { Updater.check() }?.let { Upd.Available(it) } ?: Upd.UpToDate
-        } catch (e: Throwable) { if (manual) Upd.Error(e.message ?: "не удалось проверить") else Upd.Idle }
+        } catch (e: Throwable) { if (manual) Upd.Error(e.message ?: L("не удалось проверить", "couldn't check")) else Upd.Idle }
     }
 
     fun downloadUpdate(ctx: Context, rel: Updater.Release) = scope.launch {
@@ -225,7 +226,7 @@ object AppState {
         update.value = try {
             val f = withContext(Dispatchers.IO) { Updater.download(ctx, rel) { p -> update.value = Upd.Downloading(p) } }
             Upd.Ready(f)
-        } catch (e: Throwable) { Upd.Error(e.message ?: "не удалось скачать") }
+        } catch (e: Throwable) { Upd.Error(e.message ?: L("не удалось скачать", "couldn't download")) }
     }
 
     private data class Quad(val name: String?, val source: String, val tracks: List<Track>, val note: String)

@@ -1,5 +1,6 @@
 package app.wavy.android.yt
 
+import app.wavy.android.data.L
 import app.wavy.android.data.Track
 import app.wavy.android.net.NewPipeDownloader
 import org.schabi.newpipe.extractor.InfoItem
@@ -70,7 +71,7 @@ object YouTube {
         val base = System.currentTimeMillis()
         return when (service.getLinkTypeByUrl(url)) {
             LinkType.PLAYLIST -> {
-                progress("Читаю плейлист…")
+                progress(L("Читаю плейлист…", "Reading the playlist…"))
                 val info = PlaylistInfo.getInfo(service, url)
                 val items = ArrayList<StreamInfoItem>(info.relatedItems)
                 var next: Page? = info.nextPage
@@ -78,7 +79,7 @@ object YouTube {
                     val page = PlaylistInfo.getMoreItems(service, url, next)
                     items += page.items
                     next = page.nextPage
-                    progress("Читаю плейлист… ${items.size}")
+                    progress(L("Читаю плейлист… ${items.size}", "Reading the playlist… ${items.size}"))
                 }
                 val tracks = items.filter { it.name != "[Private video]" && it.name != "[Deleted video]" }
                     .mapIndexed { i, it -> toTrack(it, music, base + (items.size - i)) }
@@ -95,7 +96,7 @@ object YouTube {
                     duration = s.duration.toDouble(), cover = s.thumbnails.maxByOrNull { it.height }?.url, addedAt = base)
                 Import(null, url, listOf(t))
             }
-            else -> throw IllegalArgumentException("Эта ссылка не похожа на плейлист или трек")
+            else -> throw IllegalArgumentException(L("Эта ссылка не похожа на плейлист или трек", "This link doesn't look like a playlist or a track"))
         }
     }
 
@@ -115,7 +116,7 @@ object YouTube {
         val info = StreamInfo.getInfo(pageUrl(key))
         val a = info.audioStreams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
             .sortedWith(compareByDescending<org.schabi.newpipe.extractor.stream.AudioStream> { it.format?.name == "M4A" }.thenByDescending { it.averageBitrate })
-            .firstOrNull() ?: throw IllegalStateException("у видео нет аудиопотока")
+            .firstOrNull() ?: throw IllegalStateException(L("у видео нет аудиопотока", "the video has no audio stream"))
         audioCache[key] = Cached(a.content, System.currentTimeMillis() + 5 * 3600_000)
         return a.content
     }
@@ -130,7 +131,7 @@ object YouTube {
             .sortedWith(compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> { res(it.getResolution()) }.thenByDescending { it.format?.name == "MPEG_4" })
             .firstOrNull()
             ?: info.videoStreams.firstOrNull { it.isUrl } // со звуком — тоже сгодится (звук приглушим)
-            ?: throw IllegalStateException("у видео нет видеопотока")
+            ?: throw IllegalStateException(L("у видео нет видеопотока", "the video has no video stream"))
         videoCache[key] = Cached(v.content, System.currentTimeMillis() + 5 * 3600_000)
         return v.content
     }

@@ -128,7 +128,7 @@ fn session(channel: &str, acc: Option<&Account>, stop: &AtomicBool, on: &impl Fn
         None => write!(s, "PASS SCHMOOPIIE\r\nNICK justinfan{}\r\n", 10000 + crate::now_ms() % 80000),
     }.map_err(|e| e.to_string())?;
     write!(s, "CAP REQ :twitch.tv/tags twitch.tv/commands\r\nJOIN #{channel}\r\n").map_err(|e| e.to_string())?;
-    crate::log(&format!("twitch: слушаю чат #{channel}{}", acc.map(|a| format!(" (пишу как {})", a.login)).unwrap_or_default()));
+    crate::log(&format!("twitch: слушаю чат #{channel}{}", acc.map(|a| lf!(" (пишу как {})", " (writing as {})", a.login)).unwrap_or_default()));
     let mut r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
     let mut line = String::new();
     loop {
@@ -138,7 +138,7 @@ fn session(channel: &str, acc: Option<&Account>, stop: &AtomicBool, on: &impl Fn
         }
         line.clear();
         match r.read_line(&mut line) {
-            Ok(0) => return Err("сервер закрыл соединение".into()),
+            Ok(0) => return Err(l!("сервер закрыл соединение", "the server closed the connection").into()),
             Ok(_) => {
                 let l = line.trim_end();
                 if l.starts_with("PING") { let _ = write!(s, "PONG :tmi.twitch.tv\r\n"); continue; }
@@ -161,7 +161,7 @@ pub struct Device { pub device_code: String, pub user_code: String, pub uri: Str
 fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), String> {
     let body: String = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(form).finish();
     let mut r = crate::http().post(url).config().http_status_as_error(false).build()
-        .header("Content-Type", "application/x-www-form-urlencoded").send(body).map_err(|e| format!("Twitch недоступен: {e}"))?;
+        .header("Content-Type", "application/x-www-form-urlencoded").send(body).map_err(|e| lf!("Twitch недоступен: {e}", "Twitch is unavailable: {e}"))?;
     let code = r.status().as_u16();
     let v = r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
     Ok((code, v))
@@ -170,7 +170,7 @@ fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), String> {
 /// Начать вход: код для twitch.tv/activate.
 pub fn device_start(client_id: &str) -> Result<Device, String> {
     let (code, v) = post_form("https://id.twitch.tv/oauth2/device", &[("client_id", client_id.trim()), ("scopes", SCOPES)])?;
-    if code != 200 { return Err(format!("Twitch не начал вход: {}", v["message"].as_str().unwrap_or("проверь Client ID (тип приложения — Public)"))); }
+    if code != 200 { return Err(lf!("Twitch не начал вход: {}", "Twitch didn't start the sign-in: {}", v["message"].as_str().unwrap_or(l!("проверь Client ID (тип приложения — Public)", "check the Client ID (the application type must be Public)")))); }
     Ok(Device {
         device_code: v["device_code"].as_str().unwrap_or_default().to_string(),
         user_code: v["user_code"].as_str().unwrap_or_default().to_string(),
@@ -186,7 +186,7 @@ pub fn device_poll(client_id: &str, d: &Device) -> Result<Option<Account>, Strin
     ])?;
     if code != 200 {
         let msg = v["message"].as_str().unwrap_or("");
-        return if msg == "authorization_pending" || msg == "slow_down" { Ok(None) } else { Err(format!("Twitch: вход не удался ({msg})")) };
+        return if msg == "authorization_pending" || msg == "slow_down" { Ok(None) } else { Err(lf!("Twitch: вход не удался ({msg})", "Twitch: sign-in failed ({msg})")) };
     }
     let mut acc = Account { client_id: client_id.trim().to_string(), access: v["access_token"].as_str().unwrap_or_default().to_string(), refresh: v["refresh_token"].as_str().unwrap_or_default().to_string(), login: String::new() };
     acc.login = whoami(&acc.access)?;
@@ -196,13 +196,13 @@ pub fn device_poll(client_id: &str, d: &Device) -> Result<Option<Account>, Strin
 fn whoami(token: &str) -> Result<String, String> {
     let mut r = crate::http().get("https://id.twitch.tv/oauth2/validate").header("Authorization", &format!("OAuth {token}")).call().map_err(|e| format!("Twitch: {e}"))?;
     let v: Value = r.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-    v["login"].as_str().map(str::to_string).ok_or_else(|| "Twitch не сказал, кто вошёл".into())
+    v["login"].as_str().map(str::to_string).ok_or_else(|| l!("Twitch не сказал, кто вошёл", "Twitch didn't say who signed in").into())
 }
 
 /// Новый токен по refresh (у публичных приложений — без секрета).
 pub fn refresh(acc: &mut Account) -> Result<(), String> {
     let (code, v) = post_form("https://id.twitch.tv/oauth2/token", &[("client_id", acc.client_id.as_str()), ("grant_type", "refresh_token"), ("refresh_token", acc.refresh.as_str())])?;
-    if code != 200 { return Err(v["message"].as_str().unwrap_or("войди заново").to_string()); }
+    if code != 200 { return Err(v["message"].as_str().unwrap_or(l!("войди заново", "sign in again")).to_string()); }
     acc.access = v["access_token"].as_str().unwrap_or_default().to_string();
     if let Some(r) = v["refresh_token"].as_str() { acc.refresh = r.to_string(); }
     Ok(())

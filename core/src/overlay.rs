@@ -42,7 +42,7 @@ impl OverlayServer {
         if *self.port.lock().unwrap() == Some(port) { return Ok(()); }
         if let Some(old) = self.server.lock().unwrap().take() { old.unblock(); }
         self.shared.lock().unwrap().clients.clear();
-        let srv = Arc::new(tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| format!("порт {port} занят ({e})"))?);
+        let srv = Arc::new(tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| lf!("порт {port} занят ({e})", "port {port} is busy ({e})"))?);
         *self.server.lock().unwrap() = Some(srv.clone());
         *self.port.lock().unwrap() = Some(port);
         let me = self.clone();

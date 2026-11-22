@@ -55,7 +55,7 @@ impl Anime {
         let mut v = Vec::new();
         if !self.kind.is_empty() { v.push(kind_ru(&self.kind).to_string()); }
         if self.year > 0 { v.push(self.year.to_string()); }
-        if self.episodes_total > 0 { v.push(format!("{} эп.", self.episodes_total)); }
+        if self.episodes_total > 0 { v.push(lf!("{} эп.", "{} ep.", self.episodes_total)); }
         if self.score > 0.0 { v.push(format!("★ {:.2}", self.score)); }
         v.join(" · ")
     }
@@ -63,13 +63,13 @@ impl Anime {
 
 pub fn kind_ru(kind: &str) -> &str {
     match kind {
-        "tv" => "ТВ",
-        "movie" => "Фильм",
+        "tv" => l!("ТВ", "TV"),
+        "movie" => l!("Фильм", "Movie"),
         "ova" => "OVA",
         "ona" => "ONA",
-        "special" | "tv_special" => "Спешл",
-        "music" => "Клип",
-        "pv" | "cm" => "Промо",
+        "special" | "tv_special" => l!("Спешл", "Special"),
+        "music" => l!("Клип", "Music video"),
+        "pv" | "cm" => l!("Промо", "Promo"),
         _ => kind,
     }
 }
@@ -166,7 +166,7 @@ pub fn parse_path(path: &Path) -> Parsed {
 fn is_generic(t: &str) -> bool {
     let l = t.to_lowercase();
     let l = l.trim();
-    l.is_empty() || ["episode", "серия", "ep", "e", "эпизод", "video", "видео", "anime", "аниме", "downloads", "загрузки", "сериалы"].contains(&l)
+    l.is_empty() || ["episode", "серия", "ep", "e", "эпизод", "video", "видео", "anime", l!("аниме", "anime"), "downloads", "загрузки", "сериалы"].contains(&l)
         || l.starts_with("season") || l.starts_with("сезон")
 }
 
@@ -244,8 +244,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
 pub fn episode_track(path: &Path, p: &Parsed, anime_title: &str) -> Track {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let title = match p.episode {
-        Some(e) if e.fract() == 0.0 => format!("Серия {}", e as u32),
-        Some(e) => format!("Серия {e}"),
+        Some(e) if e.fract() == 0.0 => lf!("Серия {}", "Episode {}", e as u32),
+        Some(e) => lf!("Серия {e}", "Episode {e}"),
         None => path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
     };
     Track {

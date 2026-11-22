@@ -167,16 +167,16 @@ fn check_ctrl(ctrl: &Receiver<Ctrl>) -> Flow {
 }
 
 fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Result<(), String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| lf!("не удалось открыть видео: {e}", "couldn't open the video: {e}"))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
     // не разобрался MP4 (например, HEVC в hvc1) — пусть попробует ffmpeg
     let mut mp4 = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| format!("{}MP4: {e}", wavy_core::ffmpeg::NEED))?;
     let (track_id, timescale, nal_len, params) = {
         let t = mp4.tracks().values()
             .find(|t| matches!(t.media_type(), Ok(mp4::MediaType::H264)))
-            .ok_or_else(|| format!("{}видео не в H.264", wavy_core::ffmpeg::NEED))?;
-        let avcc = &t.trak.mdia.minf.stbl.stsd.avc1.as_ref().ok_or("нет описания H.264")?.avcc;
-        if let Some(p) = unsupported_profile(avcc.avc_profile_indication) { return Err(format!("{}видео в {p}", wavy_core::ffmpeg::NEED)); }
+            .ok_or_else(|| lf!("{}видео не в H.264", "{}the video isn't H.264", wavy_core::ffmpeg::NEED))?;
+        let avcc = &t.trak.mdia.minf.stbl.stsd.avc1.as_ref().ok_or(l!("нет описания H.264", "no H.264 description"))?.avcc;
+        if let Some(p) = unsupported_profile(avcc.avc_profile_indication) { return Err(lf!("{}видео в {p}", "{}the video is {p}", wavy_core::ffmpeg::NEED)); }
         let mut params = Vec::new();
         for nal in avcc.sequence_parameter_sets.iter().chain(avcc.picture_parameter_sets.iter()) {
             params.extend_from_slice(&[0, 0, 0, 1]);
@@ -191,7 +191,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
     // в файле — считаем сами и читаем кадры напрямую
     let mut locs: Option<(std::fs::File, Vec<(u64, u32)>)> = None;
     let mut index: Vec<(f64, bool)> = if mp4.is_fragmented() {
-        let moofs = moof_offsets(path).map_err(|e| format!("не удалось разобрать MP4: {e}"))?;
+        let moofs = moof_offsets(path).map_err(|e| lf!("не удалось разобрать MP4: {e}", "couldn't parse the MP4: {e}"))?;
         let (idx, l) = fragmented_index(&mp4, track_id, timescale, &moofs);
         locs = Some((std::fs::File::open(path).map_err(|e| e.to_string())?, l));
         idx
@@ -217,7 +217,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
     'outer: loop {
         let k = index.iter().enumerate().filter(|(_, (t, s))| *s && *t - t0 <= target + 0.001).map(|(i, _)| i).last().unwrap_or(0);
         let mut dec = Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().flush_after_decode(Flush::NoFlush))
-            .map_err(|e| format!("декодер H.264: {e}"))?;
+            .map_err(|e| lf!("декодер H.264: {e}", "H.264 decoder: {e}"))?;
         let mut pending: BinaryHeap<Reverse<i64>> = BinaryHeap::new(); // кадры выходят в порядке показа
         let to_key = |t: f64| (t * 1_000_000.0) as i64;
 
@@ -352,7 +352,7 @@ fn fragmented_index<R>(mp4: &mp4::Mp4Reader<R>, track_id: u32, timescale: f64, m
 /// Профили H.264, которые OpenH264 не умеет: 10 бит (Hi10P), 4:2:2, 4:4:4.
 fn unsupported_profile(profile: u8) -> Option<&'static str> {
     match profile {
-        110 => Some("10-битное H.264 (Hi10P)"),
+        110 => Some(l!("10-битное H.264 (Hi10P)", "10-bit H.264 (Hi10P)")),
         122 | 244 | 44 => Some("H.264 4:2:2/4:4:4"),
         _ => None,
     }
@@ -360,7 +360,7 @@ fn unsupported_profile(profile: u8) -> Option<&'static str> {
 
 /// avcC (CodecPrivate в MKV): длина префикса NAL и SPS/PPS в виде Annex B.
 fn parse_avcc(c: &[u8]) -> Result<(usize, Vec<u8>, u8), String> {
-    if c.len() < 7 { return Err("нет описания H.264".into()); }
+    if c.len() < 7 { return Err(l!("нет описания H.264", "no H.264 description").into()); }
     let profile = c[1];
     let nal_len = (c[4] & 3) as usize + 1;
     let mut params = Vec::new();
@@ -415,7 +415,7 @@ fn video_codec_error(codec: &str) -> String {
         "V_VP8" => "VP8",
         c => c,
     };
-    format!("{}видео в {name}", wavy_core::ffmpeg::NEED)
+    lf!("{}видео в {name}", "{}the video is {name}", wavy_core::ffmpeg::NEED)
 }
 
 /// MKV: H.264 + субтитры. Заголовок (кодек, avcC) читаем matroska-demuxer, а пакеты и перемотку
@@ -424,21 +424,21 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
     use matroska_demuxer::{MatroskaFile, TrackType};
     use symphonia::core::{formats::{FormatOptions, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
     let (vnum, nal_len, params, sub_codec) = {
-        let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
-        let mkv = MatroskaFile::open(BufReader::new(file)).map_err(|e| format!("не удалось прочитать MKV: {e}"))?;
-        let vt = mkv.tracks().iter().find(|t| t.track_type() == TrackType::Video).ok_or("в файле нет видео")?;
+        let file = std::fs::File::open(path).map_err(|e| lf!("не удалось открыть видео: {e}", "couldn't open the video: {e}"))?;
+        let mkv = MatroskaFile::open(BufReader::new(file)).map_err(|e| lf!("не удалось прочитать MKV: {e}", "couldn't read the MKV: {e}"))?;
+        let vt = mkv.tracks().iter().find(|t| t.track_type() == TrackType::Video).ok_or(l!("в файле нет видео", "the file has no video"))?;
         let codec = vt.codec_id().to_string();
         if codec != "V_MPEG4/ISO/AVC" { return Err(video_codec_error(&codec)); }
         let (nal_len, params, profile) = parse_avcc(vt.codec_private().unwrap_or(&[]))?;
-        if let Some(p) = unsupported_profile(profile) { return Err(format!("{}видео в {p}", wavy_core::ffmpeg::NEED)); }
+        if let Some(p) = unsupported_profile(profile) { return Err(lf!("{}видео в {p}", "{}the video is {p}", wavy_core::ffmpeg::NEED)); }
         let sub_codec = sub_track.and_then(|n| mkv.tracks().iter().find(|t| t.track_number().get() == n)).map(|t| t.codec_id().to_string()).unwrap_or_default();
         (vt.track_number().get() as u32, nal_len, params, sub_codec)
     };
-    let file = std::fs::File::open(path).map_err(|e| format!("не удалось открыть видео: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| lf!("не удалось открыть видео: {e}", "couldn't open the video: {e}"))?;
     let mut hint = Hint::new();
     hint.with_extension("mkv");
     let mut fmt = symphonia::default::get_probe().format(&hint, MediaSourceStream::new(Box::new(file), Default::default()), &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| format!("не удалось прочитать MKV: {e}"))?.format;
+        .map_err(|e| lf!("не удалось прочитать MKV: {e}", "couldn't read the MKV: {e}"))?.format;
     let tb = fmt.tracks().iter().find(|t| t.id == vnum).and_then(|t| t.codec_params.time_base).map(|t| t.numer as f64 / t.denom as f64).unwrap_or(0.001);
     let sub_num = sub_track.map(|n| n as u32);
     let push_sub = |p: &symphonia::core::formats::Packet| {
@@ -476,7 +476,7 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
         }
         seek(&mut fmt, key.unwrap_or(0.0));
         let mut dec = Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().flush_after_decode(Flush::NoFlush))
-            .map_err(|e| format!("декодер H.264: {e}"))?;
+            .map_err(|e| lf!("декодер H.264: {e}", "H.264 decoder: {e}"))?;
         let mut pending: BinaryHeap<Reverse<i64>> = BinaryHeap::new();
         let mut started = false;
         loop {
@@ -572,7 +572,7 @@ fn decode_ffmpeg(ff: &Path, path: &Path, start: f64, out: &SyncSender<Result<Fra
         c.arg("-i").arg(path)
             .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", "scale=w='min(iw,1920)':h=-2:flags=bilinear,format=yuv420p,showinfo=checksum=0", "-filter_threads", "1", "-f", "rawvideo", "-"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = Child(c.spawn().map_err(|e| format!("не удалось запустить ffmpeg: {e}"))?);
+        let mut child = Child(c.spawn().map_err(|e| lf!("не удалось запустить ffmpeg: {e}", "couldn't start ffmpeg: {e}"))?);
         let mut stdout = std::io::BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
         let stderr = child.0.stderr.take().unwrap();
         let (mtx, mrx) = channel::<(f64, usize, usize)>();
@@ -613,7 +613,7 @@ fn decode_ffmpeg(ff: &Path, path: &Path, start: f64, out: &SyncSender<Result<Fra
         if frames == 0 && !ever {
             let _ = child.0.wait();
             let t = tail.lock().unwrap().iter().filter(|l| !l.starts_with(' ')).cloned().collect::<Vec<_>>().join(" | ");
-            return Err(format!("ffmpeg не смог показать видео: {t}"));
+            return Err(lf!("ffmpeg не смог показать видео: {t}", "ffmpeg couldn't show the video: {t}"));
         }
         drop(child);
         match ctrl.recv() {

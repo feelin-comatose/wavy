@@ -1,6 +1,8 @@
 //! Проверка MKV без окна: дорожки, кадры H.264, субтитры, перемотка.
 //! cargo run -p wavy-native --example mkv_check -- <файл.mkv> [shazam]
 #[allow(dead_code)]
+#[macro_use]
+extern crate wavy_core;
 #[path = "../src/video.rs"]
 mod video;
 #[allow(dead_code)]

@@ -1,5 +1,6 @@
 package app.wavy.android.yt
 
+import app.wavy.android.data.L
 import app.wavy.android.data.Track
 import app.wavy.android.net.Http
 import kotlinx.coroutines.Dispatchers
@@ -52,10 +53,10 @@ object Spotify {
     fun fetchEmbed(kind: String, id: String): SpList {
         val html = Http.get("https://open.spotify.com/embed/$kind/$id", mapOf("Accept-Language" to "en"))
         val start = html.indexOf("""<script id="__NEXT_DATA__" type="application/json">""")
-        require(start >= 0) { "Spotify изменил страницу — не нашёл данные плейлиста" }
+        require(start >= 0) { L("Spotify изменил страницу — не нашёл данные плейлиста", "Spotify changed the page — couldn't find the playlist data") }
         val body = html.substring(html.indexOf('>', start) + 1).substringBefore("</script>")
         val e = js.parseToJsonElement(body)["props"]["pageProps"]["state"]["data"]["entity"]
-        require(e != null && e !is JsonNull) { "плейлист не найден или приватный" }
+        require(e != null && e !is JsonNull) { L("плейлист не найден или приватный", "the playlist wasn't found or is private") }
         val name = e["name"].str ?: "Spotify"
         val album = if (kind == "album") name else ""
         val tracks = if (kind == "track") listOf(SpTrack(name, e["artists"]?.jsonArray?.joinToString(", ") { it["name"].str ?: "" } ?: "", "", (e["duration"].num ?: 0.0) / 1000))
@@ -72,8 +73,8 @@ object Spotify {
         val tokReq = Request.Builder().url("https://accounts.spotify.com/api/token")
             .header("Authorization", "Basic $auth").post(FormBody.Builder().add("grant_type", "client_credentials").build()).build()
         val token = Http.client.newCall(tokReq).execute().use { r ->
-            require(r.isSuccessful) { "Spotify API: не удалось войти (проверь Client ID / Secret)" }
-            js.parseToJsonElement(r.body!!.string())["access_token"].str ?: error("Spotify API не выдал токен")
+            require(r.isSuccessful) { L("Spotify API: не удалось войти (проверь Client ID / Secret)", "Spotify API: couldn't sign in (check the Client ID / Secret)") }
+            js.parseToJsonElement(r.body!!.string())["access_token"].str ?: error(L("Spotify API не выдал токен", "Spotify API didn't give a token"))
         }
         fun api(url: String) = js.parseToJsonElement(Http.get(url, mapOf("Authorization" to "Bearer $token")))
         fun artists(t: JsonElement?) = t["artists"]?.jsonArray?.joinToString(", ") { it["name"].str ?: "" } ?: ""
@@ -123,16 +124,16 @@ object Spotify {
     }
 
     fun import(url: String, clientId: String = "", secret: String = "", progress: (String) -> Unit = {}): Result {
-        val (kind, id) = parseUrl(url) ?: throw IllegalArgumentException("это не ссылка на Spotify")
-        progress("Spotify: читаю список…")
+        val (kind, id) = parseUrl(url) ?: throw IllegalArgumentException(L("это не ссылка на Spotify", "this isn't a Spotify link"))
+        progress(L("Spotify: читаю список…", "Spotify: reading the list…"))
         val list = if (clientId.isNotBlank() && secret.isNotBlank()) fetchApi(kind, id, clientId, secret) else fetchEmbed(kind, id)
-        require(list.tracks.isNotEmpty()) { "в плейлисте Spotify нет треков (или он приватный)" }
+        require(list.tracks.isNotEmpty()) { L("в плейлисте Spotify нет треков (или он приватный)", "the Spotify playlist has no tracks (or it's private)") }
         val n = list.tracks.size
         val done = AtomicInteger()
         val sem = Semaphore(6)
         val found = runBlocking(Dispatchers.IO) {
             list.tracks.map { t ->
-                async { sem.withPermit { match(t).also { val d = done.incrementAndGet(); if (d % 5 == 0 || d == n) progress("Spotify: ищу на YouTube $d/$n…") } } }
+                async { sem.withPermit { match(t).also { val d = done.incrementAndGet(); if (d % 5 == 0 || d == n) progress(L("Spotify: ищу на YouTube $d/$n…", "Spotify: searching YouTube $d/$n…")) } } }
             }.awaitAll()
         }
         val base = System.currentTimeMillis()

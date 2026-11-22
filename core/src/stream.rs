@@ -101,7 +101,7 @@ impl Download {
                 st.total = Some(st.downloaded);
                 let _ = File::create(marker(&me.path));
             } else {
-                let e = r.err().unwrap_or_else(|| { let t = err_text(); if t.is_empty() { "yt-dlp ничего не отдал".into() } else { t } });
+                let e = r.err().unwrap_or_else(|| { let t = err_text(); if t.is_empty() { l!("yt-dlp ничего не отдал", "yt-dlp returned nothing").into() } else { t } });
                 if !st.cancel { crate::log(&format!("поток yt-dlp {}: {e}", me.path.display())); }
                 st.error = Some(e);
             }
@@ -113,11 +113,11 @@ impl Download {
     }
 
     fn run_pipe(&self, child: &mut std::process::Child) -> Result<(), String> {
-        let mut out = child.stdout.take().ok_or("нет вывода")?;
+        let mut out = child.stdout.take().ok_or(l!("нет вывода", "no output"))?;
         let mut f = File::create(&self.path).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            if self.shared.0.lock().unwrap().cancel { return Err("отменено".into()); }
+            if self.shared.0.lock().unwrap().cancel { return Err(l!("отменено", "cancelled").into()); }
             let n = out.read(&mut buf).map_err(|e| e.to_string())?;
             if n == 0 { break; }
             f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
@@ -137,7 +137,7 @@ impl Download {
             let end = total.map(|t| (pos + CHUNK).min(t) - 1).unwrap_or(pos + CHUNK - 1);
             let mut attempt = 0;
             let n = loop {
-                if self.shared.0.lock().unwrap().cancel { return Err("отменено".into()); }
+                if self.shared.0.lock().unwrap().cancel { return Err(l!("отменено", "cancelled").into()); }
                 match self.fetch(url, pos, end, &mut f) {
                     Ok(n) => break n,
                     // 403/404/410 — ссылка недействительна, повтор не поможет
@@ -173,7 +173,7 @@ impl Download {
         let mut buf = vec![0u8; 64 * 1024];
         let mut got = 0u64;
         loop {
-            if self.shared.0.lock().unwrap().cancel { return Err("отменено".into()); }
+            if self.shared.0.lock().unwrap().cancel { return Err(l!("отменено", "cancelled").into()); }
             let n = r.read(&mut buf).map_err(|e| e.to_string())?;
             if n == 0 { break; }
             f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
@@ -234,7 +234,7 @@ impl Read for StreamReader {
         loop {
             if st.downloaded > self.pos { break; }
             if st.done || st.total.is_some_and(|t| self.pos >= t) { return Ok(0); }
-            if st.cancel || st.error.is_some() { return Err(std::io::Error::other(st.error.clone().unwrap_or_else(|| "отменено".into()))); }
+            if st.cancel || st.error.is_some() { return Err(std::io::Error::other(st.error.clone().unwrap_or_else(|| l!("отменено", "cancelled").into()))); }
             st = cv.wait_timeout(st, Duration::from_secs(30)).unwrap().0;
         }
         let avail = (st.downloaded - self.pos).min(buf.len() as u64) as usize;
@@ -252,7 +252,7 @@ impl Seek for StreamReader {
         self.pos = match to {
             SeekFrom::Start(p) => p,
             SeekFrom::Current(d) => (self.pos as i64 + d).max(0) as u64,
-            SeekFrom::End(d) => (total.ok_or_else(|| std::io::Error::other("размер неизвестен"))? as i64 + d).max(0) as u64,
+            SeekFrom::End(d) => (total.ok_or_else(|| std::io::Error::other(l!("размер неизвестен", "size unknown")))? as i64 + d).max(0) as u64,
         };
         Ok(self.pos)
     }

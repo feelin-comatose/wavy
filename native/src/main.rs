@@ -1,6 +1,9 @@
 // Wavy — нативная версия (egui + rodio). Без браузерного движка: минимум памяти.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[macro_use]
+extern crate wavy_core;
+
 mod media;
 mod update;
 mod video;
@@ -39,7 +42,9 @@ const OK: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 
 const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "mkv", "m3u", "m3u8"];
 /// Плейлист, куда Shazam складывает распознанные опенинги.
-const OPENINGS: &str = "Опенинги";
+/// Плейлист для песен из Shazam в аниме (название на языке интерфейса; ищется по обоим).
+const OPENINGS: [&str; 2] = ["Опенинги", "Openings"];
+fn openings() -> &'static str { l!("Опенинги", "Openings") }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Sleep { At(Instant), EndOfTrack }
@@ -292,6 +297,7 @@ impl App {
         let discord = Discord::start(move |s| { let _ = t2.send(Bg::Discord(s.clone())); c2.request_repaint(); });
         let overlay = OverlayServer::new();
         let s = store.lib.settings.clone();
+        wavy_core::i18n::set(&s.lang);
         discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
         overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
         let mut toast = None;
@@ -473,7 +479,7 @@ impl App {
                     let age = age_restricted(e);
                     // 18+ и в настройках есть куки — пробуем то же видео «со входом»
                     if age && yt.has_cookies() {
-                        let _ = tx.send(Bg::Status(format!("«{}»: видео 18+ — пробую с куками браузера…", t.title)));
+                        let _ = tx.send(Bg::Status(lf!("«{}»: видео 18+ — пробую с куками браузера…", "“{}”: 18+ video — trying with browser cookies…", t.title)));
                         c.request_repaint();
                         match fetch_with_cookies(&yt, &t, &cache) {
                             Ok(r) => res = Ok(r),
@@ -485,8 +491,8 @@ impl App {
                     let age = age_restricted(e);
                     if (age || gone_from_youtube(e)) && t.video_id.is_some() {
                         wavy_core::log(&format!("«{}»: видео недоступно ({e}) — ищу замену", t.title));
-                        let why = if age { "видео 18+, YouTube не даёт его без входа" } else { "больше нет на YouTube" };
-                        let _ = tx.send(Bg::Status(format!("«{}»: {why} — ищу такой же трек в другом видео…", t.title)));
+                        let why = if age { l!("видео 18+, YouTube не даёт его без входа", "18+ video, YouTube won't play it without signing in") } else { l!("больше нет на YouTube", "no longer on YouTube") };
+                        let _ = tx.send(Bg::Status(lf!("«{}»: {why} — ищу такой же трек в другом видео…", "“{}”: {why} — looking for the same track in another video…", t.title)));
                         c.request_repaint();
                         // первая замена может оказаться тоже 18+ (YouTube смотрит на название) — пробуем до трёх
                         for n in wavy_core::spotify::find_replacements(&yt, &t).unwrap_or_default().into_iter().take(3) {
@@ -574,13 +580,13 @@ impl App {
             // звук в Opus/AC3/DTS… — качаем декодер и переоткроем трек с того же места
             self.reload_after_ff = true;
             self.loading = false;
-            self.toast("Скачиваю декодер для этого формата (≈6 МБ, один раз)…", false);
+            self.toast(l!("Скачиваю декодер для этого формата (≈6 МБ, один раз)…", "Downloading a decoder for this format (≈6 MB, once)…"), false);
             return;
         }
-        let err = if age_restricted(&err) { "видео 18+, YouTube не даёт его без входа, а другой загрузки этого трека не нашлось".to_string() }
+        let err = if age_restricted(&err) { l!("видео 18+, YouTube не даёт его без входа, а другой загрузки этого трека не нашлось", "18+ video, YouTube won't play it without signing in, and no other upload of this track was found").to_string() }
             else { wavy_core::ffmpeg::human(&err).to_string() };
         let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
-        self.toast(format!("Не получилось воспроизвести «{title}»: {err}"), true);
+        self.toast(lf!("Не получилось воспроизвести «{title}»: {err}", "Couldn't play “{title}”: {err}"), true);
         self.errors_in_row += 1;
         self.loading = false;
         // без звукового устройства листать очередь бессмысленно — останавливаемся
@@ -698,21 +704,21 @@ impl App {
             Act::ImportFiles | Act::ImportFolder => {
                 let pid = self.cur_playlist();
                 let dlg = rfd::FileDialog::new();
-                let picked = if matches!(a, Act::ImportFiles) { dlg.set_title("Выбери музыку").add_filter("Аудио и плейлисты", AUDIO_FILTER).pick_files() } else { dlg.set_title("Выбери папку с музыкой").pick_folders() };
+                let picked = if matches!(a, Act::ImportFiles) { dlg.set_title(l!("Выбери музыку", "Choose music")).add_filter(l!("Аудио и плейлисты", "Audio and playlists"), AUDIO_FILTER).pick_files() } else { dlg.set_title(l!("Выбери папку с музыкой", "Choose a music folder")).pick_folders() };
                 if let Some(p) = picked { self.apply(Act::ImportPaths(p, pid), ctx); }
             }
             Act::ImportPaths(paths, pid) => {
-                self.toast("Импорт…", false);
+                self.toast(l!("Импорт…", "Importing…"), false);
                 let (store, covers) = (self.store.clone(), self.covers.clone());
                 self.bg(ctx, move |tx| {
-                    let res = local::import_paths(&paths, &covers, |i, n| { if n > 30 && i % 25 == 0 { let _ = tx.send(Bg::Status(format!("Импорт: {i} / {n}"))); } });
+                    let res = local::import_paths(&paths, &covers, |i, n| { if n > 30 && i % 25 == 0 { let _ = tx.send(Bg::Status(lf!("Импорт: {i} / {n}", "Importing: {i} / {n}"))); } });
                     let n = res.tracks.len();
                     let mut s = store.lock().unwrap();
                     let ids: Vec<String> = res.tracks.iter().map(|t| t.id.clone()).collect();
                     s.add_tracks(res.tracks);
                     for (name, ids) in res.playlists { s.create_playlist(&name, ids, Some("m3u".into())); }
                     if let Some(pid) = pid { s.add_to_playlist(&pid, &ids); }
-                    let _ = tx.send(Bg::Status(format!("Импортировано треков: {n}")));
+                    let _ = tx.send(Bg::Status(lf!("Импортировано треков: {n}", "Tracks imported: {n}")));
                     Ok(())
                 });
             }
@@ -726,7 +732,7 @@ impl App {
                     s.add_tracks(tracks);
                     let target = if let Some(pid) = pid { s.add_to_playlist(&pid, &ids); Some(pid) }
                         else { name.map(|name| s.create_playlist(&name, ids, Some(source)).id) };
-                    let _ = tx.send(Bg::Status(format!("Добавлено {n} трек(ов){note}")));
+                    let _ = tx.send(Bg::Status(lf!("Добавлено {n} трек(ов){note}", "Added {n} track(s){note}")));
                     if let Some(t) = target { let _ = tx.send(Bg::OpenPlaylist(t)); }
                     Ok(())
                 });
@@ -736,21 +742,21 @@ impl App {
                 let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || { let _ = tx.send(Bg::Search(yt.search(&q, 25))); c.request_repaint(); });
             }
-            Act::AddTracks(t) => { self.store.lock().unwrap().add_tracks(t); self.toast("Добавлено в библиотеку", false); }
+            Act::AddTracks(t) => { self.store.lock().unwrap().add_tracks(t); self.toast(l!("Добавлено в библиотеку", "Added to library"), false); }
             Act::PlayNext(ids) => {
                 if self.current.is_none() { return self.play_list(ids, 0, false, ctx); }
                 let n = ids.len();
                 for (k, id) in ids.into_iter().enumerate() { self.queue.insert((self.qi + 1 + k).min(self.queue.len()), id); }
-                self.toast(if n > 1 { format!("{n} треков сыграют следующими") } else { "Сыграет следующим".into() }, false);
+                self.toast(if n > 1 { lf!("{n} треков сыграют следующими", "{n} tracks will play next") } else { l!("Сыграет следующим", "Will play next").into() }, false);
             }
             Act::Enqueue(ids) => {
                 if self.current.is_none() { return self.play_list(ids, 0, false, ctx); }
                 self.queue.extend(ids);
-                self.toast("Добавлено в очередь", false);
+                self.toast(l!("Добавлено в очередь", "Added to queue"), false);
             }
             Act::AddTo(pid, ids) => {
                 self.ensure_in_library(&ids);
-                if let Some(n) = self.store.lock().unwrap().add_to_playlist(&pid, &ids) { self.toast = Some((format!("Добавлено в «{n}»"), false, Instant::now())); }
+                if let Some(n) = self.store.lock().unwrap().add_to_playlist(&pid, &ids) { self.toast = Some((lf!("Добавлено в «{n}»", "Added to “{n}”"), false, Instant::now())); }
             }
             Act::RemoveFrom(pid, ids) => self.store.lock().unwrap().remove_from_playlist(&pid, &ids),
             Act::RemoveTracks(ids) => {
@@ -763,33 +769,33 @@ impl App {
             Act::CreatePlaylist(name, ids) => {
                 self.ensure_in_library(&ids);
                 let p = self.store.lock().unwrap().create_playlist(&name, ids.clone(), None);
-                if ids.is_empty() { self.view = View::Playlist(p.id); } else { self.toast(format!("Плейлист «{name}» создан"), false); }
+                if ids.is_empty() { self.view = View::Playlist(p.id); } else { self.toast(lf!("Плейлист «{name}» создан", "Playlist “{name}” created"), false); }
             }
             Act::Rename(id, name) => self.store.lock().unwrap().rename_playlist(&id, &name),
             Act::DeletePlaylist(id) => { self.store.lock().unwrap().delete_playlist(&id); self.view = View::Library; }
             Act::Sync(id) => {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
-                    let src = store.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.source.clone()).filter(|s| s.starts_with("http")).ok_or("У плейлиста нет ссылки")?;
+                    let src = store.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.source.clone()).filter(|s| s.starts_with("http")).ok_or(l!("У плейлиста нет ссылки", "The playlist has no link"))?;
                     let (_, _, tracks, note) = fetch_url(&src, &yt, &store, tx)?;
                     let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
                     let n = ids.len();
                     let mut s = store.lock().unwrap();
                     s.add_tracks(tracks);
                     s.set_playlist_tracks(&id, ids);
-                    let _ = tx.send(Bg::Status(format!("Синхронизировано: {n} треков{note}")));
+                    let _ = tx.send(Bg::Status(lf!("Синхронизировано: {n} треков{note}", "Synced: {n} tracks{note}")));
                     Ok(())
                 });
             }
             Act::Export(ids, name) => {
-                if self.exporting { self.toast("Экспорт уже идёт — дождись, пока закончится", true); return; }
+                if self.exporting { self.toast(l!("Экспорт уже идёт — дождись, пока закончится", "An export is already running — wait until it finishes"), true); return; }
                 let tracks: Vec<Track> = ids.iter().filter_map(|i| self.track(i)).collect();
                 if tracks.is_empty() { return; }
-                let title = match &name { Some(n) => format!("Куда сохранить плейлист «{n}»? (создам в ней папку)"), None => "Куда сохранить MP3".into() };
+                let title = match &name { Some(n) => lf!("Куда сохранить плейлист «{n}»? (создам в ней папку)", "Where to save the playlist “{n}”? (I'll create a folder in it)"), None => l!("Куда сохранить MP3", "Where to save the MP3").into() };
                 let Some(base) = rfd::FileDialog::new().set_title(title).pick_folder() else { return };
                 let dir = match &name { Some(n) => base.join(export::safe_name(n)), None => base };
                 self.exporting = true;
-                self.toast(format!("Экспорт MP3: {} трек(ов)…", tracks.len()), false);
+                self.toast(lf!("Экспорт MP3: {} трек(ов)…", "MP3 export: {} track(s)…", tracks.len()), false);
                 let (ff, yt, cache) = (self.ff.clone(), self.yt.clone(), self.cache.clone());
                 let (tx, c) = (self.tx.clone(), ctx.clone());
                 std::thread::Builder::new().name("export".into()).spawn(move || {
@@ -800,7 +806,7 @@ impl App {
             }
             Act::Sort(key, how) => { self.store.lock().unwrap().patch_settings(&json!({ "sort": { key: how } })); }
             Act::PlaylistCover(id) => {
-                let Some(src) = rfd::FileDialog::new().set_title("Картинка для обложки").add_filter("Картинки", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
+                let Some(src) = rfd::FileDialog::new().set_title(l!("Картинка для обложки", "Cover image")).add_filter(l!("Картинки", "Images"), &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
                 let (store, covers, tx, c) = (self.store.clone(), self.covers.clone(), self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
                     match playlist_cover(&src, &covers, &id) {
@@ -811,7 +817,7 @@ impl App {
                             }
                             s.save();
                         }
-                        Err(e) => { let _ = tx.send(Bg::Status(format!("Не вышло поставить обложку: {e}"))); }
+                        Err(e) => { let _ = tx.send(Bg::Status(lf!("Не вышло поставить обложку: {e}", "Couldn't set the cover: {e}"))); }
                     }
                     c.request_repaint();
                 });
@@ -830,22 +836,22 @@ impl App {
             }
             Act::EditTrack(id, title, artist, album) => self.store.lock().unwrap().edit_track(&id, &title, &artist, &album, None),
             Act::TrackCover(id) => {
-                let Some(src) = rfd::FileDialog::new().set_title("Картинка для обложки").add_filter("Картинки", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
+                let Some(src) = rfd::FileDialog::new().set_title(l!("Картинка для обложки", "Cover image")).add_filter(l!("Картинки", "Images"), &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
                 match playlist_cover(&src, &self.covers, &format!("t_{}", wavy_core::sha16(id.as_bytes()))) {
                     Ok(path) => {
                         let Some(t) = self.track(&id) else { return };
                         self.store.lock().unwrap().edit_track(&id, &t.title, &t.artist, &t.album, Some(Some(path.to_string_lossy().into_owned())));
                         if self.current.as_ref().is_some_and(|c| c.id == id) { self.current = self.track(&id); }
                     }
-                    Err(e) => self.toast(format!("Не вышло поставить обложку: {e}"), true),
+                    Err(e) => self.toast(lf!("Не вышло поставить обложку: {e}", "Couldn't set the cover: {e}"), true),
                 }
             }
-            Act::MergeDupes(groups) => { let n = self.store.lock().unwrap().merge_duplicates(&groups); self.toast(format!("Убрано дублей: {n}"), false); }
+            Act::MergeDupes(groups) => { let n = self.store.lock().unwrap().merge_duplicates(&groups); self.toast(lf!("Убрано дублей: {n}", "Duplicates removed: {n}"), false); }
             Act::SetFolder(id, f) => self.store.lock().unwrap().set_folder(&id, f),
             Act::Radio(id) => {
                 let Some(t) = self.track(&id) else { return };
-                let Some(vid) = t.video_id.clone() else { self.toast("Радио работает для треков с YouTube", true); return };
-                self.toast(format!("Собираю радио по «{}»…", t.title), false);
+                let Some(vid) = t.video_id.clone() else { self.toast(l!("Радио работает для треков с YouTube", "Radio works for YouTube tracks"), true); return };
+                self.toast(lf!("Собираю радио по «{}»…", "Building a radio from “{}”…", t.title), false);
                 let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || { let _ = tx.send(Bg::Radio(id, yt.radio(&vid, 30))); c.request_repaint(); });
             }
@@ -876,7 +882,7 @@ impl App {
                 let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
                     let r = wavy_core::animethemes::fetch(mal).and_then(|themes| {
-                        if themes.is_empty() { return Err("у этого тайтла нет опенингов в базе".into()); }
+                        if themes.is_empty() { return Err(l!("у этого тайтла нет опенингов в базе", "this title has no openings in the database").into()); }
                         // ищем параллельно, по 4 сразу — 10 песен находятся за пару секунд
                         let mut found: Vec<Option<Track>> = vec![None; themes.len()];
                         for (chunk_i, chunk) in themes.chunks(4).enumerate() {
@@ -889,7 +895,7 @@ impl App {
                             for (i, h) in hs.into_iter().enumerate() { found[chunk_i * 4 + i] = h.join().ok().flatten(); }
                         }
                         let list: Vec<Track> = found.into_iter().flatten().collect();
-                        if list.is_empty() { Err("опенинги нашлись, но не на YouTube".into()) } else { Ok(list) }
+                        if list.is_empty() { Err(l!("опенинги нашлись, но не на YouTube", "openings were found, but not on YouTube").into()) } else { Ok(list) }
                     });
                     let _ = tx.send(Bg::Themes(id, r));
                     c.request_repaint();
@@ -903,11 +909,12 @@ impl App {
             Act::Settings(patch) => {
                 self.store.lock().unwrap().patch_settings(&patch);
                 let s = self.settings();
+                wavy_core::i18n::set(&s.lang);
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
                 self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
                 self.yt.set_cookies(&s.yt_cookies);
                 if let Some(m) = &self._hotkeys { self.hk_keys.apply(m, &s.hotkeys); }
-                if let Err(e) = self.overlay.start(s.overlay.port) { self.toast(format!("Оверлей: {e}"), true); }
+                if let Err(e) = self.overlay.start(s.overlay.port) { self.toast(lf!("Оверлей: {e}", "Overlay: {e}"), true); }
             }
             Act::ToggleOverlay => {
                 self.overlay_open = !self.overlay_open;
@@ -931,21 +938,21 @@ impl App {
             }
             Act::SyncExport => {
                 let text = wavy_core::sync::export(&self.store.lock().unwrap());
-                if let Some(path) = rfd::FileDialog::new().set_title("Экспорт плейлистов для телефона").set_file_name("wavy-export.json").add_filter("Wavy", &["json"]).save_file() {
+                if let Some(path) = rfd::FileDialog::new().set_title(l!("Экспорт плейлистов для телефона", "Export playlists for the phone")).set_file_name("wavy-export.json").add_filter("Wavy", &["json"]).save_file() {
                     match std::fs::write(&path, text) {
-                        Ok(()) => self.toast("Готово: открой этот файл в Wavy на телефоне (Настройки → Синхронизация → Импорт)", false),
-                        Err(e) => self.toast(format!("Не удалось сохранить: {e}"), true),
+                        Ok(()) => self.toast(l!("Готово: открой этот файл в Wavy на телефоне (Настройки → Синхронизация → Импорт)", "Done: open this file in Wavy on your phone (Settings → Sync → Import)"), false),
+                        Err(e) => self.toast(lf!("Не удалось сохранить: {e}", "Couldn't save: {e}"), true),
                     }
                 }
             }
             Act::SyncImport(path) => {
-                let path = path.or_else(|| rfd::FileDialog::new().set_title("Импорт плейлистов с телефона").add_filter("Wavy", &["json"]).pick_file());
+                let path = path.or_else(|| rfd::FileDialog::new().set_title(l!("Импорт плейлистов с телефона", "Import playlists from the phone")).add_filter("Wavy", &["json"]).pick_file());
                 if let Some(path) = path {
                     let res = std::fs::read_to_string(&path).map_err(|e| e.to_string())
                         .and_then(|t| wavy_core::sync::import(&mut self.store.lock().unwrap(), &t));
                     match res {
-                        Ok(r) => self.toast(format!("Импортировано: {} треков, новых плейлистов {}, обновлено {}{}", r.tracks, r.new_playlists, r.updated_playlists,
-                            if r.skipped_local > 0 { format!(" (файлы с телефона не переносятся: {})", r.skipped_local) } else { String::new() }), false),
+                        Ok(r) => self.toast(lf!("Импортировано: {} треков, новых плейлистов {}, обновлено {}{}", "Imported: {} tracks, new playlists {}, updated {}{}", r.tracks, r.new_playlists, r.updated_playlists,
+                            if r.skipped_local > 0 { lf!(" (файлы с телефона не переносятся: {})", " (files from the phone aren't transferred: {})", r.skipped_local) } else { String::new() }), false),
                         Err(e) => self.toast(e, true),
                     }
                 }
@@ -980,15 +987,15 @@ impl App {
             }
             Act::ImportAnimeFiles | Act::ImportAnimeFolder => {
                 let dlg = rfd::FileDialog::new();
-                let picked = if matches!(a, Act::ImportAnimeFiles) { dlg.set_title("Выбери серии").add_filter("Видео", anime::EPISODE_EXT).pick_files() } else { dlg.set_title("Выбери папку с аниме").pick_folders() };
+                let picked = if matches!(a, Act::ImportAnimeFiles) { dlg.set_title(l!("Выбери серии", "Choose episodes")).add_filter(l!("Видео", "Video"), anime::EPISODE_EXT).pick_files() } else { dlg.set_title(l!("Выбери папку с аниме", "Choose an anime folder")).pick_folders() };
                 if let Some(p) = picked { self.apply(Act::ImportAnime(p), ctx); }
             }
             Act::ImportAnime(paths) => {
-                self.toast("Ищу серии…", false);
+                self.toast(l!("Ищу серии…", "Looking for episodes…"), false);
                 let (store, covers) = (self.store.clone(), self.covers.clone());
                 self.bg(ctx, move |tx| {
-                    let groups = anime::scan(&paths, |i, n| { if n > 30 && i % 25 == 0 { let _ = tx.send(Bg::Status(format!("Серии: {i} / {n}"))); } });
-                    if groups.is_empty() { return Err("Не нашлось видео (mkv, mp4, mov)".into()); }
+                    let groups = anime::scan(&paths, |i, n| { if n > 30 && i % 25 == 0 { let _ = tx.send(Bg::Status(lf!("Серии: {i} / {n}", "Episodes: {i} / {n}"))); } });
+                    if groups.is_empty() { return Err(l!("Не нашлось видео (mkv, mp4, mov)", "No videos found (mkv, mp4, mov)").into()); }
                     let eps: usize = groups.iter().map(|g| g.tracks.len()).sum();
                     let mut ids = Vec::new();
                     for g in groups {
@@ -997,7 +1004,7 @@ impl App {
                         ids.push(id.clone());
                         let need = store.lock().unwrap().anime(&id).is_some_and(|a| !a.matched);
                         if !need { continue; }
-                        let _ = tx.send(Bg::Status(format!("Ищу «{}» на Шикимори…", g.parsed.title)));
+                        let _ = tx.send(Bg::Status(lf!("Ищу «{}» на Шикимори…", "Looking up “{}” on Shikimori…", g.parsed.title)));
                         match wavy_core::shikimori::search(&anime::search_query(&g.parsed), 10) {
                             Ok(list) => {
                                 let best = wavy_core::shikimori::best_match(&g.parsed.title, g.parsed.season, n, &list).cloned();
@@ -1014,7 +1021,7 @@ impl App {
                             Err(e) => wavy_core::log(&format!("Шикимори: {e}")),
                         }
                     }
-                    let _ = tx.send(Bg::Status(format!("Добавлено серий: {eps}")));
+                    let _ = tx.send(Bg::Status(lf!("Добавлено серий: {eps}", "Episodes added: {eps}")));
                     let _ = tx.send(Bg::OpenAnime(if ids.len() == 1 { ids.pop() } else { None }));
                     Ok(())
                 });
@@ -1048,13 +1055,13 @@ impl App {
                 let (store, covers) = (self.store.clone(), self.covers.clone());
                 let name = sh.display().to_string();
                 self.bg(ctx, move |tx| {
-                    let mut a = store.lock().unwrap().anime(&id).cloned().ok_or("Тайтл не найден")?;
+                    let mut a = store.lock().unwrap().anime(&id).cloned().ok_or(l!("Тайтл не найден", "Title not found"))?;
                     wavy_core::shikimori::apply(&mut a, &sh, &covers);
                     let mut s = store.lock().unwrap();
                     if let Some(x) = s.anime_mut(&id) { *x = a; }
                     s.retitle_episodes(&id);
                     s.save();
-                    let _ = tx.send(Bg::Status(format!("Теперь это «{name}»")));
+                    let _ = tx.send(Bg::Status(lf!("Теперь это «{name}»", "Now it's “{name}”")));
                     Ok(())
                 });
             }
@@ -1073,7 +1080,7 @@ impl App {
                 self.push_state();
             }
             Act::Screenshot => {
-                let Some(v) = self.video.as_ref() else { self.toast("Скриншот — только для видео", true); return };
+                let Some(v) = self.video.as_ref() else { self.toast(l!("Скриншот — только для видео", "Screenshots are for videos only"), true); return };
                 let Some(([w, h], px)) = v.1.frame() else { return };
                 let px = px.to_vec();
                 let pos = self.audio.position() as u64;
@@ -1085,16 +1092,16 @@ impl App {
                 while path.exists() { path = wavy_core::pictures_dir().join(name.replace(".png", &format!(" ({n}).png"))); n += 1; }
                 let (tx, c) = (self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
-                    let r = image::RgbaImage::from_raw(w as u32, h as u32, px).ok_or("кадр повреждён".to_string())
+                    let r = image::RgbaImage::from_raw(w as u32, h as u32, px).ok_or(l!("кадр повреждён", "the frame is corrupted").to_string())
                         .and_then(|img| img.save(&path).map_err(|e| e.to_string()));
-                    let _ = tx.send(Bg::Status(match r { Ok(()) => format!("Кадр сохранён: {}", path.display()), Err(e) => format!("Скриншот не сохранился: {e}") }));
+                    let _ = tx.send(Bg::Status(match r { Ok(()) => lf!("Кадр сохранён: {}", "Frame saved: {}", path.display()), Err(e) => lf!("Скриншот не сохранился: {e}", "Screenshot wasn't saved: {e}") }));
                     c.request_repaint();
                 });
             }
             Act::PickSubs => {
-                let Some(p) = rfd::FileDialog::new().set_title("Файл субтитров").add_filter("Субтитры", wavy_core::anime::SUB_EXT).pick_file() else { return };
+                let Some(p) = rfd::FileDialog::new().set_title(l!("Файл субтитров", "Subtitle file")).add_filter(l!("Субтитры", "Subtitles"), wavy_core::anime::SUB_EXT).pick_file() else { return };
                 let Some((_, info)) = self.media_info.as_mut() else { return };
-                let label = format!("Файл · {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                let label = lf!("Файл · {}", "File · {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
                 let i = match info.subs.iter().position(|s| s.src == wavy_core::media::SubSrc::External(p.clone())) {
                     Some(i) => i,
                     None => { info.subs.push(wavy_core::media::SubTrack { src: wavy_core::media::SubSrc::External(p), label, lang: String::new(), default: false, forced: false }); info.subs.len() - 1 }
@@ -1117,7 +1124,7 @@ impl App {
                     Some(p) => PathBuf::from(p),
                     None => self.cache.join(format!("{}.s.m4a", wavy_core::sha16(t.url.clone().unwrap_or_default().as_bytes()))),
                 };
-                if !path.exists() { self.toast("Shazam работает с файлами на компьютере (и уже загруженными треками)", true); return; }
+                if !path.exists() { self.toast(l!("Shazam работает с файлами на компьютере (и уже загруженными треками)", "Shazam works with files on your computer (and already downloaded tracks)"), true); return; }
                 let (pos, track, ff) = (self.audio.position(), self.audio_sel, self.ff.path());
                 self.modal = Some(Modal::Shazam { state: ShazamState::Listening, to_openings: t.anime.is_some() });
                 let (tx, c) = (self.tx.clone(), ctx.clone());
@@ -1138,7 +1145,7 @@ impl App {
                     let low = |s: &str| s.to_lowercase();
                     let best = list.iter().find(|t| low(&t.title).contains(&low(&f.title)) && (60.0..900.0).contains(&t.duration))
                         .or_else(|| list.iter().find(|t| (60.0..900.0).contains(&t.duration))).or(list.first()).cloned()
-                        .ok_or_else(|| format!("На YouTube не нашлось «{q}»"))?;
+                        .ok_or_else(|| lf!("На YouTube не нашлось «{q}»", "“{q}” not found on YouTube"))?;
                     let mut t = best;
                     t.title = f.title.clone();
                     if !f.artist.is_empty() { t.artist = f.artist.clone(); }
@@ -1147,11 +1154,11 @@ impl App {
                     s.add_tracks(vec![t]);
                     let mut note = String::new();
                     if to_pl {
-                        let pid = match s.lib.playlists.iter().find(|p| p.name == OPENINGS) { Some(p) => p.id.clone(), None => s.create_playlist(OPENINGS, vec![], None).id };
+                        let pid = match s.lib.playlists.iter().find(|p| OPENINGS.contains(&p.name.as_str())) { Some(p) => p.id.clone(), None => s.create_playlist(openings(), vec![], None).id };
                         s.add_to_playlist(&pid, &[id]);
-                        note = format!(" и в «{OPENINGS}»");
+                        note = lf!(" и в «{}»", " and to “{}”", openings());
                     }
-                    let _ = tx.send(Bg::Status(format!("{} — {}: добавлено в библиотеку{note}", f.artist, f.title)));
+                    let _ = tx.send(Bg::Status(lf!("{} — {}: добавлено в библиотеку{note}", "{} — {}: added to library{note}", f.artist, f.title)));
                     Ok(())
                 });
             }
@@ -1178,7 +1185,7 @@ impl App {
         if self.audio.tick() { ctx.request_repaint_after(Duration::from_millis(40)); }
         // таймер сна
         if let Some(Sleep::At(t)) = self.sleep {
-            if Instant::now() >= t { self.sleep = None; if self.audio.is_playing() { self.audio.pause(); self.push_state(); } self.toast("Таймер сна: спокойной ночи", false); }
+            if Instant::now() >= t { self.sleep = None; if self.audio.is_playing() { self.audio.pause(); self.push_state(); } self.toast(l!("Таймер сна: спокойной ночи", "Sleep timer: good night"), false); }
             else { ctx.request_repaint_after(Duration::from_secs(1)); }
         }
         // кроссфейд: за N секунд до конца запускаем следующий трек, этот плавно затихает
@@ -1217,15 +1224,15 @@ impl App {
                             q.extend(ids);
                             self.play_list(q, 0, false, ctx);
                         }
-                        self.toast(format!("Радио: {n} похожих треков в очереди"), false);
+                        self.toast(lf!("Радио: {n} похожих треков в очереди", "Radio: {n} similar tracks in the queue"), false);
                     }
-                    Ok(_) => self.toast("Похожих треков не нашлось", true),
-                    Err(e) => self.toast(format!("Радио не собралось: {e}"), true),
+                    Ok(_) => self.toast(l!("Похожих треков не нашлось", "No similar tracks found"), true),
+                    Err(e) => self.toast(lf!("Радио не собралось: {e}", "Radio failed: {e}"), true),
                 },
                 Bg::Skips(id, v) => if let Some((cur, slot)) = &mut self.skips { if *cur == id { *slot = v; } },
                 Bg::Shiki(r, login) => match r {
                     Ok(acc) => {
-                        if login { self.toast(format!("Шикимори: вошёл как {}", acc.nickname), false); self.shiki_code.clear(); }
+                        if login { self.toast(lf!("Шикимори: вошёл как {}", "Shikimori: signed in as {}", acc.nickname), false); self.shiki_code.clear(); }
                         self.store.lock().unwrap().patch_settings(&json!({ "shiki": acc }));
                     }
                     Err(e) => self.toast(e, true),
@@ -1244,10 +1251,10 @@ impl App {
                                 None => s.create_playlist(&name, ids.clone(), None).id,
                             };
                             drop(s);
-                            self.toast(format!("«{name}»: {} песен", ids.len()), false);
+                            self.toast(lf!("«{name}»: {} песен", "“{name}”: {} songs", ids.len()), false);
                             self.apply(Act::View(View::Playlist(pid)), ctx);
                         }
-                        Err(e) => self.toast(format!("Опенинги: {e}"), true),
+                        Err(e) => self.toast(lf!("Опенинги: {e}", "Openings: {e}"), true),
                     }
                 }
                 Bg::TwitchDevice(r) => match r {
@@ -1257,7 +1264,7 @@ impl App {
                 Bg::TwitchLogin(r) => {
                     self.twitch_device = None;
                     match r {
-                        Ok(a) => { self.toast(format!("Twitch: вошёл как {}", a.login), false); self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
+                        Ok(a) => { self.toast(lf!("Twitch: вошёл как {}", "Twitch: signed in as {}", a.login), false); self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
                         Err(e) => self.toast(e, true),
                     }
                 }
@@ -1266,7 +1273,7 @@ impl App {
                     Err(e) => self.toast(e, true),
                 },
                 Bg::LastfmDone(r) => match r {
-                    Ok(a) => { self.lfm_token = None; self.toast(format!("Last.fm: вошёл как {}", a.user), false); self.store.lock().unwrap().patch_settings(&json!({"lastfm": a})); }
+                    Ok(a) => { self.lfm_token = None; self.toast(lf!("Last.fm: вошёл как {}", "Last.fm: signed in as {}", a.user), false); self.store.lock().unwrap().patch_settings(&json!({"lastfm": a})); }
                     Err(e) => self.toast(e, true),
                 },
                 Bg::TwitchToken(a) => { self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
@@ -1276,12 +1283,12 @@ impl App {
                     self.exporting = false;
                     match r {
                         Ok(rep) => {
-                            let msg = if rep.failed.is_empty() { format!("Готово: {} MP3 в папке «{}»", rep.done, rep.dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()) }
-                                else { format!("Сохранено {} MP3, не вышло {}: {} — {}", rep.done, rep.failed.len(), rep.failed[0].0, rep.failed[0].1) };
+                            let msg = if rep.failed.is_empty() { lf!("Готово: {} MP3 в папке «{}»", "Done: {} MP3 in the folder “{}”", rep.done, rep.dir.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()) }
+                                else { lf!("Сохранено {} MP3, не вышло {}: {} — {}", "Saved {} MP3, failed {}: {} — {}", rep.done, rep.failed.len(), rep.failed[0].0, rep.failed[0].1) };
                             self.toast(msg, !rep.failed.is_empty());
                             if rep.done > 0 { open_folder(&rep.dir); }
                         }
-                        Err(e) => self.toast(format!("Экспорт не вышел: {e}"), true),
+                        Err(e) => self.toast(lf!("Экспорт не вышел: {e}", "Export failed: {e}"), true),
                     }
                 }
                 Bg::OpenPlaylist(id) => {
@@ -1292,7 +1299,7 @@ impl App {
                     self.searching = false;
                     match r { Ok(v) => self.results = v, Err(e) => self.toast(e, true) }
                 }
-                Bg::CookiesFailed(e) => self.toast(format!("Куки браузера не сработали: {}", cookie_hint(&e)), true),
+                Bg::CookiesFailed(e) => self.toast(lf!("Куки браузера не сработали: {}", "Browser cookies didn't work: {}", cookie_hint(&e)), true),
                 Bg::Replaced(t, age) => {
                     // запоминаем новое видео в библиотеке (id тот же — плейлисты не трогаем)
                     let mut s = self.store.lock().unwrap();
@@ -1300,8 +1307,8 @@ impl App {
                     drop(s);
                     if self.current.as_ref().is_some_and(|c| c.id == t.id) { self.current = Some(t.clone()); }
                     self.video_error = None;
-                    self.toast(if age { format!("«{}»: видео 18+ без входа не играет — нашёл тот же трек в другом видео", t.title) }
-                        else { format!("«{}»: старое видео пропало с YouTube, нашёл замену", t.title) }, false);
+                    self.toast(if age { lf!("«{}»: видео 18+ без входа не играет — нашёл тот же трек в другом видео", "“{}”: 18+ video won't play without signing in — found the same track in another video", t.title) }
+                        else { lf!("«{}»: старое видео пропало с YouTube, нашёл замену", "“{}”: the old video is gone from YouTube, found a replacement", t.title) }, false);
                 }
                 Bg::Ready { token, path } => if token == self.token { self.start_file(&path); },
                 Bg::ReadyStream { token, dl } => if token == self.token { self.start_stream(dl); } else if !dl.done() { dl.cancel(); },
@@ -1324,7 +1331,7 @@ impl App {
                     self.video_error = Some((id, err));
                 }
                 Bg::Update(st) => {
-                    if let UpdState::Ready(n) = &st { self.toast(format!("Новая версия (сборка {n}) установлена — перезапусти плеер"), false); }
+                    if let UpdState::Ready(n) = &st { self.toast(lf!("Новая версия (сборка {n}) установлена — перезапусти плеер", "New version (build {n}) installed — restart the player"), false); }
                     if let UpdState::Error(e) = &st { wavy_core::log(&format!("обновление: {e}")); }
                     self.upd = Some(st);
                 }
@@ -1341,7 +1348,7 @@ impl App {
                 Bg::ShikiResults(r) => {
                     if let Some(Modal::AnimeMatch { results, busy, err, .. }) = &mut self.modal {
                         *busy = false;
-                        match r { Ok(v) => { if v.is_empty() { *err = Some("Ничего не нашлось — попробуй другое написание (можно по-русски или по-английски)".into()); } *results = v; } Err(e) => *err = Some(e) }
+                        match r { Ok(v) => { if v.is_empty() { *err = Some(l!("Ничего не нашлось — попробуй другое написание (можно по-русски или по-английски)", "Nothing found — try a different spelling").into()); } *results = v; } Err(e) => *err = Some(e) }
                     }
                 }
                 Bg::Shazam(r) => {
@@ -1358,7 +1365,7 @@ impl App {
                 self.sleep = None;
                 self.audio.stop();
                 self.push_state();
-                self.toast("Таймер сна: трек доиграл, спокойной ночи", false);
+                self.toast(l!("Таймер сна: трек доиграл, спокойной ночи", "Sleep timer: the track finished, good night"), false);
             } else { self.next(true, ctx); }
         }
         let state = (self.current.as_ref().map(|t| t.id.clone()), self.audio.is_playing());
@@ -1523,8 +1530,8 @@ impl App {
                 }
             }
             State::Failed(e) => {
-                if need_video { if let Some(v) = &mut self.video_error { v.1 = format!("{} — не скачался декодер: {e}", wavy_core::ffmpeg::human(&v.1)); } }
-                if std::mem::take(&mut self.reload_after_ff) { self.toast(format!("Не скачался декодер: {e}"), true); }
+                if need_video { if let Some(v) = &mut self.video_error { v.1 = lf!("{} — не скачался декодер: {e}", "{} — the decoder didn't download: {e}", wavy_core::ffmpeg::human(&v.1)); } }
+                if std::mem::take(&mut self.reload_after_ff) { self.toast(lf!("Не скачался декодер: {e}", "The decoder didn't download: {e}"), true); }
             }
         }
     }
@@ -1679,31 +1686,31 @@ impl App {
             ui.label(RichText::new("wavy").size(23.0).family(bold()).color(TEXT));
         });
         ui.add_space(14.0);
-        if nav(ui, "\u{E340}  Библиотека", self.view == View::Library, None).clicked() { acts.push(Act::View(View::Library)); }
+        if nav(ui, l!("\u{E340}  Библиотека", "\u{E340}  Library"), self.view == View::Library, None).clicked() { acts.push(Act::View(View::Library)); }
         let n_liked = { let s = self.store.lock().unwrap(); s.lib.liked.iter().filter(|t| s.lib.tracks.contains_key(*t)).count() };
-        if nav(ui, "\u{E2A8}  Любимое", self.view == View::Liked, (n_liked > 0).then_some(n_liked)).clicked() { acts.push(Act::View(View::Liked)); }
-        if nav(ui, "\u{E150}  Итоги", self.view == View::Stats, None).clicked() { acts.push(Act::View(View::Stats)); }
-        if nav(ui, "\u{E30C}  Поиск на YouTube", self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
+        if nav(ui, l!("\u{E2A8}  Любимое", "\u{E2A8}  Liked"), self.view == View::Liked, (n_liked > 0).then_some(n_liked)).clicked() { acts.push(Act::View(View::Liked)); }
+        if nav(ui, l!("\u{E150}  Итоги", "\u{E150}  Recap"), self.view == View::Stats, None).clicked() { acts.push(Act::View(View::Stats)); }
+        if nav(ui, l!("\u{E30C}  Поиск на YouTube", "\u{E30C}  Search YouTube"), self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
         let n_anime = self.store.lock().unwrap().lib.anime.len();
-        if nav(ui, "\u{E754}  Аниме", matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
+        if nav(ui, l!("\u{E754}  Аниме", "\u{E754}  Anime"), matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
         // умные плейлисты — собираются сами по истории прослушиваний
         let smart_open = matches!(self.view, View::Smart(_));
-        egui::CollapsingHeader::new(RichText::new("\u{E5FE}  Умные плейлисты").color(if smart_open { TEXT } else { MUTED })).id_salt("smart").default_open(smart_open).show(ui, |ui| {
+        egui::CollapsingHeader::new(RichText::new(l!("\u{E5FE}  Умные плейлисты", "\u{E5FE}  Smart playlists")).color(if smart_open { TEXT } else { MUTED })).id_salt("smart").default_open(smart_open).show(ui, |ui| {
             for (rule, name, hint) in wavy_core::store::SMART {
-                if nav(ui, name, self.view == View::Smart(rule.to_string()), None).on_hover_text(*hint).clicked() { acts.push(Act::View(View::Smart(rule.to_string()))); }
+                if nav(ui, wavy_core::i18n::tr(name), self.view == View::Smart(rule.to_string()), None).on_hover_text(wavy_core::i18n::tr(hint)).clicked() { acts.push(Act::View(View::Smart(rule.to_string()))); }
             }
         });
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("ПЛЕЙЛИСТЫ").size(11.0).color(MUTED));
+            ui.label(RichText::new(l!("ПЛЕЙЛИСТЫ", "PLAYLISTS")).size(11.0).color(MUTED));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if icon_btn(ui, "+", 18.0, false).on_hover_text("Новый плейлист").clicked() { acts.push(Act::Modal(Modal::NewPlaylist { name: String::new(), ids: vec![] })); }
+                if icon_btn(ui, "+", 18.0, false).on_hover_text(l!("Новый плейлист", "New playlist")).clicked() { acts.push(Act::Modal(Modal::NewPlaylist { name: String::new(), ids: vec![] })); }
             });
         });
         let pls = self.store.lock().unwrap().lib.playlists.clone();
         let foot = 92.0;
         egui::ScrollArea::vertical().max_height(ui.available_height() - foot).auto_shrink([false, true]).show(ui, |ui| {
-            if pls.is_empty() { ui.label(RichText::new("Пока пусто").color(MUTED)); }
+            if pls.is_empty() { ui.label(RichText::new(l!("Пока пусто", "Nothing here yet")).color(MUTED)); }
             let mut folders: Vec<String> = pls.iter().filter_map(|p| p.folder.clone()).collect();
             folders.sort_by_key(|f| f.to_lowercase());
             folders.dedup();
@@ -1712,10 +1719,10 @@ impl App {
                 let r = nav(ui, &format!("{icon}  {}", p.name), *view == View::Playlist(p.id.clone()), Some(p.track_ids.len()));
                 if r.clicked() { acts.push(Act::View(View::Playlist(p.id.clone()))); }
                 r.context_menu(|ui| {
-                    if ui.button("В папку…").clicked() { acts.push(Act::Modal(Modal::Folder { id: p.id.clone(), name: p.folder.clone().unwrap_or_default() })); ui.close(); }
-                    if p.folder.is_some() && ui.button("Убрать из папки").clicked() { acts.push(Act::SetFolder(p.id.clone(), None)); ui.close(); }
-                    if ui.button("Переименовать…").clicked() { acts.push(Act::Modal(Modal::Rename { id: p.id.clone(), name: p.name.clone() })); ui.close(); }
-                    if ui.button(RichText::new("Удалить…").color(BAD)).clicked() { acts.push(Act::Modal(Modal::Delete { id: p.id.clone() })); ui.close(); }
+                    if ui.button(l!("В папку…", "Move to folder…")).clicked() { acts.push(Act::Modal(Modal::Folder { id: p.id.clone(), name: p.folder.clone().unwrap_or_default() })); ui.close(); }
+                    if p.folder.is_some() && ui.button(l!("Убрать из папки", "Remove from folder")).clicked() { acts.push(Act::SetFolder(p.id.clone(), None)); ui.close(); }
+                    if ui.button(l!("Переименовать…", "Rename…")).clicked() { acts.push(Act::Modal(Modal::Rename { id: p.id.clone(), name: p.name.clone() })); ui.close(); }
+                    if ui.button(RichText::new(l!("Удалить…", "Delete…")).color(BAD)).clicked() { acts.push(Act::Modal(Modal::Delete { id: p.id.clone() })); ui.close(); }
                 });
             };
             for f in &folders {
@@ -1727,13 +1734,13 @@ impl App {
         });
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             let d = if self.discord_status.connected { "\u{E61A}" } else { "" };
-            if nav(ui, &format!("\u{E272}  Настройки  {d}"), false, None).clicked() {
+            if nav(ui, &lf!("\u{E272}  Настройки  {d}", "\u{E272}  Settings  {d}"), false, None).clicked() {
                 let s = self.settings();
                 acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id, port: s.overlay.port.to_string(), sp_id: s.spotify.client_id, sp_secret: s.spotify.client_secret }));
             }
             let s = self.settings();
-            let st = if !self.overlay_open { "выкл" } else if s.overlay_window.locked { "вкл" } else { "двигай" };
-            if nav(ui, &format!("\u{E466}  Оверлей · {st}"), self.overlay_open, None).clicked() {
+            let st = if !self.overlay_open { l!("выкл", "off") } else if s.overlay_window.locked { l!("вкл", "on") } else { l!("двигай", "move") };
+            if nav(ui, &lf!("\u{E466}  Оверлей · {st}", "\u{E466}  Overlay · {st}"), self.overlay_open, None).clicked() {
                 acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id.clone(), port: s.overlay.port.to_string(), sp_id: s.spotify.client_id.clone(), sp_secret: s.spotify.client_secret.clone() }));
             }
             ui.separator();
@@ -1744,15 +1751,15 @@ impl App {
         let (eyebrow, title, pl) = {
             let s = self.store.lock().unwrap();
             match &self.view {
-                View::Library => ("КОЛЛЕКЦИЯ", "Библиотека".to_string(), None),
-                View::Liked => ("КОЛЛЕКЦИЯ", "Любимое".to_string(), None),
-                View::Smart(r) => ("УМНЫЙ ПЛЕЙЛИСТ", wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| x.1.to_string()).unwrap_or_default(), None),
-                View::Stats => ("ТВОЯ МУЗЫКА", "Итоги".to_string(), None),
-                View::Search => ("YOUTUBE", "Поиск".to_string(), None),
-                View::Anime | View::AnimeTitle(_) => ("АНИМЕ", "Аниме".to_string(), None),
+                View::Library => (l!("КОЛЛЕКЦИЯ", "COLLECTION"), l!("Библиотека", "Library").to_string(), None),
+                View::Liked => (l!("КОЛЛЕКЦИЯ", "COLLECTION"), l!("Любимое", "Liked").to_string(), None),
+                View::Smart(r) => (l!("УМНЫЙ ПЛЕЙЛИСТ", "SMART PLAYLIST"), wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| wavy_core::i18n::tr(x.1).to_string()).unwrap_or_default(), None),
+                View::Stats => (l!("ТВОЯ МУЗЫКА", "YOUR MUSIC"), l!("Итоги", "Recap").to_string(), None),
+                View::Search => ("YOUTUBE", l!("Поиск", "Search").to_string(), None),
+                View::Anime | View::AnimeTitle(_) => (l!("АНИМЕ", "ANIME"), l!("Аниме", "Anime").to_string(), None),
                 View::Playlist(id) => {
                     let p = s.lib.playlists.iter().find(|p| &p.id == id).cloned();
-                    (if p.as_ref().is_some_and(|p| p.is_remote()) { "ПЛЕЙЛИСТ · ИМПОРТ" } else { "ПЛЕЙЛИСТ" }, p.as_ref().map(|p| p.name.clone()).unwrap_or_default(), p)
+                    (if p.as_ref().is_some_and(|p| p.is_remote()) { l!("ПЛЕЙЛИСТ · ИМПОРТ", "PLAYLIST · IMPORT") } else { l!("ПЛЕЙЛИСТ", "PLAYLIST") }, p.as_ref().map(|p| p.name.clone()).unwrap_or_default(), p)
                 }
             }
         };
@@ -1762,11 +1769,11 @@ impl App {
         ui.horizontal(|ui| {
             let (r, resp) = ui.allocate_exact_size(Vec2::splat(120.0), if pl.is_some() { Sense::click() } else { Sense::hover() });
             if let Some(p) = &pl {
-                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Поставить свою картинку");
+                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(l!("Поставить свою картинку", "Set your own image"));
                 if resp.clicked() { acts.push(Act::PlaylistCover(p.id.clone())); }
                 resp.context_menu(|ui| {
-                    if ui.button("Поставить свою картинку…").clicked() { acts.push(Act::PlaylistCover(p.id.clone())); ui.close(); }
-                    if own.is_some() && ui.button("Вернуть обложку из треков").clicked() { acts.push(Act::PlaylistCoverReset(p.id.clone())); ui.close(); }
+                    if ui.button(l!("Поставить свою картинку…", "Set your own image…")).clicked() { acts.push(Act::PlaylistCover(p.id.clone())); ui.close(); }
+                    if own.is_some() && ui.button(l!("Вернуть обложку из треков", "Use the cover from the tracks")).clicked() { acts.push(Act::PlaylistCoverReset(p.id.clone())); ui.close(); }
                 });
             }
             let hovered = pl.is_some() && ui.rect_contains_pointer(r);
@@ -1781,37 +1788,37 @@ impl App {
             if hovered {
                 ui.painter().rect_filled(r, 0, Color32::from_black_alpha(150));
                 glyph(ui.painter(), r.center() - Vec2::new(0.0, 10.0), "\u{E3B4}", FontId::proportional(26.0), TEXT);
-                ui.painter().text(r.center() + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, "Своя обложка", FontId::proportional(12.0), TEXT);
+                ui.painter().text(r.center() + Vec2::new(0.0, 18.0), Align2::CENTER_CENTER, l!("Своя обложка", "Custom cover"), FontId::proportional(12.0), TEXT);
             }
             ui.add_space(16.0);
             ui.vertical(|ui| {
                 ui.add_space(8.0);
                 ui.label(RichText::new(eyebrow).size(11.0).color(MUTED));
                 ui.label(RichText::new(&title).size(34.0).family(bold()).color(TEXT));
-                if self.view == View::Search { ui.label(RichText::new("Ищи треки и добавляй в библиотеку или в плейлист").color(MUTED)); }
-                else { ui.label(RichText::new(format!("{} трек(ов) · {}", ids.len(), fmt_time(total))).color(MUTED)); }
+                if self.view == View::Search { ui.label(RichText::new(l!("Ищи треки и добавляй в библиотеку или в плейлист", "Search for tracks and add them to the library or a playlist")).color(MUTED)); }
+                else { ui.label(RichText::new(lf!("{} трек(ов) · {}", "{} track(s) · {}", ids.len(), fmt_time(total))).color(MUTED)); }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if !ids.is_empty() && self.view != View::Search {
-                        if pill(ui, "\u{E3D0}  Слушать", true).clicked() { acts.push(Act::Play(ids.to_vec(), 0, false)); }
-                        if pill(ui, "\u{E422}  Вперемешку", false).clicked() { acts.push(Act::Play(ids.to_vec(), 0, true)); }
+                        if pill(ui, l!("\u{E3D0}  Слушать", "\u{E3D0}  Play"), true).clicked() { acts.push(Act::Play(ids.to_vec(), 0, false)); }
+                        if pill(ui, l!("\u{E422}  Вперемешку", "\u{E422}  Shuffle"), false).clicked() { acts.push(Act::Play(ids.to_vec(), 0, true)); }
                     }
                     if let View::Smart(r) = &self.view {
-                        if !ids.is_empty() && pill(ui, "\u{E248}  Сохранить копию", false).on_hover_text("Обычный плейлист с этими треками — он уже не будет меняться сам").clicked() {
-                            let name = format!("{} · {}", wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| x.1).unwrap_or(""), fmt_date(wavy_core::now_ms()));
+                        if !ids.is_empty() && pill(ui, l!("\u{E248}  Сохранить копию", "\u{E248}  Save a copy"), false).on_hover_text(l!("Обычный плейлист с этими треками — он уже не будет меняться сам", "A regular playlist with these tracks — it won't change by itself anymore")).clicked() {
+                            let name = format!("{} · {}", wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| wavy_core::i18n::tr(x.1)).unwrap_or(""), fmt_date(wavy_core::now_ms()));
                             acts.push(Act::CreatePlaylist(name, ids.to_vec()));
                         }
-                        if let Some((_, _, hint)) = wavy_core::store::SMART.iter().find(|x| x.0 == r) { ui.label(RichText::new(*hint).color(MUTED)); }
+                        if let Some((_, _, hint)) = wavy_core::store::SMART.iter().find(|x| x.0 == r) { ui.label(RichText::new(wavy_core::i18n::tr(hint)).color(MUTED)); }
                     }
-                    if self.view == View::Library && !ids.is_empty() && pill(ui, "\u{E1CA}  Дубли", false).on_hover_text("Найти одинаковые треки").clicked() {
+                    if self.view == View::Library && !ids.is_empty() && pill(ui, l!("\u{E1CA}  Дубли", "\u{E1CA}  Duplicates"), false).on_hover_text(l!("Найти одинаковые треки", "Find identical tracks")).clicked() {
                         let groups = self.store.lock().unwrap().duplicates();
-                        if groups.is_empty() { self.toast("Дублей нет — всё чисто", false); } else { acts.push(Act::Modal(Modal::Dupes { groups })); }
+                        if groups.is_empty() { self.toast(l!("Дублей нет — всё чисто", "No duplicates — all clean"), false); } else { acts.push(Act::Modal(Modal::Dupes { groups })); }
                     }
                     if let Some(p) = &pl {
-                        if p.is_remote() && pill(ui, "\u{E094}  Синхронизировать", false).clicked() { acts.push(Act::Sync(p.id.clone())); }
-                        if !ids.is_empty() && pill(ui, "\u{E20C}  Скачать MP3", false).on_hover_text("Сохранить весь плейлист в MP3 в одну папку").clicked() { acts.push(Act::Export(ids.to_vec(), Some(p.name.clone()))); }
-                        if pill(ui, "\u{E3B4}  Переименовать", false).clicked() { acts.push(Act::Modal(Modal::Rename { id: p.id.clone(), name: p.name.clone() })); }
-                        if pill(ui, "\u{E4A6}  Удалить", false).clicked() { acts.push(Act::Modal(Modal::Delete { id: p.id.clone() })); }
+                        if p.is_remote() && pill(ui, l!("\u{E094}  Синхронизировать", "\u{E094}  Sync"), false).clicked() { acts.push(Act::Sync(p.id.clone())); }
+                        if !ids.is_empty() && pill(ui, l!("\u{E20C}  Скачать MP3", "\u{E20C}  Download MP3"), false).on_hover_text(l!("Сохранить весь плейлист в MP3 в одну папку", "Save the whole playlist as MP3 into one folder")).clicked() { acts.push(Act::Export(ids.to_vec(), Some(p.name.clone()))); }
+                        if pill(ui, l!("\u{E3B4}  Переименовать", "\u{E3B4}  Rename"), false).clicked() { acts.push(Act::Modal(Modal::Rename { id: p.id.clone(), name: p.name.clone() })); }
+                        if pill(ui, l!("\u{E4A6}  Удалить", "\u{E4A6}  Delete"), false).clicked() { acts.push(Act::Modal(Modal::Delete { id: p.id.clone() })); }
                     }
                 });
             });
@@ -1823,8 +1830,8 @@ impl App {
         if let Some(UpdState::Ready(n)) = self.upd.clone() {
             egui::Frame::new().fill(BG3).stroke(Stroke::new(1.0, LINE)).corner_radius(12).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("\u{E036}  Новая версия Wavy (сборка {n}) уже скачана")).color(TEXT));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Перезапустить", true).clicked() { acts.push(Act::Restart); } });
+                    ui.label(RichText::new(lf!("\u{E036}  Новая версия Wavy (сборка {n}) уже скачана", "\u{E036}  A new version of Wavy (build {n}) is downloaded")).color(TEXT));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Перезапустить", "Restart"), true).clicked() { acts.push(Act::Restart); } });
                 });
             });
             ui.add_space(12.0);
@@ -1839,8 +1846,8 @@ impl App {
         self.header(ui, &ids, acts);
         if self.view == View::Search {
             ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.search_q).hint_text("Найти трек на YouTube… или вставь ссылку").desired_width(480.0).margin(egui::Margin::symmetric(12, 8)));
-                let go = pill(ui, if self.searching { "Ищу…" } else { "Искать" }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                let r = ui.add(egui::TextEdit::singleline(&mut self.search_q).hint_text(l!("Найти трек на YouTube… или вставь ссылку", "Find a track on YouTube… or paste a link")).desired_width(480.0).margin(egui::Margin::symmetric(12, 8)));
+                let go = pill(ui, if self.searching { l!("Ищу…", "Searching…") } else { l!("Искать", "Search") }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if go && !self.search_q.trim().is_empty() {
                     let q = self.search_q.trim().to_string();
                     if q.starts_with("http") { acts.push(Act::Modal(Modal::ImportUrl { url: q, into: false, busy: false, err: None })); } else { acts.push(Act::Search(q)); }
@@ -1851,21 +1858,21 @@ impl App {
         }
         ui.horizontal(|ui| {
             let fw = (ui.available_width() - 420.0).clamp(160.0, 360.0);
-            let fr = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Фильтр (Ctrl+F)…").desired_width(fw).margin(egui::Margin::symmetric(12, 8)));
+            let fr = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(l!("\u{E30C} Фильтр (Ctrl+F)…", "\u{E30C} Filter (Ctrl+F)…")).desired_width(fw).margin(egui::Margin::symmetric(12, 8)));
             if std::mem::take(&mut self.focus_filter) { fr.request_focus(); }
             if fr.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.filter.clear(); fr.surrender_focus(); }
             // сортировка (своя для библиотеки и для каждого плейлиста)
             let (key, is_pl) = match &self.view { View::Playlist(id) => (id.clone(), true), View::Liked => ("liked".to_string(), true), _ => ("library".to_string(), false) };
             let cur = self.settings().sort.get(&key).cloned().unwrap_or_default();
             let opts: &[(&str, &str)] = if is_pl {
-                &[("", if key == "liked" { "Как лайкал" } else { "Как в плейлисте" }), ("plays", "Часто слушаю"), ("newest", "Сначала новые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
+                &[("", if key == "liked" { l!("Как лайкал", "Order liked") } else { l!("Как в плейлисте", "Playlist order") }), ("plays", l!("Часто слушаю", "Most played")), ("newest", l!("Сначала новые", "Newest first")), ("title", l!("По названию", "By title")), ("artist", l!("По исполнителю", "By artist")), ("album", l!("По альбому", "By album"))]
             } else {
-                &[("", "Сначала новые"), ("plays", "Часто слушаю"), ("oldest", "Сначала старые"), ("title", "По названию"), ("artist", "По исполнителю"), ("album", "По альбому")]
+                &[("", l!("Сначала новые", "Newest first")), ("plays", l!("Часто слушаю", "Most played")), ("oldest", l!("Сначала старые", "Oldest first")), ("title", l!("По названию", "By title")), ("artist", l!("По исполнителю", "By artist")), ("album", l!("По альбому", "By album"))]
             };
             let label = opts.iter().find(|o| o.0 == cur).map(|o| o.1).unwrap_or(opts[0].1);
             ui.add_space(6.0);
             let text = format!("\u{E444}  {label}");
-            let r = ui.add(pill_btn(&text, false)).on_hover_text("Сортировка");
+            let r = ui.add(pill_btn(&text, false)).on_hover_text(l!("Сортировка", "Sorting"));
             egui::Popup::menu(&r).show(|ui| {
                 ui.set_min_width(180.0);
                 for (k, name) in opts {
@@ -1877,9 +1884,9 @@ impl App {
                 // узкое окно (открыт текст/очередь) — только значки
                 let narrow = ui.available_width() < 330.0;
                 let t = |icon: &str, text: &str| if narrow { icon.to_string() } else { format!("{icon}  {text}") };
-                if pill(ui, &t("\u{E2E2}", "По ссылке"), false).on_hover_text("Добавить по ссылке").clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
-                if pill(ui, &t("\u{E25A}", "Папка"), false).on_hover_text("Добавить папку").clicked() { acts.push(Act::ImportFolder); }
-                if pill(ui, &t("\u{EA20}", "Файлы"), false).on_hover_text("Добавить файлы").clicked() { acts.push(Act::ImportFiles); }
+                if pill(ui, &t("\u{E2E2}", l!("По ссылке", "By link")), false).on_hover_text(l!("Добавить по ссылке", "Add by link")).clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
+                if pill(ui, &t("\u{E25A}", l!("Папка", "Folder")), false).on_hover_text(l!("Добавить папку", "Add a folder")).clicked() { acts.push(Act::ImportFolder); }
+                if pill(ui, &t("\u{EA20}", l!("Файлы", "Files")), false).on_hover_text(l!("Добавить файлы", "Add files")).clicked() { acts.push(Act::ImportFiles); }
             });
         });
         ui.add_space(8.0);
@@ -1887,10 +1894,10 @@ impl App {
             ui.add_space(60.0);
             ui.vertical_centered(|ui| {
                 let filt = !self.filter.is_empty();
-                ui.label(RichText::new(if filt { "Ничего не нашлось" } else if self.cur_playlist().is_some() { "Плейлист пустой" } else { "Тут пока тихо" }).size(22.0).family(bold()).color(TEXT));
-                ui.label(RichText::new("Перетащи файлы/папки в окно или импортируй плейлист с YouTube Music по ссылке").color(MUTED));
+                ui.label(RichText::new(if filt { l!("Ничего не нашлось", "Nothing found") } else if self.cur_playlist().is_some() { l!("Плейлист пустой", "The playlist is empty") } else { l!("Тут пока тихо", "It's quiet here for now") }).size(22.0).family(bold()).color(TEXT));
+                ui.label(RichText::new(l!("Перетащи файлы/папки в окно или импортируй плейлист с YouTube Music по ссылке", "Drag files/folders into the window or import a YouTube Music playlist by link")).color(MUTED));
                 ui.add_space(12.0);
-                if !filt && pill(ui, "\u{E3D0}  Плейлист с YouTube", true).clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
+                if !filt && pill(ui, l!("\u{E3D0}  Плейлист с YouTube", "\u{E3D0}  Playlist from YouTube"), true).clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
             });
             return;
         }
@@ -1921,7 +1928,7 @@ impl App {
             .column(Column::exact(56.0))
             .max_scroll_height(f32::INFINITY)
             .header(26.0, |mut h| {
-                for t in ["#", "НАЗВАНИЕ", "АЛЬБОМ", "", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); }
+                for t in ["#", l!("НАЗВАНИЕ", "TITLE"), l!("АЛЬБОМ", "ALBUM"), "", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); }
             })
             .body(|body| {
                 body.rows(52.0, ids.len(), |mut row| {
@@ -1944,7 +1951,7 @@ impl App {
                         });
                     });
                     row.col(|ui| {
-                        let album = if !t.album.is_empty() { t.album.clone() } else if t.kind == "youtube" { "YouTube".into() } else if t.kind == "stream" { "Стрим".into() } else { String::new() };
+                        let album = if !t.album.is_empty() { t.album.clone() } else if t.kind == "youtube" { "YouTube".into() } else if t.kind == "stream" { l!("Стрим", "Stream").into() } else { String::new() };
                         ui.add(egui::Label::new(RichText::new(album).color(MUTED).size(13.0)).truncate());
                     });
                     row.col(|ui| {
@@ -1953,7 +1960,7 @@ impl App {
                             let (r, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
                             let fam = if on { egui::FontFamily::Name("fill".into()) } else { egui::FontFamily::Proportional };
                             glyph(ui.painter(), r.center(), "\u{E2A8}", FontId::new(16.0, fam), if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED });
-                            if resp.on_hover_text(if on { "Убрать из «Любимого»" } else { "В «Любимое»" }).clicked() { acts.push(Act::Like(vec![id.clone()], !on)); }
+                            if resp.on_hover_text(if on { l!("Убрать из «Любимого»", "Remove from “Liked”") } else { l!("В «Любимое»", "Add to “Liked”") }).clicked() { acts.push(Act::Like(vec![id.clone()], !on)); }
                         }
                     });
                     row.col(|ui| { ui.label(RichText::new(fmt_time(t.duration)).color(MUTED)); });
@@ -1983,7 +1990,7 @@ impl App {
                     let sel: Vec<String> = if self.selected.contains(id) { ids.iter().filter(|x| self.selected.contains(*x)).cloned().collect() } else { vec![id.clone()] };
                     let is_liked = liked.contains(id);
                     r.context_menu(|ui| {
-                        let lbl = if is_liked { "Убрать из «Любимого»" } else { "В «Любимое»" };
+                        let lbl = if is_liked { l!("Убрать из «Любимого»", "Remove from “Liked”") } else { l!("В «Любимое»", "Add to “Liked”") };
                         if ui.button(lbl).clicked() { acts.push(Act::Like(sel.clone(), !is_liked)); ui.close(); }
                         track_menu(ui, &sel, &t, pid.as_deref(), &pls, acts)
                     });
@@ -2025,24 +2032,24 @@ impl App {
         let list = self.store.lock().unwrap().lib.anime.clone();
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("КОЛЛЕКЦИЯ").size(11.0).color(MUTED));
-                ui.label(RichText::new("Аниме").size(34.0).family(bold()).color(TEXT));
-                ui.label(RichText::new(if list.is_empty() { "Серии с компьютера — с обложками и названиями с Шикимори".to_string() } else { format!("{} тайтл(ов)", list.len()) }).color(MUTED));
+                ui.label(RichText::new(l!("КОЛЛЕКЦИЯ", "COLLECTION")).size(11.0).color(MUTED));
+                ui.label(RichText::new(l!("Аниме", "Anime")).size(34.0).family(bold()).color(TEXT));
+                ui.label(RichText::new(if list.is_empty() { l!("Серии с компьютера — с обложками и названиями с Шикимори", "Episodes from your computer — with covers and titles from Shikimori").to_string() } else { lf!("{} тайтл(ов)", "{} title(s)", list.len()) }).color(MUTED));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if pill(ui, "\u{E25A}  Папка", true).clicked() { acts.push(Act::ImportAnimeFolder); }
-                if pill(ui, "\u{EA20}  Файлы", false).clicked() { acts.push(Act::ImportAnimeFiles); }
+                if pill(ui, l!("\u{E25A}  Папка", "\u{E25A}  Folder"), true).clicked() { acts.push(Act::ImportAnimeFolder); }
+                if pill(ui, l!("\u{EA20}  Файлы", "\u{EA20}  Files"), false).clicked() { acts.push(Act::ImportAnimeFiles); }
             });
         });
         ui.add_space(14.0);
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("\u{E30C} Найти тайтл…").desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(l!("\u{E30C} Найти тайтл…", "\u{E30C} Find a title…")).desired_width(360.0).margin(egui::Margin::symmetric(12, 8)));
         ui.add_space(12.0);
         if list.is_empty() {
             ui.add_space(50.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Пока пусто").size(22.0).family(bold()).color(TEXT));
-                ui.label(RichText::new("Перетащи сюда папку с сериями (mkv, mp4). Название и номер серии Wavy поймёт из имён файлов,").color(MUTED));
-                ui.label(RichText::new("а обложку и русское название возьмёт с Шикимори.").color(MUTED));
+                ui.label(RichText::new(l!("Пока пусто", "Nothing here yet")).size(22.0).family(bold()).color(TEXT));
+                ui.label(RichText::new(l!("Перетащи сюда папку с сериями (mkv, mp4). Название и номер серии Wavy поймёт из имён файлов,", "Drag a folder with episodes here (mkv, mp4). Wavy will figure out the title and episode number from the file names,")).color(MUTED));
+                ui.label(RichText::new(l!("а обложку и русское название возьмёт с Шикимори.", "and take the cover and the title from Shikimori.")).color(MUTED));
             });
             return;
         }
@@ -2068,15 +2075,15 @@ impl App {
                     let g = ui.fonts_mut(|f| f.layout_job(job));
                     let th = g.size().y;
                     ui.painter().galley(pr.left_bottom() + Vec2::new(0.0, 8.0), g, TEXT);
-                    let meta = if a.matched && a.shiki_id.is_some() { a.meta() } else if a.matched { "нет на Шикимори".into() } else { "ищу на Шикимори…".into() };
+                    let meta = if a.matched && a.shiki_id.is_some() { a.meta() } else if a.matched { l!("нет на Шикимори", "not on Shikimori").into() } else { l!("ищу на Шикимори…", "searching Shikimori…").into() };
                     ui.painter().text(pr.left_bottom() + Vec2::new(0.0, 12.0 + th), Align2::LEFT_TOP, ellipsize(&meta, cw - 10.0, 12.0), FontId::proportional(12.0), MUTED);
                     if resp.clicked() { acts.push(Act::View(View::AnimeTitle(a.id.clone()))); }
                     let id = a.id.clone();
                     resp.on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| {
-                        if ui.button("Смотреть").clicked() { acts.push(Act::PlayAnime(id.clone(), None)); ui.close(); }
-                        if ui.button("Другой тайтл на Шикимори…").clicked() { acts.push(Act::Modal(Modal::AnimeMatch { id: id.clone(), query: a.display().to_string(), results: vec![], busy: false, err: None })); acts.push(Act::AnimeSearch(a.display().to_string())); ui.close(); }
+                        if ui.button(l!("Смотреть", "Watch")).clicked() { acts.push(Act::PlayAnime(id.clone(), None)); ui.close(); }
+                        if ui.button(l!("Другой тайтл на Шикимори…", "Another title on Shikimori…")).clicked() { acts.push(Act::Modal(Modal::AnimeMatch { id: id.clone(), query: a.display().to_string(), results: vec![], busy: false, err: None })); acts.push(Act::AnimeSearch(a.display().to_string())); ui.close(); }
                         ui.separator();
-                        if ui.button(RichText::new("Удалить из раздела").color(BAD)).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: id.clone() })); ui.close(); }
+                        if ui.button(RichText::new(l!("Удалить из раздела", "Remove from the section")).color(BAD)).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: id.clone() })); ui.close(); }
                     });
                 }
             });
@@ -2086,7 +2093,7 @@ impl App {
 
     fn anime_page(&mut self, ui: &mut egui::Ui, id: &str, acts: &mut Vec<Act>) {
         let Some(a) = self.store.lock().unwrap().anime(id).cloned() else { acts.push(Act::View(View::Anime)); return };
-        if ui.add(egui::Label::new(RichText::new("\u{E138}  Аниме").color(MUTED)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { acts.push(Act::View(View::Anime)); }
+        if ui.add(egui::Label::new(RichText::new(l!("\u{E138}  Аниме", "\u{E138}  Anime")).color(MUTED)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { acts.push(Act::View(View::Anime)); }
         ui.add_space(10.0);
         let eps: Vec<Track> = a.episodes.iter().filter_map(|e| self.track(e)).collect();
         let cont = a.last.as_ref().and_then(|l| eps.iter().find(|t| &t.id == l)).map(|t| t.title.clone());
@@ -2096,31 +2103,31 @@ impl App {
             ui.add_space(18.0);
             ui.vertical(|ui| {
                 ui.add_space(4.0);
-                ui.label(RichText::new(if a.kind.is_empty() { "АНИМЕ".to_string() } else { anime::kind_ru(&a.kind).to_uppercase() }).size(11.0).color(MUTED));
+                ui.label(RichText::new(if a.kind.is_empty() { l!("АНИМЕ", "ANIME").to_string() } else { anime::kind_ru(&a.kind).to_uppercase() }).size(11.0).color(MUTED));
                 ui.add(egui::Label::new(RichText::new(a.display()).size(30.0).family(bold()).color(TEXT)).wrap());
                 if !a.name.is_empty() && a.name != a.display() { ui.label(RichText::new(&a.name).color(MUTED)); }
                 let mut meta = a.meta();
                 let seen = a.watched.iter().filter(|w| a.episodes.contains(w)).count();
-                meta = [meta, format!("серий в папке: {} · просмотрено {seen}", eps.len())].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
+                meta = [meta, lf!("серий в папке: {} · просмотрено {seen}", "episodes in the folder: {} · watched {seen}", eps.len())].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ");
                 ui.label(RichText::new(meta).color(MUTED));
-                if !a.matched { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу на Шикимори…").color(MUTED)); }); }
-                else if a.shiki_id.is_none() { ui.label(RichText::new("На Шикимори не нашлось — выбери вручную").color(MUTED)); }
+                if !a.matched { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Ищу на Шикимори…", "Searching Shikimori…")).color(MUTED)); }); }
+                else if a.shiki_id.is_none() { ui.label(RichText::new(l!("На Шикимори не нашлось — выбери вручную", "Not found on Shikimori — pick it manually")).color(MUTED)); }
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    let play = match &cont { Some(t) if a.last_pos > 5.0 || a.watched.len() > 0 => format!("\u{E3D0}  Продолжить · {t}"), _ => "\u{E3D0}  Смотреть".into() };
+                    let play = match &cont { Some(t) if a.last_pos > 5.0 || a.watched.len() > 0 => lf!("\u{E3D0}  Продолжить · {t}", "\u{E3D0}  Continue · {t}"), _ => l!("\u{E3D0}  Смотреть", "\u{E3D0}  Watch").into() };
                     if !eps.is_empty() && pill(ui, &play, true).clicked() { acts.push(Act::PlayAnime(a.id.clone(), None)); }
-                    if let Some(u) = &a.url { if pill(ui, "\u{E5DE}  Шикимори", false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
-                    if pill(ui, "\u{E30C}  Другой тайтл", false).on_hover_text("Если Wavy угадал не то аниме или сезон").clicked() {
+                    if let Some(u) = &a.url { if pill(ui, l!("\u{E5DE}  Шикимори", "\u{E5DE}  Shikimori"), false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
+                    if pill(ui, l!("\u{E30C}  Другой тайтл", "\u{E30C}  Another title"), false).on_hover_text(l!("Если Wavy угадал не то аниме или сезон", "If Wavy guessed the wrong anime or season")).clicked() {
                         let q = if a.title.is_empty() { a.display().to_string() } else { a.title.clone() };
                         acts.push(Act::Modal(Modal::AnimeMatch { id: a.id.clone(), query: q.clone(), results: vec![], busy: false, err: None }));
                         acts.push(Act::AnimeSearch(q));
                     }
                     if a.shiki_id.is_some() {
                         let busy = self.themes_busy.as_deref() == Some(a.id.as_str());
-                        if ui.add_enabled(!busy, pill_btn(if busy { "\u{E340}  Ищу опенинги…" } else { "\u{E340}  Опенинги и эндинги" }, false)).on_hover_text("Все OP и ED этого тайтла — в отдельный плейлист (треки с YouTube)").clicked() { acts.push(Act::AnimeThemes(a.id.clone())); }
+                        if ui.add_enabled(!busy, pill_btn(if busy { l!("\u{E340}  Ищу опенинги…", "\u{E340}  Looking for openings…") } else { l!("\u{E340}  Опенинги и эндинги", "\u{E340}  Openings and endings") }, false)).on_hover_text(l!("Все OP и ED этого тайтла — в отдельный плейлист (треки с YouTube)", "All OPs and EDs of this title — into a separate playlist (tracks from YouTube)")).clicked() { acts.push(Act::AnimeThemes(a.id.clone())); }
                     }
-                    if pill(ui, "\u{EA20}  Добавить серии", false).clicked() { acts.push(Act::ImportAnimeFiles); }
-                    if pill(ui, "\u{E4A6}  Удалить", false).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: a.id.clone() })); }
+                    if pill(ui, l!("\u{EA20}  Добавить серии", "\u{EA20}  Add episodes"), false).clicked() { acts.push(Act::ImportAnimeFiles); }
+                    if pill(ui, l!("\u{E4A6}  Удалить", "\u{E4A6}  Delete"), false).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: a.id.clone() })); }
                 });
             });
         });
@@ -2134,7 +2141,7 @@ impl App {
             .column(Column::remainder().at_least(200.0).clip(true))
             .column(Column::exact(64.0))
             .max_scroll_height(f32::INFINITY)
-            .header(26.0, |mut h| { for t in ["", "СЕРИЯ", "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); } })
+            .header(26.0, |mut h| { for t in ["", l!("СЕРИЯ", "EPISODE"), "\u{E19A}"] { h.col(|ui| { ui.label(RichText::new(t).size(11.0).color(MUTED)); }); } })
             .body(|body| {
                 body.rows(46.0, eps.len(), |mut row| {
                     let t = &eps[row.index()];
@@ -2156,9 +2163,9 @@ impl App {
                     let r = row.response();
                     if r.double_clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); }
                     r.context_menu(|ui| {
-                        if ui.button("Смотреть").clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); ui.close(); }
-                        if ui.button(if seen { "Отметить непросмотренной" } else { "Отметить просмотренной" }).clicked() { acts.push(Act::MarkWatched(t.id.clone(), !seen)); ui.close(); }
-                        if let Some(p) = &t.path { if ui.button("Показать в папке").clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
+                        if ui.button(l!("Смотреть", "Watch")).clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); ui.close(); }
+                        if ui.button(if seen { l!("Отметить непросмотренной", "Mark as unwatched") } else { l!("Отметить просмотренной", "Mark as watched") }).clicked() { acts.push(Act::MarkWatched(t.id.clone(), !seen)); ui.close(); }
+                        if let Some(p) = &t.path { if ui.button(l!("Показать в папке", "Show in folder")).clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
                     });
                 });
             });
@@ -2168,8 +2175,8 @@ impl App {
         if self.results.is_empty() {
             ui.add_space(50.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(if self.searching { "Ищу…" } else { "Найди что-нибудь" }).size(22.0).family(bold()).color(TEXT));
-                ui.label(RichText::new("Например: «lofi hip hop», «Daft Punk», или вставь ссылку на плейлист").color(MUTED));
+                ui.label(RichText::new(if self.searching { l!("Ищу…", "Searching…") } else { l!("Найди что-нибудь", "Find something") }).size(22.0).family(bold()).color(TEXT));
+                ui.label(RichText::new(l!("Например: «lofi hip hop», «Daft Punk», или вставь ссылку на плейлист", "For example: “lofi hip hop”, “Daft Punk”, or paste a playlist link")).color(MUTED));
             });
             return;
         }
@@ -2193,7 +2200,7 @@ impl App {
                     ui.label(RichText::new(fmt_time(t.duration)).color(MUTED));
                     ui.add_space(10.0);
                     if pill(ui, "\u{E3D0}", false).clicked() { acts.push(Act::Play(ids.clone(), i, false)); }
-                    if ui.add_enabled(!in_lib, egui::Button::new(if in_lib { "В библиотеке" } else { "+ В библиотеку" }).corner_radius(99)).clicked() { acts.push(Act::AddTracks(vec![t.clone()])); }
+                    if ui.add_enabled(!in_lib, egui::Button::new(if in_lib { l!("В библиотеке", "In library") } else { l!("+ В библиотеку", "+ To library") }).corner_radius(99)).clicked() { acts.push(Act::AddTracks(vec![t.clone()])); }
                     ui.menu_button("\u{E1FE}", |ui| track_menu(ui, &[t.id.clone()], t, None, &pls, acts));
                 }).response;
                 let _ = r;
@@ -2228,10 +2235,10 @@ impl App {
                         ui.vertical(|ui| {
                             ui.add_space(8.0);
                             ui.add(egui::Label::new(RichText::new(&t.title).family(semi()).color(TEXT)).truncate());
-                            ui.add(egui::Label::new(RichText::new(if self.loading { "загрузка…".to_string() } else if self.audio.buffering() { "буферизация…".to_string() } else { t.artist.clone() }).color(MUTED).size(12.5)).truncate());
+                            ui.add(egui::Label::new(RichText::new(if self.loading { l!("загрузка…", "loading…").to_string() } else if self.audio.buffering() { l!("буферизация…", "buffering…").to_string() } else { t.artist.clone() }).color(MUTED).size(12.5)).truncate());
                         });
                     }
-                    None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new("Ничего не играет").family(semi())); ui.label(RichText::new("Закинь музыку — и погнали").color(MUTED).size(12.5)); }); }
+                    None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new(l!("Ничего не играет", "Nothing is playing")).family(semi())); ui.label(RichText::new(l!("Закинь музыку — и погнали", "Drop some music in — let's go")).color(MUTED).size(12.5)); }); }
                 }
             }).response;
             if self.current.is_some() {
@@ -2240,7 +2247,7 @@ impl App {
                 if r.hovered() || self.show_video {
                     left.painter().rect_stroke(np.rect.expand(4.0), 10, Stroke::new(1.0, if self.show_video { TEXT } else { LINE }), egui::StrokeKind::Outside);
                 }
-                let hint = match (self.show_video, has_video) { (true, _) => "Скрыть", (false, true) => "Смотреть видео", (false, false) => "Показать обложку" };
+                let hint = match (self.show_video, has_video) { (true, _) => l!("Скрыть", "Hide"), (false, true) => l!("Смотреть видео", "Watch video"), (false, false) => l!("Показать обложку", "Show cover") };
                 if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hint).clicked() { acts.push(Act::ToggleVideo); }
             }
             // кнопки + перемотка
@@ -2251,7 +2258,7 @@ impl App {
                     let bw = 34.0 * 4.0 + 44.0 + 4.0 * 14.0;
                     ui.add_space(((ui.available_width() - bw) / 2.0).max(0.0));
                     ui.spacing_mut().item_spacing.x = 14.0;
-                    if icon_btn(ui, "\u{E422}", 34.0, s.shuffle).on_hover_text("Перемешать").clicked() { acts.push(Act::Shuffle); }
+                    if icon_btn(ui, "\u{E422}", 34.0, s.shuffle).on_hover_text(l!("Перемешать", "Shuffle")).clicked() { acts.push(Act::Shuffle); }
                     if icon_btn(ui, "\u{E5A4}", 34.0, false).clicked() { acts.push(Act::Prev); }
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 21.0, if resp.hovered() { Color32::WHITE } else { TEXT });
@@ -2270,7 +2277,7 @@ impl App {
                     if resp.clicked() { acts.push(Act::TogglePlay); }
                     if icon_btn(ui, "\u{E5A6}", 34.0, false).clicked() { acts.push(Act::Next); }
                     let rep = match s.repeat.as_str() { "one" => "\u{E3F8}", _ => "\u{E3F6}" };
-                    if icon_btn(ui, rep, 34.0, s.repeat != "off").on_hover_text("Повтор").clicked() { acts.push(Act::Repeat); }
+                    if icon_btn(ui, rep, 34.0, s.repeat != "off").on_hover_text(l!("Повтор", "Repeat")).clicked() { acts.push(Act::Repeat); }
                 });
                 ui.horizontal(|ui| {
                     let dur = if self.audio.duration > 0.0 { self.audio.duration } else { self.current.as_ref().map(|t| t.duration).unwrap_or(0.0) };
@@ -2294,37 +2301,37 @@ impl App {
                 if let Some(f) = new { acts.push(Act::Volume(f)); }
                 if r.drag_stopped() || r.clicked() { acts.push(Act::SaveVolume); }
                 ui.label(RichText::new(if v == 0.0 { "\u{E45C}" } else { "\u{E44A}" }).color(MUTED));
-                if icon_btn(ui, "\u{E64C}", 34.0, s.mini).on_hover_text("Мини-плеер поверх окон").clicked() { acts.push(Act::ToggleMini); }
+                if icon_btn(ui, "\u{E64C}", 34.0, s.mini).on_hover_text(l!("Мини-плеер поверх окон", "Mini player on top of windows")).clicked() { acts.push(Act::ToggleMini); }
                 // звук: скорость, кроссфейд, громкость, эквалайзер
                 let fx_on = (s.speed - 1.0).abs() > 0.01 || s.crossfade > 0.0 || s.normalize || s.eq_on;
-                let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text("Звук: скорость, кроссфейд, эквалайзер");
+                let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text(l!("Звук: скорость, кроссфейд, эквалайзер", "Sound: speed, crossfade, equalizer"));
                 let force = std::mem::take(&mut self.sound_open).then_some(egui::SetOpenCommand::Bool(true));
                 egui::Popup::from_toggle_button_response(&r).open_memory(force).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
                 // таймер сна
                 let r = icon_btn(ui, "\u{E330}", 34.0, self.sleep.is_some()).on_hover_text(match self.sleep {
-                    Some(Sleep::At(t)) => format!("Таймер сна: через {} мин", (t.saturating_duration_since(Instant::now()).as_secs() + 59) / 60),
-                    Some(Sleep::EndOfTrack) => "Таймер сна: после этого трека".into(),
-                    None => "Таймер сна".into(),
+                    Some(Sleep::At(t)) => lf!("Таймер сна: через {} мин", "Sleep timer: in {} min", (t.saturating_duration_since(Instant::now()).as_secs() + 59) / 60),
+                    Some(Sleep::EndOfTrack) => l!("Таймер сна: после этого трека", "Sleep timer: after this track").into(),
+                    None => l!("Таймер сна", "Sleep timer").into(),
                 });
                 egui::Popup::menu(&r).show(|ui| {
                     ui.set_min_width(170.0);
-                    ui.label(RichText::new("Выключить музыку").color(MUTED).size(12.0));
+                    ui.label(RichText::new(l!("Выключить музыку", "Turn off the music")).color(MUTED).size(12.0));
                     for m in [15u64, 30, 45, 60, 90] {
-                        if ui.button(format!("через {m} мин")).clicked() { self.sleep = Some(Sleep::At(Instant::now() + Duration::from_secs(m * 60))); ui.close(); }
+                        if ui.button(lf!("через {m} мин", "in {m} min")).clicked() { self.sleep = Some(Sleep::At(Instant::now() + Duration::from_secs(m * 60))); ui.close(); }
                     }
-                    if ui.button("после этого трека").clicked() { self.sleep = Some(Sleep::EndOfTrack); ui.close(); }
-                    if self.sleep.is_some() && ui.button(RichText::new("отменить таймер").color(BAD)).clicked() { self.sleep = None; ui.close(); }
+                    if ui.button(l!("после этого трека", "after this track")).clicked() { self.sleep = Some(Sleep::EndOfTrack); ui.close(); }
+                    if self.sleep.is_some() && ui.button(RichText::new(l!("отменить таймер", "cancel the timer")).color(BAD)).clicked() { self.sleep = None; ui.close(); }
                 });
-                if icon_btn(ui, "\u{E660}", 34.0, self.show_lyrics).on_hover_text("Текст песни (T)").clicked() { self.show_lyrics = !self.show_lyrics; if self.show_lyrics { self.show_queue = false; } }
-                if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text("Очередь (Q)").clicked() { self.show_queue = !self.show_queue; if self.show_queue { self.show_lyrics = false; } }
+                if icon_btn(ui, "\u{E660}", 34.0, self.show_lyrics).on_hover_text(l!("Текст песни (T)", "Lyrics (T)")).clicked() { self.show_lyrics = !self.show_lyrics; if self.show_lyrics { self.show_queue = false; } }
+                if icon_btn(ui, "\u{E6AC}", 34.0, self.show_queue).on_hover_text(l!("Очередь (Q)", "Queue (Q)")).clicked() { self.show_queue = !self.show_queue; if self.show_queue { self.show_lyrics = false; } }
                 if let Some(t) = self.current.clone().filter(|t| t.anime.is_none() && self.store.lock().unwrap().lib.tracks.contains_key(&t.id)) {
                     let on = self.store.lock().unwrap().is_liked(&t.id);
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::click());
                     if resp.hovered() { ui.painter().circle_filled(r.center(), 17.0, BG3); }
                     glyph(ui.painter(), r.center(), "\u{E2A8}", FontId::new(17.0, if on { egui::FontFamily::Name("fill".into()) } else { egui::FontFamily::Proportional }), if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED });
-                    if resp.on_hover_text(if on { "Убрать из «Любимого» (L)" } else { "В «Любимое» (L)" }).clicked() { acts.push(Act::Like(vec![t.id.clone()], !on)); }
+                    if resp.on_hover_text(if on { l!("Убрать из «Любимого» (L)", "Remove from “Liked” (L)") } else { l!("В «Любимое» (L)", "Add to “Liked” (L)") }).clicked() { acts.push(Act::Like(vec![t.id.clone()], !on)); }
                 }
-                if self.current.is_some() && icon_btn(ui, "\u{E802}", 34.0, false).on_hover_text("Что это играет? (Shazam) — например, опенинг в аниме").clicked() { acts.push(Act::Shazam); }
+                if self.current.is_some() && icon_btn(ui, "\u{E802}", 34.0, false).on_hover_text(l!("Что это играет? (Shazam) — например, опенинг в аниме", "What's playing? (Shazam) — e.g. an anime opening")).clicked() { acts.push(Act::Shazam); }
             });
         });
     }
@@ -2337,7 +2344,7 @@ impl App {
         let area = if self.fullscreen { rect } else { rect.shrink2(Vec2::new(0.0, 4.0)).with_max_y(rect.bottom() - 16.0) };
         if !self.fullscreen { p.rect_filled(area, 14, Color32::BLACK); }
         let Some(t) = self.current.clone() else {
-            p.text(area.center(), Align2::CENTER_CENTER, "Ничего не играет", FontId::new(18.0, semi()), MUTED);
+            p.text(area.center(), Align2::CENTER_CENTER, l!("Ничего не играет", "Nothing is playing"), FontId::new(18.0, semi()), MUTED);
             return;
         };
         let fit = |size: Vec2| { let k = (area.width() / size.x).min(area.height() / size.y); Rect::from_center_size(area.center(), size * k) };
@@ -2362,15 +2369,15 @@ impl App {
             let note = if let Some(e) = err.as_ref().filter(|e| e.starts_with(wavy_core::ffmpeg::NEED)) {
                 let what = wavy_core::ffmpeg::human(e);
                 match self.ff.state() {
-                    wavy_core::ffmpeg::State::Downloading(p) => Some((format!("{what}: скачиваю декодер (≈6 МБ, один раз)… {p}%"), MUTED)),
-                    wavy_core::ffmpeg::State::Failed(_) => Some((format!("Видео не открылось: {what}"), BAD)),
-                    _ => Some((format!("{what}: готовлю декодер…"), MUTED)),
+                    wavy_core::ffmpeg::State::Downloading(p) => Some((lf!("{what}: скачиваю декодер (≈6 МБ, один раз)… {p}%", "{what}: downloading the decoder (≈6 MB, once)… {p}%"), MUTED)),
+                    wavy_core::ffmpeg::State::Failed(_) => Some((lf!("Видео не открылось: {what}", "Video didn't open: {what}"), BAD)),
+                    _ => Some((lf!("{what}: готовлю декодер…", "{what}: preparing the decoder…"), MUTED)),
                 }
             }
-            else if let Some(e) = &err { Some((format!("Видео не открылось: {e}"), BAD)) }
+            else if let Some(e) = &err { Some((lf!("Видео не открылось: {e}", "Video didn't open: {e}"), BAD)) }
                 else if t.has_video() {
                     let pct = self.video_dl.as_ref().filter(|v| v.0 == t.id).and_then(|v| v.1.progress());
-                    Some((pct.map(|p| format!("Загружаю видео… {p}%")).unwrap_or_else(|| "Загружаю видео…".into()), MUTED))
+                    Some((pct.map(|p| lf!("Загружаю видео… {p}%", "Loading video… {p}%")).unwrap_or_else(|| l!("Загружаю видео…", "Loading video…").into()), MUTED))
                 }
                 else { None };
             if let Some((n, c)) = note {
@@ -2387,7 +2394,7 @@ impl App {
         let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
         p.circle_filled(btn.center(), 17.0, Color32::from_black_alpha(if b.hovered() { 200 } else { 120 }));
         p.text(btn.center(), Align2::CENTER_CENTER, if self.fullscreen { "\u{E1CE}" } else { "\u{E1D0}" }, FontId::proportional(17.0), Color32::WHITE);
-        if b.on_hover_text(if self.fullscreen { "Выйти из полноэкранного (Esc)" } else { "Во весь экран (двойной клик)" }).clicked() {
+        if b.on_hover_text(if self.fullscreen { l!("Выйти из полноэкранного (Esc)", "Exit fullscreen (Esc)") } else { l!("Во весь экран (двойной клик)", "Fullscreen (double click)") }).clicked() {
             acts.push(Act::Fullscreen(!self.fullscreen));
         } else if resp.double_clicked() {
             // первый клик двойного уже переключил паузу — возвращаем как было
@@ -2436,23 +2443,23 @@ impl App {
                 });
             }
             {
-                let cur = self.sub_sel.and_then(|i| info.subs.get(i)).map(|s| s.label.clone()).unwrap_or_else(|| "выкл".into());
+                let cur = self.sub_sel.and_then(|i| info.subs.get(i)).map(|s| s.label.clone()).unwrap_or_else(|| l!("выкл", "off").into());
                 let resp = ui.add(chip(format!("\u{E1A8}  {}", ellipsize(&cur, 180.0, 13.0))));
                 egui::Popup::menu(&resp).show(|ui| {
                     ui.set_min_width(240.0);
                     let mark = |on: bool, l: &str| if on { format!("\u{E182}  {l}") } else { format!("      {l}") };
-                    if ui.add(egui::Button::new(mark(self.sub_sel.is_none(), "Без субтитров")).frame(false)).clicked() { acts.push(Act::Subs(None)); ui.close(); }
+                    if ui.add(egui::Button::new(mark(self.sub_sel.is_none(), l!("Без субтитров", "No subtitles"))).frame(false)).clicked() { acts.push(Act::Subs(None)); ui.close(); }
                     for (i, s) in info.subs.iter().enumerate() {
-                        let l = if s.forced { format!("{} (надписи)", s.label) } else { s.label.clone() };
+                        let l = if s.forced { lf!("{} (надписи)", "{} (signs)", s.label) } else { s.label.clone() };
                         if ui.add(egui::Button::new(mark(self.sub_sel == Some(i), &l)).frame(false)).clicked() { acts.push(Act::Subs(Some(i))); ui.close(); }
                     }
                     ui.separator();
-                    if ui.add(egui::Button::new("      Открыть файл субтитров…").frame(false)).on_hover_text(".ass, .srt или .vtt с любым именем").clicked() { acts.push(Act::PickSubs); ui.close(); }
+                    if ui.add(egui::Button::new(l!("      Открыть файл субтитров…", "      Open a subtitle file…")).frame(false)).on_hover_text(l!(".ass, .srt или .vtt с любым именем", ".ass, .srt or .vtt with any name")).clicked() { acts.push(Act::PickSubs); ui.close(); }
                 });
             }
         }
-        if ui.add(chip("\u{E10E}  Кадр".into())).on_hover_text("Сохранить кадр в «Изображения/Wavy» (клавиша P)").clicked() { acts.push(Act::Screenshot); }
-        if ui.add(chip("\u{E802}  Что за песня?".into())).on_hover_text("Shazam: узнать опенинг/эндинг и добавить в библиотеку").clicked() { acts.push(Act::Shazam); }
+        if ui.add(chip(l!("\u{E10E}  Кадр", "\u{E10E}  Frame").into())).on_hover_text(l!("Сохранить кадр в «Изображения/Wavy» (клавиша P)", "Save the frame to “Pictures/Wavy” (P key)")).clicked() { acts.push(Act::Screenshot); }
+        if ui.add(chip(l!("\u{E802}  Что за песня?", "\u{E802}  What's this song?").into())).on_hover_text(l!("Shazam: узнать опенинг/эндинг и добавить в библиотеку", "Shazam: recognize the opening/ending and add it to the library")).clicked() { acts.push(Act::Shazam); }
     }
 
     /// Серия аниме: загрузить отрезки опенинга/эндинга, пропускать их, предлагать следующую серию.
@@ -2486,7 +2493,7 @@ impl App {
                 }
             } else if inside && st.anime_autoskip && self.audio.is_playing() {
                 let key = format!("{}:{}", t.id, s.start as i64);
-                if self.auto_skipped.insert(key) { self.audio.seek(s.end); if let Some((_, v)) = &mut self.video { v.seek(s.end); } self.toast(format!("Пропустил {}", s.label()), false); }
+                if self.auto_skipped.insert(key) { self.audio.seek(s.end); if let Some((_, v)) = &mut self.video { v.seek(s.end); } self.toast(lf!("Пропустил {}", "Skipped {}", s.label()), false); }
             }
         }
         if let Some((id, at)) = self.next_ep.clone() {
@@ -2528,7 +2535,7 @@ impl App {
                 let remote = wavy_core::wifisync::Remote { state: self.remote.0.clone(), cover: self.remote.1.clone(), cmds: self.remote.2.clone(), wake: Arc::new(move || c2.request_repaint()) };
                 match wavy_core::wifisync::start(self.store.clone(), pin.clone(), remote, move |m| { let _ = tx.send(Bg::Status(m)); c.request_repaint(); }) {
                     Ok(srv) => self.wifi = Some((pin, srv)),
-                    Err(e) => { self.toast(format!("Синхронизация по Wi-Fi: {e}"), true); self.store.lock().unwrap().patch_settings(&json!({"wifiSync": false})); }
+                    Err(e) => { self.toast(lf!("Синхронизация по Wi-Fi: {e}", "Wi-Fi sync: {e}"), true); self.store.lock().unwrap().patch_settings(&json!({"wifiSync": false})); }
                 }
             }
         }
@@ -2553,30 +2560,30 @@ impl App {
         let mut items: Vec<(&str, String, String, Cmd)> = Vec::new();
         let mut add = |icon: &'static str, label: &str, hint: &str, keys: &str, c: Cmd| { if fits(label, keys) { items.push((icon, label.to_string(), hint.to_string(), c)); } };
         let playing = self.audio.is_playing();
-        add("\u{E3D0}", if playing { "Пауза" } else { "Играть" }, "Пробел", "pause play пауза играть стоп", Cmd::Act(Act::TogglePlay));
-        add("\u{E5A6}", "Следующий трек", "Ctrl+→", "next skip дальше", Cmd::Act(Act::Next));
-        add("\u{E5A4}", "Предыдущий трек", "Ctrl+←", "prev назад", Cmd::Act(Act::Prev));
-        add("\u{E422}", "Перемешать", "S", "shuffle", Cmd::Act(Act::Shuffle));
-        add("\u{E40E}", "Повтор", "R", "repeat", Cmd::Act(Act::Repeat));
-        add("\u{E1D8}", "Звук: эквалайзер, скорость, кроссфейд", "", "eq эквалайзер nightcore скорость громкость нормализация", Cmd::Sound);
-        add("\u{E8F4}", "Текст песни", "T", "lyrics слова", Cmd::Lyrics);
-        add("\u{E106}", "Очередь", "Q", "queue", Cmd::Queue);
-        add("\u{E594}", "Мини-плеер", "", "mini поверх", Cmd::Act(Act::ToggleMini));
-        add("\u{E466}", "Оверлей поверх игры", "Ctrl+Shift+O", "overlay obs", Cmd::Act(Act::ToggleOverlay));
-        add("\u{E340}", "Библиотека", "", "library треки", Cmd::Act(Act::View(View::Library)));
-        add("\u{E2A8}", "Любимое", "", "liked лайки", Cmd::Act(Act::View(View::Liked)));
-        add("\u{E150}", "Итоги", "", "stats статистика топ", Cmd::Act(Act::View(View::Stats)));
-        add("\u{E754}", "Аниме", "", "anime серии", Cmd::Act(Act::View(View::Anime)));
-        add("\u{EA20}", "Добавить файлы", "", "import импорт музыка", Cmd::Act(Act::ImportFiles));
-        add("\u{E256}", "Добавить папку", "", "import импорт folder", Cmd::Act(Act::ImportFolder));
-        add("\u{E2E2}", "Импорт по ссылке", "Ctrl+V", "youtube spotify url link плейлист", Cmd::Act(Act::Modal(Modal::ImportUrl { url: String::new(), into: false, busy: false, err: None })));
-        add("\u{E272}", "Настройки", "", "settings discord twitch last.fm хоткеи бэкап", Cmd::Settings);
-        add("\u{E036}", "Проверить обновления", "", "update версия", Cmd::Act(Act::CheckUpdate));
-        for (rule, name, hint) in wavy_core::store::SMART { add("\u{E5FE}", name, hint, "умный smart", Cmd::Act(Act::View(View::Smart(rule.to_string())))); }
+        add("\u{E3D0}", if playing { l!("Пауза", "Pause") } else { l!("Играть", "Play") }, l!("Пробел", "Space"), "pause play пауза играть стоп", Cmd::Act(Act::TogglePlay));
+        add("\u{E5A6}", wavy_core::i18n::tr("Следующий трек"), "Ctrl+→", "next skip дальше", Cmd::Act(Act::Next));
+        add("\u{E5A4}", wavy_core::i18n::tr("Предыдущий трек"), "Ctrl+←", "prev назад", Cmd::Act(Act::Prev));
+        add("\u{E422}", l!("Перемешать", "Shuffle"), "S", "shuffle", Cmd::Act(Act::Shuffle));
+        add("\u{E40E}", l!("Повтор", "Repeat"), "R", "repeat", Cmd::Act(Act::Repeat));
+        add("\u{E1D8}", l!("Звук: эквалайзер, скорость, кроссфейд", "Sound: equalizer, speed, crossfade"), "", "eq эквалайзер nightcore скорость громкость нормализация", Cmd::Sound);
+        add("\u{E8F4}", l!("Текст песни", "Lyrics"), "T", "lyrics слова", Cmd::Lyrics);
+        add("\u{E106}", l!("Очередь", "Queue"), "Q", "queue", Cmd::Queue);
+        add("\u{E594}", wavy_core::i18n::tr("Мини-плеер"), "", "mini поверх", Cmd::Act(Act::ToggleMini));
+        add("\u{E466}", wavy_core::i18n::tr("Оверлей поверх игры"), "Ctrl+Shift+O", "overlay obs", Cmd::Act(Act::ToggleOverlay));
+        add("\u{E340}", l!("Библиотека", "Library"), "", "library треки", Cmd::Act(Act::View(View::Library)));
+        add("\u{E2A8}", l!("Любимое", "Liked"), "", "liked лайки", Cmd::Act(Act::View(View::Liked)));
+        add("\u{E150}", l!("Итоги", "Recap"), "", "stats статистика топ", Cmd::Act(Act::View(View::Stats)));
+        add("\u{E754}", l!("Аниме", "Anime"), "", "anime серии", Cmd::Act(Act::View(View::Anime)));
+        add("\u{EA20}", l!("Добавить файлы", "Add files"), "", "import импорт музыка", Cmd::Act(Act::ImportFiles));
+        add("\u{E256}", l!("Добавить папку", "Add a folder"), "", "import импорт folder", Cmd::Act(Act::ImportFolder));
+        add("\u{E2E2}", l!("Импорт по ссылке", "Import by link"), "Ctrl+V", "youtube spotify url link плейлист", Cmd::Act(Act::Modal(Modal::ImportUrl { url: String::new(), into: false, busy: false, err: None })));
+        add("\u{E272}", l!("Настройки", "Settings"), "", "settings discord twitch last.fm хоткеи бэкап", Cmd::Settings);
+        add("\u{E036}", l!("Проверить обновления", "Check for updates"), "", "update версия", Cmd::Act(Act::CheckUpdate));
+        for (rule, name, hint) in wavy_core::store::SMART { add("\u{E5FE}", wavy_core::i18n::tr(name), wavy_core::i18n::tr(hint), "умный smart", Cmd::Act(Act::View(View::Smart(rule.to_string())))); }
         if !words.is_empty() {
             let s = self.store.lock().unwrap();
-            for p in &s.lib.playlists { if fits(&p.name, "плейлист") { items.push(("\u{E6AA}", p.name.clone(), format!("плейлист · {}", p.track_ids.len()), Cmd::Act(Act::View(View::Playlist(p.id.clone()))))); } }
-            for a in &s.lib.anime { if fits(a.display(), &a.name) { items.push(("\u{E754}", a.display().to_string(), "аниме".into(), Cmd::Act(Act::View(View::AnimeTitle(a.id.clone()))))); } }
+            for p in &s.lib.playlists { if fits(&p.name, l!("плейлист", "playlist")) { items.push(("\u{E6AA}", p.name.clone(), lf!("плейлист · {}", "playlist · {}", p.track_ids.len()), Cmd::Act(Act::View(View::Playlist(p.id.clone()))))); } }
+            for a in &s.lib.anime { if fits(a.display(), &a.name) { items.push(("\u{E754}", a.display().to_string(), l!("аниме", "anime").into(), Cmd::Act(Act::View(View::AnimeTitle(a.id.clone()))))); } }
             if ql.chars().count() >= 2 {
                 let mut n = 0;
                 for t in s.lib.tracks.values().filter(|t| t.anime.is_none()) {
@@ -2584,7 +2591,7 @@ impl App {
                     if fits(&t.title, &t.artist) { items.push(("\u{E3D0}", t.title.clone(), t.artist.clone(), Cmd::Act(Act::Play(vec![t.id.clone()], 0, false)))); n += 1; }
                 }
             }
-            items.push(("\u{E30C}", format!("Найти на YouTube: {}", q.trim()), String::new(), Cmd::Act(Act::Search(q.trim().to_string()))));
+            items.push(("\u{E30C}", lf!("Найти на YouTube: {}", "Search YouTube: {}", q.trim()), String::new(), Cmd::Act(Act::Search(q.trim().to_string()))));
         }
         sel = sel.min(items.len().saturating_sub(1));
         let mut chosen: Option<usize> = None;
@@ -2599,12 +2606,12 @@ impl App {
         egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Foreground).fixed_pos(Pos2::new(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
             egui::Frame::new().fill(BG2).stroke(Stroke::new(1.0, LINE)).corner_radius(16).inner_margin(12).shadow(egui::epaint::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(160) }).show(ui, |ui| {
                 ui.set_width(560.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Команда, трек, плейлист…  (Esc — закрыть)").desired_width(f32::INFINITY).font(FontId::new(17.0, egui::FontFamily::Proportional)).frame(egui::Frame::NONE));
+                let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text(l!("Команда, трек, плейлист…  (Esc — закрыть)", "Command, track, playlist…  (Esc — close)")).desired_width(f32::INFINITY).font(FontId::new(17.0, egui::FontFamily::Proportional)).frame(egui::Frame::NONE));
                 r.request_focus();
                 if r.changed() { sel = 0; }
                 ui.separator();
                 egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
-                    if items.is_empty() { ui.label(RichText::new("Ничего не нашлось").color(MUTED)); }
+                    if items.is_empty() { ui.label(RichText::new(l!("Ничего не нашлось", "Nothing found")).color(MUTED)); }
                     for (i, (icon, label, hint, _)) in items.iter().enumerate() {
                         let on = i == sel;
                         let resp = egui::Frame::new().fill(if on { BG3 } else { Color32::TRANSPARENT }).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
@@ -2653,8 +2660,8 @@ impl App {
         std::thread::spawn(move || {
             let r = store.lock().unwrap().backup(&dir, &name, 14);
             match r {
-                Ok(p) => { wavy_core::log(&format!("бэкап: {}", p.display())); if force { let _ = tx.send(Bg::Status(format!("Копия сохранена: {}", p.display()))); } }
-                Err(e) => { wavy_core::log(&format!("бэкап не удался: {e}")); let _ = tx.send(Bg::Status(format!("Резервная копия не сохранилась: {e}"))); }
+                Ok(p) => { wavy_core::log(&format!("бэкап: {}", p.display())); if force { let _ = tx.send(Bg::Status(lf!("Копия сохранена: {}", "Backup saved: {}", p.display()))); } }
+                Err(e) => { wavy_core::log(&format!("бэкап не удался: {e}")); let _ = tx.send(Bg::Status(lf!("Резервная копия не сохранилась: {e}", "Backup wasn't saved: {e}"))); }
             }
         });
     }
@@ -2698,13 +2705,13 @@ impl App {
         if let Some(r) = m.reward.as_ref().filter(|_| self.reward_bind) {
             self.reward_bind = false;
             self.store.lock().unwrap().patch_settings(&json!({"twitchReward": r}));
-            self.toast("Награда привязана: теперь она заказывает трек", false);
+            self.toast(l!("Награда привязана: теперь она заказывает трек", "Reward linked: now it requests a track"), false);
             return;
         }
         let by_reward = m.reward.is_some() && m.reward.as_deref() == Some(st.twitch_reward.as_str()) && !st.twitch_reward.is_empty();
         let query = if by_reward { Some(m.text.clone()) } else { m.command("!sr") };
         if let Some(q) = query {
-            if q.is_empty() { self.say(&format!("@{} напиши: !sr ссылка или название", m.user)); return; }
+            if q.is_empty() { self.say(&lf!("@{} напиши: !sr ссылка или название", "@{} type: !sr link or title", m.user)); return; }
             // не чаще раза в 30 с от одного человека (за баллы — без лимита, их и так тратят)
             if !by_reward && !m.is_mod && self.sr_last.get(&m.user).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) { return; }
             self.sr_last.insert(m.user.clone(), Instant::now());
@@ -2715,12 +2722,12 @@ impl App {
         let cur = self.current.clone();
         if m.command("!skip").is_some() {
             let Some(t) = cur else { return };
-            if m.is_mod { self.say(&format!("Пропускаю «{}»", t.title)); self.apply(Act::Next, ctx); return; }
+            if m.is_mod { self.say(&lf!("Пропускаю «{}»", "Skipping “{}”", t.title)); self.apply(Act::Next, ctx); return; }
             let need = st.twitch_skip_votes;
             if need == 0 { return; }
             if self.skip_vote.vote(&t.id, &m.user, need) {
-                self.say(&format!("Чат решил: пропускаю «{}»", t.title));
-                self.toast(format!("Чат пропустил «{}»", t.title), false);
+                self.say(&lf!("Чат решил: пропускаю «{}»", "Chat decided: skipping “{}”", t.title));
+                self.toast(lf!("Чат пропустил «{}»", "Chat skipped “{}”", t.title), false);
                 self.apply(Act::Next, ctx);
             } else {
                 self.say(&format!("!skip {}/{need}", self.skip_vote.count(&t.id)));
@@ -2731,15 +2738,15 @@ impl App {
             match cur {
                 Some(t) => {
                     let link = t.video_id.as_ref().map(|v| format!(" · youtu.be/{v}")).unwrap_or_default();
-                    self.say(&format!("Сейчас играет: {}{link}", Self::track_name(&t)));
+                    self.say(&lf!("Сейчас играет: {}{link}", "Now playing: {}{link}", Self::track_name(&t)));
                 }
-                None => self.say("Сейчас ничего не играет"),
+                None => self.say(l!("Сейчас ничего не играет", "Nothing is playing right now")),
             }
             return;
         }
         if m.command("!queue").is_some() {
             let next: Vec<String> = self.queue.iter().skip(self.qi + 1).take(3).filter_map(|id| self.track(id)).map(|t| Self::track_name(&t)).collect();
-            self.say(&if next.is_empty() { "Очередь пуста — закажи: !sr название".to_string() } else { format!("Дальше: {}", next.join(" | ")) });
+            self.say(&if next.is_empty() { l!("Очередь пуста — закажи: !sr название", "The queue is empty — request one: !sr title").to_string() } else { lf!("Дальше: {}", "Up next: {}", next.join(" | ")) });
         }
     }
 
@@ -2753,7 +2760,7 @@ impl App {
                 match wavy_core::twitch::device_poll(&id, &d) {
                     Ok(Some(a)) => break Ok(a),
                     Ok(None) if t0.elapsed() < Duration::from_secs(600) => continue,
-                    Ok(None) => break Err("Twitch: код не ввели за 10 минут".to_string()),
+                    Ok(None) => break Err(l!("Twitch: код не ввели за 10 минут", "Twitch: the code wasn't entered within 10 minutes").to_string()),
                     Err(e) => break Err(e),
                 }
             };
@@ -2765,15 +2772,15 @@ impl App {
     fn song_request(&mut self, user: String, r: Result<Track, String>, ctx: &egui::Context) {
         let t = match r { Ok(t) => t, Err(e) => { wavy_core::log(&format!("заказ от {user}: {e}")); self.say(&format!("@{user} не нашёл такой трек")); return; } };
         let max = self.settings().twitch_max_min as f64 * 60.0;
-        if max > 0.0 && t.duration > max { self.toast(format!("{user} заказал слишком длинный трек ({})", fmt_time(t.duration)), true); self.say(&format!("@{user} трек длиннее {} мин — не беру", max as u32 / 60)); return; }
-        if self.queue.iter().skip(self.qi).any(|q| *q == t.id) { self.say(&format!("@{user} «{}» уже в очереди", t.title)); return; }
-        self.toast(format!("\u{E340}  {user} заказал: {} — {}", t.artist, t.title), false);
+        if max > 0.0 && t.duration > max { self.toast(lf!("{user} заказал слишком длинный трек ({})", "{user} requested a track that's too long ({})", fmt_time(t.duration)), true); self.say(&lf!("@{user} трек длиннее {} мин — не беру", "@{user} the track is longer than {} min — not taking it", max as u32 / 60)); return; }
+        if self.queue.iter().skip(self.qi).any(|q| *q == t.id) { self.say(&lf!("@{user} «{}» уже в очереди", "@{user} “{}” is already in the queue", t.title)); return; }
+        self.toast(lf!("\u{E340}  {user} заказал: {} — {}", "\u{E340}  {user} requested: {} — {}", t.artist, t.title), false);
         let id = t.id.clone();
         self.radio.retain(|x| x.id != id);
         self.radio.push(t);
         self.sr_by.insert(id.clone(), user.clone());
         if self.current.is_none() || self.queue.is_empty() {
-            if let Some(t) = self.track(&id) { self.say(&format!("@{user} включаю: {}", Self::track_name(&t))); }
+            if let Some(t) = self.track(&id) { self.say(&lf!("@{user} включаю: {}", "@{user} playing: {}", Self::track_name(&t))); }
             self.play_list(vec![id], 0, false, ctx);
             return;
         }
@@ -2783,7 +2790,7 @@ impl App {
         self.queue.insert(at, id);
         let ahead = at - self.qi - 1;
         let name = self.track(&self.queue[at]).map(|t| Self::track_name(&t)).unwrap_or_default();
-        self.say(&format!("@{user} добавил: {name}{}", if ahead == 0 { " — играет следующим".to_string() } else { format!(" — через {ahead}") }));
+        self.say(&lf!("@{user} добавил: {name}{}", "@{user} added: {name}{}", if ahead == 0 { l!(" — играет следующим", " — plays next").to_string() } else { lf!(" — через {ahead}", " — in {ahead}") }));
     }
 
     /// Отметить на Шикимори, сколько серий тайтла просмотрено.
@@ -2815,17 +2822,17 @@ impl App {
             let card = Rect::from_min_max(Pos2::new(top.x - 300.0, top.y), Pos2::new(top.x, top.y + 80.0));
             p.rect_filled(card, 14, Color32::from_black_alpha(220));
             p.rect_stroke(card, 14, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
-            p.text(card.left_top() + Vec2::new(16.0, 14.0), Align2::LEFT_TOP, format!("Следующая серия через {left} с"), FontId::new(15.0, semi()), TEXT);
+            p.text(card.left_top() + Vec2::new(16.0, 14.0), Align2::LEFT_TOP, lf!("Следующая серия через {left} с", "Next episode in {left} s"), FontId::new(15.0, semi()), TEXT);
             let mut c = ui.new_child(egui::UiBuilder::new().max_rect(card.shrink2(Vec2::new(14.0, 10.0)).with_min_y(card.top() + 40.0)).layout(Layout::left_to_right(Align::Center)));
-            if pill(&mut c, "Смотреть", true).clicked() { self.next_ep = None; acts.push(Act::Next); }
-            if pill(&mut c, "Остаться", false).clicked() { self.stay_ep = self.current.as_ref().map(|t| t.id.clone()); self.next_ep = None; }
+            if pill(&mut c, l!("Смотреть", "Watch"), true).clicked() { self.next_ep = None; acts.push(Act::Next); }
+            if pill(&mut c, l!("Остаться", "Stay"), false).clicked() { self.stay_ep = self.current.as_ref().map(|t| t.id.clone()); self.next_ep = None; }
             return;
         }
         let skip = self.skips.as_ref().and_then(|s| s.1.iter().find(|k| pos >= k.start - 0.5 && pos < k.end - 2.0).cloned());
         let (label, to) = match skip {
-            Some(k) => (format!("\u{E5A6}  Пропустить {}", k.label()), k.end),
+            Some(k) => (lf!("\u{E5A6}  Пропустить {}", "\u{E5A6}  Skip {}", k.label()), k.end),
             // данных нет — обычный опенинг длится 1:30, даём прыжок в начале серии
-            None if self.skips.as_ref().is_some_and(|s| s.1.is_empty()) && pos > 1.0 && pos < 240.0 => ("\u{E5A6}  +85 с".to_string(), pos + 85.0),
+            None if self.skips.as_ref().is_some_and(|s| s.1.is_empty()) && pos > 1.0 && pos < 240.0 => (l!("\u{E5A6}  +85 с", "\u{E5A6}  +85 s").to_string(), pos + 85.0),
             None => return,
         };
         let mut c = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(corner - Vec2::new(300.0, 40.0), corner)).layout(Layout::right_to_left(Align::Max)));
@@ -2835,13 +2842,13 @@ impl App {
     fn stats_page(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         let day = 86_400_000u64;
         let now = wavy_core::now_ms();
-        let periods = [("За месяц", now.saturating_sub(30 * day)), ("За год", now.saturating_sub(365 * day)), ("За всё время", 0)];
+        let periods = [(l!("За месяц", "Last month"), now.saturating_sub(30 * day)), (l!("За год", "Last year"), now.saturating_sub(365 * day)), (l!("За всё время", "All time"), 0)];
         let (st, first) = {
             let s = self.store.lock().unwrap();
             (s.stats(periods[self.stats_period as usize].1), s.lib.history.first().map(|h| h.1))
         };
-        ui.label(RichText::new("ТВОЯ МУЗЫКА").size(11.0).color(MUTED));
-        ui.label(RichText::new("Итоги").size(34.0).family(bold()).color(TEXT));
+        ui.label(RichText::new(l!("ТВОЯ МУЗЫКА", "YOUR MUSIC")).size(11.0).color(MUTED));
+        ui.label(RichText::new(l!("Итоги", "Recap")).size(34.0).family(bold()).color(TEXT));
         ui.horizontal(|ui| {
             for (i, (name, _)) in periods.iter().enumerate() {
                 if ui.selectable_label(self.stats_period == i as u8, *name).clicked() { self.stats_period = i as u8; }
@@ -2849,7 +2856,7 @@ impl App {
         });
         ui.add_space(14.0);
         if st.plays == 0 {
-            ui.label(RichText::new("Пока пусто: прослушивание засчитывается, если трек играл дольше 30 секунд.").color(MUTED));
+            ui.label(RichText::new(l!("Пока пусто: прослушивание засчитывается, если трек играл дольше 30 секунд.", "Nothing yet: a play counts if the track played longer than 30 seconds.")).color(MUTED));
             return;
         }
         ui.horizontal(|ui| {
@@ -2858,17 +2865,17 @@ impl App {
                     ui.vertical(|ui| { ui.label(RichText::new(n).size(30.0).family(bold()).color(TEXT)); ui.label(RichText::new(label).color(MUTED)); });
                 });
             };
-            big(ui, st.plays.to_string(), "прослушиваний");
+            big(ui, st.plays.to_string(), l!("прослушиваний", "plays"));
             let m = st.minutes.round() as u64;
-            big(ui, if m >= 120 { format!("{} ч {} мин", m / 60, m % 60) } else { format!("{m} мин") }, "музыки");
-            if let Some((a, _)) = st.top_artists.first() { big(ui, a.clone(), "артист №1"); }
+            big(ui, if m >= 120 { lf!("{} ч {} мин", "{} h {} min", m / 60, m % 60) } else { lf!("{m} мин", "{m} min") }, l!("музыки", "of music"));
+            if let Some((a, _)) = st.top_artists.first() { big(ui, a.clone(), l!("артист №1", "top artist")); }
         });
-        if pill(ui, "\u{E10E}  Картинка для соцсетей", false).on_hover_text("PNG 1080×1350 в «Изображения/Wavy»").clicked() {
+        if pill(ui, l!("\u{E10E}  Картинка для соцсетей", "\u{E10E}  Image for social media"), false).on_hover_text(l!("PNG 1080×1350 в «Изображения/Wavy»", "PNG 1080×1350 in “Pictures/Wavy”")).clicked() {
             let m = st.minutes.round() as u64;
             let year = fmt_date(now).rsplit('.').next().unwrap_or("").to_string();
-            let tracks: Vec<(String, String, Option<String>)> = st.top_tracks.iter().take(5).filter_map(|(id, n)| self.track(id).map(|t| (t.title.clone(), format!("{} · {n} раз", t.artist), t.cover.clone()))).collect();
-            let r = (["Месяц".to_string(), year, "Всё время".to_string()][self.stats_period as usize].clone(),
-                if m >= 120 { format!("{} ч", m / 60) } else { format!("{m} мин") }, st.plays, st.top_artists.first().map(|a| a.0.clone()), tracks, st.top_artists.clone());
+            let tracks: Vec<(String, String, Option<String>)> = st.top_tracks.iter().take(5).filter_map(|(id, n)| self.track(id).map(|t| (t.title.clone(), lf!("{} · {n} раз", "{} · {n} times", t.artist), t.cover.clone()))).collect();
+            let r = ([l!("Месяц", "Month").to_string(), year, l!("Всё время", "All time").to_string()][self.stats_period as usize].clone(),
+                if m >= 120 { lf!("{} ч", "{} h", m / 60) } else { lf!("{m} мин", "{m} min") }, st.plays, st.top_artists.first().map(|a| a.0.clone()), tracks, st.top_artists.clone());
             let (tx, c) = (self.tx.clone(), ui.ctx().clone());
             std::thread::spawn(move || {
                 let tmp = std::env::temp_dir().join("wavy-recap");
@@ -2882,16 +2889,16 @@ impl App {
                     recap::Entry { title, sub, cover }
                 }).collect();
                 let img = recap::render(&recap::Recap { period: r.0.clone(), hours: r.1, plays: r.2, top_artist: r.3, tracks, artists: r.5 }, load_cjk_fonts().into_iter().next().map(|f| f.1));
-                let path = wavy_core::pictures_dir().join(format!("Итоги Wavy · {} · {}.png", r.0, fmt_date(wavy_core::now_ms())));
-                let msg = match img.save(&path) { Ok(()) => { open_folder(&path); format!("Картинка сохранена: {}", path.display()) } Err(e) => format!("Не сохранилось: {e}") };
+                let path = wavy_core::pictures_dir().join(lf!("Итоги Wavy · {} · {}.png", "Wavy Recap · {} · {}.png", r.0, fmt_date(wavy_core::now_ms())));
+                let msg = match img.save(&path) { Ok(()) => { open_folder(&path); lf!("Картинка сохранена: {}", "Image saved: {}", path.display()) } Err(e) => lf!("Не сохранилось: {e}", "Not saved: {e}") };
                 let _ = tx.send(Bg::Status(msg));
                 c.request_repaint();
             });
         }
-        if let Some(f) = first { ui.label(RichText::new(format!("История ведётся с {}", fmt_date(f))).size(11.5).color(MUTED)); }
+        if let Some(f) = first { ui.label(RichText::new(lf!("История ведётся с {}", "History is kept since {}", fmt_date(f))).size(11.5).color(MUTED)); }
         ui.add_space(16.0);
         ui.columns_const(|[l, r]| {
-            l.label(RichText::new("Топ треков").size(16.0).family(semi()));
+            l.label(RichText::new(l!("Топ треков", "Top tracks")).size(16.0).family(semi()));
             l.add_space(6.0);
             let ids: Vec<String> = st.top_tracks.iter().map(|x| x.0.clone()).collect();
             for (i, (id, n)) in st.top_tracks.iter().enumerate() {
@@ -2901,13 +2908,13 @@ impl App {
                     self.cover(ui, &t, 40.0);
                     ui.vertical(|ui| {
                         ui.add(egui::Label::new(RichText::new(&t.title).color(TEXT)).truncate());
-                        ui.label(RichText::new(format!("{} · {n} раз", t.artist)).color(MUTED).size(12.0));
+                        ui.label(RichText::new(lf!("{} · {n} раз", "{} · {n} times", t.artist)).color(MUTED).size(12.0));
                     });
                 }).response.interact(Sense::click());
                 if resp.double_clicked() { acts.push(Act::Play(ids.clone(), i, false)); }
                 l.add_space(4.0);
             }
-            r.label(RichText::new("Топ артистов").size(16.0).family(semi()));
+            r.label(RichText::new(l!("Топ артистов", "Top artists")).size(16.0).family(semi()));
             r.add_space(6.0);
             let max = st.top_artists.first().map(|x| x.1).unwrap_or(1) as f32;
             for (a, n) in &st.top_artists {
@@ -2973,20 +2980,20 @@ impl App {
 
     fn lyrics_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Текст").family(semi()).size(15.0));
+            ui.label(RichText::new(l!("Текст", "Lyrics")).family(semi()).size(15.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_lyrics = false; } });
         });
         ui.separator();
-        if self.current.is_none() { ui.label(RichText::new("Ничего не играет").color(MUTED)); return };
+        if self.current.is_none() { ui.label(RichText::new(l!("Ничего не играет", "Nothing is playing")).color(MUTED)); return };
         self.ensure_lyrics(ui.ctx());
         let Some((_, slot)) = &self.lyrics else { return };
         match slot {
-            None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу текст…").color(MUTED)); }); }
+            None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Ищу текст…", "Looking for lyrics…")).color(MUTED)); }); }
             Some(Err(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
-            Some(Ok(l)) if l.instrumental => { ui.label(RichText::new("♪ Инструментал — без слов").color(MUTED)); }
+            Some(Ok(l)) if l.instrumental => { ui.label(RichText::new(l!("♪ Инструментал — без слов", "♪ Instrumental — no words")).color(MUTED)); }
             Some(Ok(l)) if l.is_empty() => {
-                ui.label(RichText::new("Текста не нашлось").color(MUTED));
-                ui.label(RichText::new("Тексты берутся из открытой базы LRCLIB. Если у трека странное название — поправь его (правый клик → «Изменить…»).").color(MUTED).size(12.0));
+                ui.label(RichText::new(l!("Текста не нашлось", "No lyrics found")).color(MUTED));
+                ui.label(RichText::new(l!("Тексты берутся из открытой базы LRCLIB. Если у трека странное название — поправь его (правый клик → «Изменить…»).", "Lyrics come from the open LRCLIB database. If the track has a weird title, fix it (right click → “Edit…”).")).color(MUTED).size(12.0));
             }
             Some(Ok(l)) if l.synced.is_empty() => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| { ui.label(RichText::new(&l.plain).size(14.0).color(TEXT)); });
@@ -2996,7 +3003,7 @@ impl App {
                 let cur = l.line_at(self.audio.position());
                 let jump = cur != self.lyrics_line;
                 self.lyrics_line = cur;
-                ui.label(RichText::new("клик по строке — перемотать").size(11.0).color(MUTED));
+                ui.label(RichText::new(l!("клик по строке — перемотать", "click a line to seek")).size(11.0).color(MUTED));
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.add_space(ui.available_height() * 0.3);
                     for (i, (time, line)) in l.synced.iter().enumerate() {
@@ -3017,11 +3024,11 @@ impl App {
 
     fn queue_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Очередь").family(semi()).size(15.0));
+            ui.label(RichText::new(l!("Очередь", "Queue")).family(semi()).size(15.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_queue = false; } });
         });
         ui.separator();
-        ui.label(RichText::new("тяни трек — переставить").size(11.0).color(MUTED));
+        ui.label(RichText::new(l!("тяни трек — переставить", "drag a track to reorder")).size(11.0).color(MUTED));
         let q = self.queue.clone();
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let mut target: Option<(usize, f32, f32, f32)> = None;
@@ -3069,64 +3076,64 @@ impl App {
             ui.set_width(500.0);
             match &mut m {
                 Modal::ImportUrl { url, into, busy, err } => {
-                    ui.label(RichText::new("Импорт по ссылке").size(20.0).family(bold()));
-                    ui.label(RichText::new("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp — всё, что умеет yt-dlp.").color(MUTED));
+                    ui.label(RichText::new(l!("Импорт по ссылке", "Import by link")).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp — всё, что умеет yt-dlp.", "Spotify (playlist, album, track), YouTube Music, YouTube, SoundCloud, Bandcamp — anything yt-dlp supports.")).color(MUTED));
                     ui.add_space(10.0);
                     let r = ui.add(egui::TextEdit::singleline(url).hint_text("https://music.youtube.com/playlist?list=...").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
                     if url.is_empty() { r.request_focus(); }
-                    if let Some(p) = &cur_pl { ui.checkbox(into, format!("Добавить в текущий плейлист «{}»", pls_name(p))); }
-                    if *busy { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Загружаю… большие плейлисты — до минуты").color(MUTED)); }); }
+                    if let Some(p) = &cur_pl { ui.checkbox(into, lf!("Добавить в текущий плейлист «{}»", "Add to the current playlist “{}”", pls_name(p))); }
+                    if *busy { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Загружаю… большие плейлисты — до минуты", "Loading… big playlists take up to a minute")).color(MUTED)); }); }
                     if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)); // Enter запускает импорт, даже если ссылку вставили без фокуса на поле
-                        if ui.add_enabled(!*busy, pill_btn("Импортировать", true)).clicked() || (enter && !*busy) {
+                        if ui.add_enabled(!*busy, pill_btn(l!("Импортировать", "Import"), true)).clicked() || (enter && !*busy) {
                             if url.trim().starts_with("http") { *busy = true; *err = None; acts.push(Act::ImportUrl(url.clone(), if *into { cur_pl.clone() } else { None })); }
-                            else { *err = Some("Нужна ссылка, начинающаяся с https://".into()); }
+                            else { *err = Some(l!("Нужна ссылка, начинающаяся с https://", "A link starting with https:// is needed").into()); }
                         }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::NewPlaylist { name, ids } => {
-                    ui.label(RichText::new("Новый плейлист").size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Новый плейлист", "New playlist")).size(20.0).family(bold()));
                     ui.add_space(8.0);
-                    let r = ui.add(egui::TextEdit::singleline(name).hint_text("Название").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
+                    let r = ui.add(egui::TextEdit::singleline(name).hint_text(l!("Название", "Name")).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
                     r.request_focus();
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (pill(ui, "Создать", true).clicked() || enter) && !name.trim().is_empty() { acts.push(Act::CreatePlaylist(name.trim().into(), ids.clone())); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if (pill(ui, l!("Создать", "Create"), true).clicked() || enter) && !name.trim().is_empty() { acts.push(Act::CreatePlaylist(name.trim().into(), ids.clone())); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::Rename { id, name } => {
-                    ui.label(RichText::new("Переименовать плейлист").size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Переименовать плейлист", "Rename playlist")).size(20.0).family(bold()));
                     ui.add_space(8.0);
                     ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8))).request_focus();
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (pill(ui, "Сохранить", true).clicked() || enter) && !name.trim().is_empty() { acts.push(Act::Rename(id.clone(), name.trim().into())); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if (pill(ui, l!("Сохранить", "Save"), true).clicked() || enter) && !name.trim().is_empty() { acts.push(Act::Rename(id.clone(), name.trim().into())); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::Delete { id } => {
-                    ui.label(RichText::new(format!("Удалить «{}»?", pls_name(id))).size(20.0).family(bold()));
-                    ui.label(RichText::new("Треки останутся в библиотеке.").color(MUTED));
+                    ui.label(RichText::new(lf!("Удалить «{}»?", "Delete “{}”?", pls_name(id))).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Треки останутся в библиотеке.", "The tracks will stay in the library.")).color(MUTED));
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if pill(ui, "Удалить", true).clicked() { acts.push(Act::DeletePlaylist(id.clone())); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if pill(ui, l!("Удалить", "Delete"), true).clicked() { acts.push(Act::DeletePlaylist(id.clone())); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::WhatsNew { from, to, items } => {
-                    ui.label(RichText::new("Что нового в Wavy").size(20.0).family(bold()));
-                    ui.label(RichText::new(format!("Сборки {} → {}", *from + 1, to)).color(MUTED));
+                    ui.label(RichText::new(l!("Что нового в Wavy", "What's new in Wavy")).size(20.0).family(bold()));
+                    ui.label(RichText::new(lf!("Сборки {} → {}", "Builds {} → {}", *from + 1, to)).color(MUTED));
                     ui.add_space(8.0);
                     match items {
-                        None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Загружаю…").color(MUTED)); }); }
+                        None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Загружаю…", "Loading…")).color(MUTED)); }); }
                         Some(Err(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
-                        Some(Ok(v)) if v.is_empty() => { ui.label(RichText::new("Только мелкие технические правки").color(MUTED)); }
+                        Some(Ok(v)) if v.is_empty() => { ui.label(RichText::new(l!("Только мелкие технические правки", "Only small technical fixes")).color(MUTED)); }
                         Some(Ok(v)) => {
                             egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
                                 for (title, body) in v.iter() {
@@ -3138,29 +3145,29 @@ impl App {
                         }
                     }
                     ui.add_space(6.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Круто", true).clicked() { close = true; } });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Круто", "Cool"), true).clicked() { close = true; } });
                 }
                 Modal::EditTrack { id, title, artist, album } => {
-                    ui.label(RichText::new("Изменить трек").size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Изменить трек", "Edit track")).size(20.0).family(bold()));
                     ui.add_space(8.0);
-                    for (label, v) in [("Название", &mut *title), ("Исполнитель", &mut *artist), ("Альбом", &mut *album)] {
+                    for (label, v) in [(l!("Название", "Name"), &mut *title), (l!("Исполнитель", "Artist"), &mut *artist), (l!("Альбом", "Album"), &mut *album)] {
                         ui.label(RichText::new(label).color(MUTED).size(12.0));
                         ui.add(egui::TextEdit::singleline(v).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
                         ui.add_space(4.0);
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if pill(ui, "Своя обложка…", false).clicked() { acts.push(Act::TrackCover(id.clone())); }
+                        if pill(ui, l!("Своя обложка…", "Custom cover…"), false).clicked() { acts.push(Act::TrackCover(id.clone())); }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if pill(ui, "Сохранить", true).clicked() && !title.trim().is_empty() { acts.push(Act::EditTrack(id.clone(), title.clone(), artist.clone(), album.clone())); close = true; }
-                            if pill(ui, "Отмена", false).clicked() { close = true; }
+                            if pill(ui, l!("Сохранить", "Save"), true).clicked() && !title.trim().is_empty() { acts.push(Act::EditTrack(id.clone(), title.clone(), artist.clone(), album.clone())); close = true; }
+                            if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                         });
                     });
                 }
                 Modal::Dupes { groups } => {
                     let n: usize = groups.iter().map(|g| g.len() - 1).sum();
-                    ui.label(RichText::new(format!("Дубли: {n}")).size(20.0).family(bold()));
-                    ui.label(RichText::new("Из каждой группы останется первый (самый старый) трек. В плейлистах дубли заменятся им, лайки и прослушивания перейдут к нему.").color(MUTED));
+                    ui.label(RichText::new(lf!("Дубли: {n}", "Duplicates: {n}")).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Из каждой группы останется первый (самый старый) трек. В плейлистах дубли заменятся им, лайки и прослушивания перейдут к нему.", "The first (oldest) track of each group stays. In playlists duplicates will be replaced by it, likes and plays move to it.")).color(MUTED));
                     ui.add_space(8.0);
                     egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
                         for g in groups.iter() {
@@ -3174,30 +3181,30 @@ impl App {
                         }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if pill(ui, "Оставить по одному", true).clicked() { acts.push(Act::MergeDupes(groups.clone())); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if pill(ui, l!("Оставить по одному", "Keep one of each"), true).clicked() { acts.push(Act::MergeDupes(groups.clone())); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::Folder { id, name } => {
-                    ui.label(RichText::new(format!("Папка для «{}»", pls_name(id))).size(20.0).family(bold()));
+                    ui.label(RichText::new(lf!("Папка для «{}»", "Folder for “{}”", pls_name(id))).size(20.0).family(bold()));
                     let existing: Vec<String> = { let mut v: Vec<String> = self.store.lock().unwrap().lib.playlists.iter().filter_map(|p| p.folder.clone()).collect(); v.sort(); v.dedup(); v };
                     if !existing.is_empty() {
                         ui.horizontal_wrapped(|ui| { for f in &existing { if ui.selectable_label(name == f, f).clicked() { *name = f.clone(); } } });
                     }
-                    ui.add(egui::TextEdit::singleline(name).hint_text("Название новой папки").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
+                    ui.add(egui::TextEdit::singleline(name).hint_text(l!("Название новой папки", "New folder name")).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 8)));
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if pill(ui, "Готово", true).clicked() { acts.push(Act::SetFolder(id.clone(), Some(name.clone()))); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if pill(ui, l!("Готово", "Done"), true).clicked() { acts.push(Act::SetFolder(id.clone(), Some(name.clone()))); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::AnimeMatch { id, query, results, busy, err } => {
-                    ui.label(RichText::new("Какое это аниме?").size(20.0).family(bold()));
-                    ui.label(RichText::new("Поиск на Шикимори — по-русски, по-английски или по-японски (ромадзи).").color(MUTED));
+                    ui.label(RichText::new(l!("Какое это аниме?", "Which anime is this?")).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Поиск на Шикимори — по-русски, по-английски или по-японски (ромадзи).", "Search Shikimori — in Russian, English or Japanese (romaji).")).color(MUTED));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::TextEdit::singleline(query).desired_width(360.0).margin(egui::Margin::symmetric(10, 8)));
-                        let go = pill(ui, if *busy { "Ищу…" } else { "Найти" }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        let go = pill(ui, if *busy { l!("Ищу…", "Searching…") } else { l!("Найти", "Find") }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                         if go && !query.trim().is_empty() && !*busy { acts.push(Act::AnimeSearch(query.trim().to_string())); }
                     });
                     if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
@@ -3214,7 +3221,7 @@ impl App {
                                 ui.vertical(|ui| {
                                     ui.add_space(6.0);
                                     ui.add(egui::Label::new(RichText::new(r.display()).family(semi()).color(TEXT)).truncate());
-                                    let meta = [anime::kind_ru(&r.kind).to_string(), if r.year > 0 { r.year.to_string() } else { String::new() }, if r.episodes > 0 { format!("{} эп.", r.episodes) } else { String::new() }, r.name.clone()];
+                                    let meta = [anime::kind_ru(&r.kind).to_string(), if r.year > 0 { r.year.to_string() } else { String::new() }, if r.episodes > 0 { lf!("{} эп.", "{} ep.", r.episodes) } else { String::new() }, r.name.clone()];
                                     ui.add(egui::Label::new(RichText::new(meta.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")).color(MUTED).size(12.5)).truncate());
                                 });
                             }).response.interact(Sense::click());
@@ -3223,27 +3230,27 @@ impl App {
                         }
                     });
                     ui.add_space(8.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Отмена", false).clicked() { close = true; } });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; } });
                 }
                 Modal::DeleteAnime { id } => {
                     let name = self.store.lock().unwrap().anime(id).map(|a| a.display().to_string()).unwrap_or_default();
-                    ui.label(RichText::new(format!("Убрать «{name}»?")).size(20.0).family(bold()));
-                    ui.label(RichText::new("Файлы серий на диске останутся — пропадёт только запись в Wavy.").color(MUTED));
+                    ui.label(RichText::new(lf!("Убрать «{name}»?", "Remove “{name}”?")).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Файлы серий на диске останутся — пропадёт только запись в Wavy.", "The episode files on disk stay — only the entry in Wavy goes away.")).color(MUTED));
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if pill(ui, "Убрать", true).clicked() { acts.push(Act::DeleteAnime(id.clone())); close = true; }
-                        if pill(ui, "Отмена", false).clicked() { close = true; }
+                        if pill(ui, l!("Убрать", "Remove"), true).clicked() { acts.push(Act::DeleteAnime(id.clone())); close = true; }
+                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; }
                     });
                 }
                 Modal::Shazam { state, to_openings } => {
-                    ui.label(RichText::new("\u{E802}  Что за песня?").size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("\u{E802}  Что за песня?", "\u{E802}  What's this song?")).size(20.0).family(bold()));
                     ui.add_space(8.0);
                     match state.clone() {
-                        ShazamState::Listening => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Слушаю 12 секунд с текущего места и спрашиваю Shazam…").color(MUTED)); }); }
-                        ShazamState::Adding => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу трек на YouTube и добавляю…").color(MUTED)); }); }
+                        ShazamState::Listening => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Слушаю 12 секунд с текущего места и спрашиваю Shazam…", "Listening to 12 seconds from the current spot and asking Shazam…")).color(MUTED)); }); }
+                        ShazamState::Adding => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Ищу трек на YouTube и добавляю…", "Looking for the track on YouTube and adding it…")).color(MUTED)); }); }
                         ShazamState::NotFound => {
-                            ui.label(RichText::new("Shazam не узнал этот кусок.").color(TEXT));
-                            ui.label(RichText::new("Попробуй ещё раз, когда играет сама песня (опенинг/эндинг), а не диалог.").color(MUTED));
+                            ui.label(RichText::new(l!("Shazam не узнал этот кусок.", "Shazam didn't recognize this part.")).color(TEXT));
+                            ui.label(RichText::new(l!("Попробуй ещё раз, когда играет сама песня (опенинг/эндинг), а не диалог.", "Try again while the song itself plays (opening/ending), not dialogue.")).color(MUTED));
                         }
                         ShazamState::Error(e) => { ui.label(RichText::new(e).color(BAD)); }
                         ShazamState::Found(f) => {
@@ -3261,7 +3268,7 @@ impl App {
                                 });
                             });
                             ui.add_space(8.0);
-                            ui.checkbox(to_openings, format!("Ещё и в плейлист «{OPENINGS}»"));
+                            ui.checkbox(to_openings, lf!("Ещё и в плейлист «{}»", "Also to the playlist “{}”", openings()));
                         }
                     }
                     ui.add_space(10.0);
@@ -3270,225 +3277,231 @@ impl App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         match &st {
                             ShazamState::Found(f) => {
-                                if pill(ui, "\u{E340}  В библиотеку", true).clicked() { acts.push(Act::ShazamAdd(f.clone(), to_pl)); }
-                                if let Some(u) = &f.url { if pill(ui, "Открыть в Shazam", false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
+                                if pill(ui, l!("\u{E340}  В библиотеку", "\u{E340}  To library"), true).clicked() { acts.push(Act::ShazamAdd(f.clone(), to_pl)); }
+                                if let Some(u) = &f.url { if pill(ui, l!("Открыть в Shazam", "Open in Shazam"), false).clicked() { acts.push(Act::OpenUrl(u.clone())); } }
                             }
-                            ShazamState::NotFound | ShazamState::Error(_) => { if pill(ui, "Ещё раз", true).clicked() { acts.push(Act::Shazam); } }
+                            ShazamState::NotFound | ShazamState::Error(_) => { if pill(ui, l!("Ещё раз", "Try again"), true).clicked() { acts.push(Act::Shazam); } }
                             _ => {}
                         }
-                        if !matches!(st, ShazamState::Adding) && pill(ui, "Закрыть", false).clicked() { close = true; }
+                        if !matches!(st, ShazamState::Adding) && pill(ui, l!("Закрыть", "Close"), false).clicked() { close = true; }
                     });
                 }
                 Modal::Settings { client_id, port, sp_id, sp_secret } => {
-                    ui.label(RichText::new("Настройки").size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Настройки", "Settings")).size(20.0).family(bold()));
                     egui::ScrollArea::vertical().max_height(560.0).show(ui, |ui| {
+                        section(ui, "Язык · Language");
+                        ui.horizontal(|ui| {
+                            for (code, name) in wavy_core::i18n::LANGS {
+                                if ui.selectable_label(s.lang == *code || (s.lang.is_empty() && *code == "ru"), *name).clicked() && s.lang != *code { acts.push(Act::Settings(json!({"lang": code}))); }
+                            }
+                        });
                         section(ui, "\u{E61A}  Discord Rich Presence");
                         let mut en = s.discord.enabled;
-                        if ui.checkbox(&mut en, "Показывать, что я слушаю, в профиле Discord").changed() { acts.push(Act::Settings(json!({"discord": {"enabled": en}}))); }
+                        if ui.checkbox(&mut en, l!("Показывать, что я слушаю, в профиле Discord", "Show what I'm listening to in my Discord profile")).changed() { acts.push(Act::Settings(json!({"discord": {"enabled": en}}))); }
                         ui.label(RichText::new("APPLICATION ID").size(11.0).color(MUTED));
-                        let r = ui.add(egui::TextEdit::singleline(client_id).hint_text("например 1234567890123456789").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 7)));
+                        let r = ui.add(egui::TextEdit::singleline(client_id).hint_text(l!("например 1234567890123456789", "e.g. 1234567890123456789")).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 7)));
                         if r.changed() { client_id.retain(|c| c.is_ascii_digit()); } // вставили с пробелами/мусором — оставляем цифры
                         // сохраняем, когда ID похож на полный (Discord ID — 17–20 цифр) или при уходе из поля
                         let full = (17..=20).contains(&client_id.len());
                         if (r.changed() && full) || r.lost_focus() { acts.push(Act::Settings(json!({"discord": {"clientId": client_id.as_str()}}))); }
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new("Создай приложение на").color(MUTED).size(12.5));
+                            ui.label(RichText::new(l!("Создай приложение на", "Create an application at")).color(MUTED).size(12.5));
                             if ui.link("discord.com/developers").clicked() { acts.push(Act::OpenUrl("https://discord.com/developers/applications".into())); }
-                            ui.label(RichText::new("(его название будет после «Слушает»), скопируй Application ID.").color(MUTED).size(12.5));
+                            ui.label(RichText::new(l!("(его название будет после «Слушает»), скопируй Application ID.", "(its name will show after “Listening to”), copy the Application ID.")).color(MUTED).size(12.5));
                         });
                         let mut b = s.discord.show_buttons;
-                        if ui.checkbox(&mut b, "Кнопка «Открыть трек» (для YouTube-треков)").changed() { acts.push(Act::Settings(json!({"discord": {"showButtons": b}}))); }
-                        let (txt, c) = if !s.discord.enabled { ("Выключено".to_string(), MUTED) } else if s.discord.client_id.is_empty() { ("Укажи Application ID".into(), MUTED) }
-                            else if self.discord_status.connected { ("\u{E182} Подключено".into(), OK) } else { (self.discord_status.error.clone().map(|e| format!("\u{E4F6} {e}")).unwrap_or("Подключаюсь…".into()), BAD) };
+                        if ui.checkbox(&mut b, l!("Кнопка «Открыть трек» (для YouTube-треков)", "“Open track” button (for YouTube tracks)")).changed() { acts.push(Act::Settings(json!({"discord": {"showButtons": b}}))); }
+                        let (txt, c) = if !s.discord.enabled { (l!("Выключено", "Off").to_string(), MUTED) } else if s.discord.client_id.is_empty() { (l!("Укажи Application ID", "Enter the Application ID").into(), MUTED) }
+                            else if self.discord_status.connected { (l!("\u{E182} Подключено", "\u{E182} Connected").into(), OK) } else { (self.discord_status.error.clone().map(|e| format!("\u{E4F6} {e}")).unwrap_or(l!("Подключаюсь…", "Connecting…").into()), BAD) };
                         ui.label(RichText::new(txt).color(c));
 
-                        section(ui, "\u{E466}  Оверлей");
-                        ui.label(RichText::new("ДЛЯ OBS — BROWSER SOURCE").size(11.0).color(MUTED));
+                        section(ui, l!("\u{E466}  Оверлей", "\u{E466}  Overlay"));
+                        ui.label(RichText::new(l!("ДЛЯ OBS — BROWSER SOURCE", "FOR OBS — BROWSER SOURCE")).size(11.0).color(MUTED));
                         let url = self.overlay.url().unwrap_or_else(|| format!("http://127.0.0.1:{port}/overlay"));
                         ui.horizontal(|ui| {
                             let mut u = url.clone();
                             ui.add(egui::TextEdit::singleline(&mut u).desired_width(340.0).margin(egui::Margin::symmetric(10, 7)));
-                            if pill(ui, "Копировать", false).clicked() { ui.ctx().copy_text(url.clone()); acts.push(Act::Settings(json!({}))); self.toast = Some(("Ссылка скопирована — вставь в OBS → Browser Source".into(), false, Instant::now())); }
+                            if pill(ui, l!("Копировать", "Copy"), false).clicked() { ui.ctx().copy_text(url.clone()); acts.push(Act::Settings(json!({}))); self.toast = Some((l!("Ссылка скопирована — вставь в OBS → Browser Source", "Link copied — paste it into OBS → Browser Source").into(), false, Instant::now())); }
                         });
-                        ui.label(RichText::new("Ширина 500, высота 160 (вертикальный — 260×320; с очередью или текстом — высота 260). Стиль можно задать и в ссылке: ?theme=compact, vertical, minimal, text, vinyl").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Ширина 500, высота 160 (вертикальный — 260×320; с очередью или текстом — высота 260). Стиль можно задать и в ссылке: ?theme=compact, vertical, minimal, text, vinyl", "Width 500, height 160 (vertical — 260×320; with queue or lyrics — height 260). The style can also be set in the link: ?theme=compact, vertical, minimal, text, vinyl")).color(MUTED).size(12.0));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label("Стиль OBS:");
+                            ui.label(l!("Стиль OBS:", "OBS style:"));
                             let mut th = s.overlay.theme.clone();
-                            const THEMES: [(&str, &str); 6] = [("card", "Карточка"), ("compact", "Компакт"), ("vertical", "Вертикальный"), ("minimal", "Минимал"), ("text", "Только текст"), ("vinyl", "Винил")];
-                            egui::ComboBox::from_id_salt("theme").selected_text(THEMES.iter().find(|t| t.0 == th).map(|t| t.1).unwrap_or("Карточка")).show_ui(ui, |ui| {
-                                for (k, name) in THEMES { ui.selectable_value(&mut th, k.into(), name); }
+                            let themes: [(&str, &str); 6] = [("card", l!("Карточка", "Card")), ("compact", l!("Компакт", "Compact")), ("vertical", l!("Вертикальный", "Vertical")), ("minimal", l!("Минимал", "Minimal")), ("text", l!("Только текст", "Text only")), ("vinyl", l!("Винил", "Vinyl"))];
+                            egui::ComboBox::from_id_salt("theme").selected_text(themes.iter().find(|t| t.0 == th).map(|t| t.1).unwrap_or(l!("Карточка", "Card"))).show_ui(ui, |ui| {
+                                for (k, name) in themes { ui.selectable_value(&mut th, k.into(), name); }
                             });
                             if th != s.overlay.theme { acts.push(Act::Settings(json!({"overlay": {"theme": th}}))); }
                         });
                         ui.horizontal(|ui| {
                             let mut q = s.overlay.show_queue;
-                            if ui.checkbox(&mut q, "Показывать, что дальше в очереди").changed() { acts.push(Act::Settings(json!({"overlay": {"showQueue": q}}))); }
+                            if ui.checkbox(&mut q, l!("Показывать, что дальше в очереди", "Show what's next in the queue")).changed() { acts.push(Act::Settings(json!({"overlay": {"showQueue": q}}))); }
                             let mut l = s.overlay.show_lyrics;
-                            if ui.checkbox(&mut l, "Текст песни (строка в такт)").changed() { acts.push(Act::Settings(json!({"overlay": {"showLyrics": l}}))); }
+                            if ui.checkbox(&mut l, l!("Текст песни (строка в такт)", "Lyrics (line in time)")).changed() { acts.push(Act::Settings(json!({"overlay": {"showLyrics": l}}))); }
                             ui.add_space(12.0);
-                            ui.label("Скрывать через, сек:");
+                            ui.label(l!("Скрывать через, сек:", "Hide after, sec:"));
                             let mut h = s.overlay.auto_hide_sec;
                             if ui.add(egui::DragValue::new(&mut h).range(0..=600)).changed() { acts.push(Act::Settings(json!({"overlay": {"autoHideSec": h}}))); }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Порт:");
+                            ui.label(l!("Порт:", "Port:"));
                             let r = ui.add(egui::TextEdit::singleline(port).desired_width(70.0));
                             if r.lost_focus() { if let Ok(p) = port.parse::<u16>() { acts.push(Act::Settings(json!({"overlay": {"port": p}}))); } }
                         });
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if pill(ui, if self.overlay_open { "Скрыть оверлей поверх игр" } else { "Показать оверлей поверх игр" }, self.overlay_open).clicked() { acts.push(Act::ToggleOverlay); }
-                            if pill(ui, if s.overlay_window.locked { "\u{E306} Двигать" } else { "\u{E2FA} Закрепить" }, false).clicked() { acts.push(Act::ToggleLock); }
+                            if pill(ui, if self.overlay_open { l!("Скрыть оверлей поверх игр", "Hide the overlay over games") } else { l!("Показать оверлей поверх игр", "Show the overlay over games") }, self.overlay_open).clicked() { acts.push(Act::ToggleOverlay); }
+                            if pill(ui, if s.overlay_window.locked { l!("\u{E306} Двигать", "\u{E306} Move") } else { l!("\u{E2FA} Закрепить", "\u{E2FA} Lock") }, false).clicked() { acts.push(Act::ToggleLock); }
                         });
-                        ui.label(RichText::new("Ctrl+Shift+O — показать/скрыть, Ctrl+Shift+L — закрепить/двигать. Поверх игр в режиме «оконный без рамки».").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Ctrl+Shift+O — показать/скрыть, Ctrl+Shift+L — закрепить/двигать. Поверх игр в режиме «оконный без рамки».", "Ctrl+Shift+O — show/hide, Ctrl+Shift+L — lock/move. Works over games in “borderless window” mode.")).color(MUTED).size(12.0));
 
                         section(ui, "\u{E4FC}  YouTube (yt-dlp)");
                         match &self.yt_version {
-                            None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Проверяю… (при первом запуске скачивается yt-dlp)").color(MUTED)); }); }
+                            None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Проверяю… (при первом запуске скачивается yt-dlp)", "Checking… (yt-dlp is downloaded on first launch)")).color(MUTED)); }); }
                             Some(Ok(v)) => { ui.label(RichText::new(format!("yt-dlp {v}")).color(OK)); }
                             Some(Err(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
                         }
                         match self.yt.deno_status() {
-                            wavy_core::youtube::Deno::Ready(_) => { ui.label(RichText::new("JS-движок deno: готов").color(OK)); }
+                            wavy_core::youtube::Deno::Ready(_) => { ui.label(RichText::new(l!("JS-движок deno: готов", "JS engine deno: ready")).color(OK)); }
                             wavy_core::youtube::Deno::Installing => {
-                                ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Скачиваю JS-движок deno (~42 МБ, один раз)…").color(MUTED)); });
+                                ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Скачиваю JS-движок deno (~42 МБ, один раз)…", "Downloading the JS engine deno (~42 MB, once)…")).color(MUTED)); });
                                 ui.ctx().request_repaint_after(Duration::from_millis(500));
                             }
                             wavy_core::youtube::Deno::Failed(e) => { ui.label(RichText::new(format!("deno: {e}")).color(BAD)); }
                             wavy_core::youtube::Deno::Unknown => {}
                         }
                         ui.horizontal(|ui| {
-                            if pill(ui, "Обновить yt-dlp", false).clicked() { acts.push(Act::YtUpdate); }
-                            if pill(ui, "Открыть папку с логами", false).on_hover_text("wavy.log — пришли его, если что-то не работает").clicked() {
+                            if pill(ui, l!("Обновить yt-dlp", "Update yt-dlp"), false).clicked() { acts.push(Act::YtUpdate); }
+                            if pill(ui, l!("Открыть папку с логами", "Open the logs folder"), false).on_hover_text(l!("wavy.log — пришли его, если что-то не работает", "wavy.log — send it if something doesn't work")).clicked() {
                                 acts.push(Act::Reveal(wavy_core::data_dir().join("wavy.log").to_string_lossy().into_owned()));
                             }
                         });
-                        ui.label(RichText::new("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Если YouTube перестал играть — почти всегда помогает обновление yt-dlp.", "If YouTube stopped playing — updating yt-dlp almost always helps.")).color(MUTED).size(12.0));
 
-                        section(ui, "\u{E4DA}  Стрим");
+                        section(ui, l!("\u{E4DA}  Стрим", "\u{E4DA}  Stream"));
                         ui.horizontal(|ui| {
                             let mut sr = s.twitch_sr;
-                            if ui.checkbox(&mut sr, "Заказы из чата Twitch: !sr ссылка или название").changed() { acts.push(Act::Settings(json!({"twitchSr": sr}))); }
+                            if ui.checkbox(&mut sr, l!("Заказы из чата Twitch: !sr ссылка или название", "Twitch chat requests: !sr link or title")).changed() { acts.push(Act::Settings(json!({"twitchSr": sr}))); }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Канал:");
+                            ui.label(l!("Канал:", "Channel:"));
                             let mut ch = s.twitch_channel.clone();
                             if ui.add(egui::TextEdit::singleline(&mut ch).hint_text("avice").desired_width(160.0)).changed() { acts.push(Act::Settings(json!({"twitchChannel": ch.trim()}))); }
-                            ui.label("не длиннее, мин:");
+                            ui.label(l!("не длиннее, мин:", "max length, min:"));
                             let mut m = s.twitch_max_min;
                             if ui.add(egui::DragValue::new(&mut m).range(0..=60)).changed() { acts.push(Act::Settings(json!({"twitchMaxMin": m}))); }
                         });
                         if let Some((key, _, chat)) = &self.twitch {
                             let ch = key.split('|').next().unwrap_or_default();
-                            ui.label(RichText::new(format!("Слушаю чат #{ch}{}. Заказ встаёт в очередь после текущего трека, от одного зрителя — не чаще раза в 30 с.", if chat.can_say() { " и отвечаю в него" } else { "" })).color(OK).size(12.0));
+                            ui.label(RichText::new(lf!("Слушаю чат #{ch}{}. Заказ встаёт в очередь после текущего трека, от одного зрителя — не чаще раза в 30 с.", "Listening to chat #{ch}{}. A request goes into the queue after the current track, one per viewer every 30 s at most.", if chat.can_say() { l!(" и отвечаю в него", " and replying in it") } else { "" })).color(OK).size(12.0));
                         }
-                        ui.label(RichText::new("Команды: !sr — заказ · !skip — голосование за пропуск (модер и стример пропускают сразу) · !song — что играет · !queue — что дальше").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Команды: !sr — заказ · !skip — голосование за пропуск (модер и стример пропускают сразу) · !song — что играет · !queue — что дальше", "Commands: !sr — request · !skip — vote to skip (mods and the streamer skip right away) · !song — what's playing · !queue — what's next")).color(MUTED).size(12.0));
                         ui.horizontal(|ui| {
-                            ui.label("!skip пропускает после голосов:");
+                            ui.label(l!("!skip пропускает после голосов:", "!skip skips after votes:"));
                             let mut v = s.twitch_skip_votes;
-                            if ui.add(egui::DragValue::new(&mut v).range(0..=50)).on_hover_text("0 — голосование выключено").changed() { acts.push(Act::Settings(json!({"twitchSkipVotes": v}))); }
+                            if ui.add(egui::DragValue::new(&mut v).range(0..=50)).on_hover_text(l!("0 — голосование выключено", "0 — voting is off")).changed() { acts.push(Act::Settings(json!({"twitchSkipVotes": v}))); }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Заказ за баллы канала:");
+                            ui.label(l!("Заказ за баллы канала:", "Request for channel points:"));
                             if s.twitch_reward.is_empty() {
-                                if self.reward_bind { ui.label(RichText::new("жду: выкупи награду на своём канале…").color(OK)); if pill(ui, "Отмена", false).clicked() { self.reward_bind = false; } }
-                                else if pill(ui, "Привязать награду", false).on_hover_text("Сделай на Twitch награду с галочкой «Зритель должен ввести текст», нажми здесь и выкупи её сам — Wavy запомнит").clicked() { self.reward_bind = true; }
+                                if self.reward_bind { ui.label(RichText::new(l!("жду: выкупи награду на своём канале…", "waiting: redeem the reward on your channel…")).color(OK)); if pill(ui, l!("Отмена", "Cancel"), false).clicked() { self.reward_bind = false; } }
+                                else if pill(ui, l!("Привязать награду", "Link a reward"), false).on_hover_text(l!("Сделай на Twitch награду с галочкой «Зритель должен ввести текст», нажми здесь и выкупи её сам — Wavy запомнит", "Create a reward on Twitch with “Require viewer to enter text”, click here and redeem it yourself — Wavy will remember it")).clicked() { self.reward_bind = true; }
                             } else {
-                                ui.label(RichText::new("привязана").color(OK));
-                                if pill(ui, "Отвязать", false).clicked() { acts.push(Act::Settings(json!({"twitchReward": ""}))); }
+                                ui.label(RichText::new(l!("привязана", "linked")).color(OK));
+                                if pill(ui, l!("Отвязать", "Unlink"), false).clicked() { acts.push(Act::Settings(json!({"twitchReward": ""}))); }
                             }
                         });
                         // вход: чтобы Wavy отвечал в чат
                         let acc = s.twitch_account.clone();
                         ui.horizontal(|ui| {
                             if acc.logged_in() {
-                                ui.label(RichText::new(format!("Отвечаю в чат как {}", acc.login)).color(OK));
-                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"twitchAccount": {"access": "", "refresh": "", "login": ""}}))); }
+                                ui.label(RichText::new(lf!("Отвечаю в чат как {}", "Replying in chat as {}", acc.login)).color(OK));
+                                if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::Settings(json!({"twitchAccount": {"access": "", "refresh": "", "login": ""}}))); }
                             } else if let Some(d) = &self.twitch_device {
-                                ui.label(RichText::new(format!("Введи код {} на twitch.tv/activate", d.user_code)).family(semi()));
-                                if pill(ui, "Копировать", false).clicked() { ui.ctx().copy_text(d.user_code.clone()); }
-                                if pill(ui, "Открыть", false).clicked() { open_url(&d.uri); }
+                                ui.label(RichText::new(lf!("Введи код {} на twitch.tv/activate", "Enter the code {} at twitch.tv/activate", d.user_code)).family(semi()));
+                                if pill(ui, l!("Копировать", "Copy"), false).clicked() { ui.ctx().copy_text(d.user_code.clone()); }
+                                if pill(ui, l!("Открыть", "Open"), false).clicked() { open_url(&d.uri); }
                             } else {
                                 ui.label("Client ID:");
                                 let mut id = acc.client_id.clone();
-                                if ui.add(egui::TextEdit::singleline(&mut id).desired_width(200.0).hint_text("с dev.twitch.tv")).changed() { acts.push(Act::Settings(json!({"twitchAccount": {"clientId": id.trim()}}))); }
-                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn("Войти", false)).clicked() {
+                                if ui.add(egui::TextEdit::singleline(&mut id).desired_width(200.0).hint_text(l!("с dev.twitch.tv", "from dev.twitch.tv"))).changed() { acts.push(Act::Settings(json!({"twitchAccount": {"clientId": id.trim()}}))); }
+                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn(l!("Войти", "Sign in"), false)).clicked() {
                                     let (tx, c, id) = (self.tx.clone(), ui.ctx().clone(), acc.client_id.clone());
                                     std::thread::spawn(move || { let _ = tx.send(Bg::TwitchDevice(wavy_core::twitch::device_start(&id))); c.request_repaint(); });
                                 }
                             }
                         });
                         if !acc.logged_in() && self.twitch_device.is_none() {
-                            ui.label(RichText::new("Чтобы Wavy отвечал в чат (!song, !queue, «добавил»): dev.twitch.tv → Applications → Register: название Wavy, OAuth Redirect URL http://localhost, категория Application Integration, тип клиента Public. Скопируй Client ID сюда и нажми «Войти». Без входа заказы и !skip всё равно работают.").color(MUTED).size(12.0));
+                            ui.label(RichText::new(l!("Чтобы Wavy отвечал в чат (!song, !queue, «добавил»): dev.twitch.tv → Applications → Register: название Wavy, OAuth Redirect URL http://localhost, категория Application Integration, тип клиента Public. Скопируй Client ID сюда и нажми «Войти». Без входа заказы и !skip всё равно работают.", "For Wavy to reply in chat (!song, !queue, “added”): dev.twitch.tv → Applications → Register: name Wavy, OAuth Redirect URL http://localhost, category Application Integration, client type Public. Copy the Client ID here and click “Sign in”. Requests and !skip work without signing in anyway.")).color(MUTED).size(12.0));
                         }
                         let mut np = s.now_playing_file;
-                        if ui.checkbox(&mut np, "Писать текущий трек в файл (для OBS → Текст → «Читать из файла»)").changed() { acts.push(Act::Settings(json!({"nowPlayingFile": np}))); }
+                        if ui.checkbox(&mut np, l!("Писать текущий трек в файл (для OBS → Текст → «Читать из файла»)", "Write the current track to a file (for OBS → Text → “Read from file”)")).changed() { acts.push(Act::Settings(json!({"nowPlayingFile": np}))); }
                         if s.now_playing_file {
                             let f = wavy_core::data_dir().join("now_playing.txt").to_string_lossy().into_owned();
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(&f).color(MUTED).size(12.0));
-                                if pill(ui, "Копировать путь", false).clicked() { ui.ctx().copy_text(f.clone()); }
+                                if pill(ui, l!("Копировать путь", "Copy path"), false).clicked() { ui.ctx().copy_text(f.clone()); }
                             });
                         }
-                        section(ui, "\u{E248}  Кэш");
+                        section(ui, l!("\u{E248}  Кэш", "\u{E248}  Cache"));
                         match self.cache_size {
-                            Some((b, n)) => { ui.label(RichText::new(format!("Скачано с YouTube: {} ({n} файлов)", fmt_bytes(b))).color(TEXT)); }
+                            Some((b, n)) => { ui.label(RichText::new(lf!("Скачано с YouTube: {} ({n} файлов)", "Downloaded from YouTube: {} ({n} files)", fmt_bytes(b))).color(TEXT)); }
                             None => {
-                                ui.label(RichText::new("Считаю…").color(MUTED));
+                                ui.label(RichText::new(l!("Считаю…", "Counting…")).color(MUTED));
                                 if !self.cache_counting { self.cache_counting = true; let (dir, tx, c) = (self.cache.clone(), self.tx.clone(), ui.ctx().clone()); std::thread::spawn(move || { let (b, n) = wavy_core::stream::dir_size(&dir); let _ = tx.send(Bg::CacheSize(b, n)); c.request_repaint(); }); }
                             }
                         }
                         ui.horizontal(|ui| {
-                            ui.label("Лимит:");
+                            ui.label(l!("Лимит:", "Limit:"));
                             let mut l = s.cache_limit_gb;
-                            egui::ComboBox::from_id_salt("cache-limit").selected_text(if l == 0 { "без лимита".to_string() } else { format!("{l} ГБ") }).show_ui(ui, |ui| {
-                                for v in [0u32, 1, 2, 5, 10, 20] { ui.selectable_value(&mut l, v, if v == 0 { "без лимита".to_string() } else { format!("{v} ГБ") }); }
+                            egui::ComboBox::from_id_salt("cache-limit").selected_text(if l == 0 { l!("без лимита", "no limit").to_string() } else { lf!("{l} ГБ", "{l} GB") }).show_ui(ui, |ui| {
+                                for v in [0u32, 1, 2, 5, 10, 20] { ui.selectable_value(&mut l, v, if v == 0 { l!("без лимита", "no limit").to_string() } else { lf!("{v} ГБ", "{v} GB") }); }
                             });
                             if l != s.cache_limit_gb { acts.push(Act::Settings(json!({"cacheLimitGb": l}))); self.cache_trimmed = Instant::now() - Duration::from_secs(3600); }
-                            if pill(ui, "Очистить", false).on_hover_text("Удалить скачанное (кроме того, что играет сейчас) — при прослушивании скачается снова").clicked() {
+                            if pill(ui, l!("Очистить", "Clear"), false).on_hover_text(l!("Удалить скачанное (кроме того, что играет сейчас) — при прослушивании скачается снова", "Delete downloaded files (except what's playing now) — they'll download again when played")).clicked() {
                                 let keep: Vec<PathBuf> = self.current.as_ref().and_then(|t| t.url.clone()).map(|u| self.cache.join(wavy_core::sha16(u.as_bytes()))).into_iter().collect();
                                 let freed = wavy_core::stream::trim_dir(&self.cache, 0, &keep);
-                                self.toast(format!("Освобождено {}", fmt_bytes(freed)), false);
+                                self.toast(lf!("Освобождено {}", "Freed {}", fmt_bytes(freed)), false);
                                 self.cache_size = None;
                                 self.cache_counting = false;
                             }
                         });
                         section(ui, "\u{E4FC}  YouTube 18+");
-                        ui.label(RichText::new("Видео с возрастным ограничением YouTube без входа не отдаёт. Wavy сначала ищет такой же трек в другом видео, а если задать куки — сыграет и само видео, как будто ты вошёл. Куки берутся только для таких видео.").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Видео с возрастным ограничением YouTube без входа не отдаёт. Wavy сначала ищет такой же трек в другом видео, а если задать куки — сыграет и само видео, как будто ты вошёл. Куки берутся только для таких видео.", "YouTube doesn't serve age-restricted videos without signing in. Wavy first looks for the same track in another video, and with cookies set it will play the video itself, as if you were signed in. Cookies are only used for such videos.")).color(MUTED).size(12.0));
                         ui.horizontal(|ui| {
-                            ui.label("Куки из:");
+                            ui.label(l!("Куки из:", "Cookies from:"));
                             let cur = s.yt_cookies.clone();
                             let is_file = !cur.is_empty() && !wavy_core::youtube::COOKIE_BROWSERS.iter().any(|b| b.0 == cur);
-                            let shown = if cur.is_empty() { "не брать".to_string() } else if is_file { "файла cookies.txt".to_string() }
+                            let shown = if cur.is_empty() { l!("не брать", "don't use").to_string() } else if is_file { l!("файла cookies.txt", "cookies.txt file").to_string() }
                                 else { wavy_core::youtube::COOKIE_BROWSERS.iter().find(|b| b.0 == cur).map(|b| b.1.to_string()).unwrap_or_default() };
                             let mut pick: Option<String> = None;
                             egui::ComboBox::from_id_salt("yt-cookies").selected_text(shown).show_ui(ui, |ui| {
-                                if ui.selectable_label(cur.is_empty(), "не брать").clicked() { pick = Some(String::new()); }
+                                if ui.selectable_label(cur.is_empty(), l!("не брать", "don't use")).clicked() { pick = Some(String::new()); }
                                 for (id, name) in wavy_core::youtube::COOKIE_BROWSERS {
                                     if ui.selectable_label(cur == *id, *name).clicked() { pick = Some(id.to_string()); }
                                 }
-                                if ui.selectable_label(is_file, "файла cookies.txt…").clicked() {
-                                    if let Some(f) = rfd::FileDialog::new().set_title("Файл cookies.txt").add_filter("cookies.txt", &["txt"]).pick_file() { pick = Some(f.to_string_lossy().into_owned()); }
+                                if ui.selectable_label(is_file, l!("файла cookies.txt…", "cookies.txt file…")).clicked() {
+                                    if let Some(f) = rfd::FileDialog::new().set_title(l!("Файл cookies.txt", "cookies.txt file")).add_filter("cookies.txt", &["txt"]).pick_file() { pick = Some(f.to_string_lossy().into_owned()); }
                                 }
                             });
                             if let Some(v) = pick { if v != cur { acts.push(Act::Settings(json!({"ytCookies": v}))); } }
                             if is_file { ui.label(RichText::new(&cur).color(MUTED).size(12.0)); }
                         });
                         if matches!(s.yt_cookies.as_str(), "chrome" | "edge" | "brave" | "opera" | "vivaldi" | "chromium") {
-                            ui.label(RichText::new("Chrome и похожие браузеры на Windows прячут куки, и часто достать их не выходит. Надёжнее Firefox (с входом в YouTube) или файл cookies.txt из расширения «Get cookies.txt LOCALLY».").color(MUTED).size(12.0));
+                            ui.label(RichText::new(l!("Chrome и похожие браузеры на Windows прячут куки, и часто достать их не выходит. Надёжнее Firefox (с входом в YouTube) или файл cookies.txt из расширения «Get cookies.txt LOCALLY».", "Chrome and similar browsers on Windows hide cookies, and often they can't be read. Firefox (signed in to YouTube) or a cookies.txt file from the “Get cookies.txt LOCALLY” extension is more reliable.")).color(MUTED).size(12.0));
                         }
                         section(ui, "\u{E340}  Last.fm");
                         let lf = s.lastfm.clone();
                         if !lf.session.is_empty() {
                             ui.horizontal(|ui| {
                                 let mut on = lf.enabled;
-                                if ui.checkbox(&mut on, format!("Скробблить в Last.fm ({})", lf.user)).changed() { acts.push(Act::Settings(json!({"lastfm": {"enabled": on}}))); }
-                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"lastfm": {"session": "", "user": "", "enabled": false}}))); }
+                                if ui.checkbox(&mut on, lf!("Скробблить в Last.fm ({})", "Scrobble to Last.fm ({})", lf.user)).changed() { acts.push(Act::Settings(json!({"lastfm": {"enabled": on}}))); }
+                                if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::Settings(json!({"lastfm": {"session": "", "user": "", "enabled": false}}))); }
                             });
-                            ui.label(RichText::new("Трек засчитывается, когда проиграна половина (или 4 минуты). Серии аниме не скробблятся.").color(MUTED).size(12.0));
+                            ui.label(RichText::new(l!("Трек засчитывается, когда проиграна половина (или 4 минуты). Серии аниме не скробблятся.", "A track counts once half of it has played (or 4 minutes). Anime episodes aren't scrobbled.")).color(MUTED).size(12.0));
                         } else {
-                            ui.label(RichText::new("Нужен свой ключ: last.fm/api/account/create (название — Wavy, остальное можно не заполнять). Скопируй сюда API key и Shared secret.").color(MUTED).size(12.0));
+                            ui.label(RichText::new(l!("Нужен свой ключ: last.fm/api/account/create (название — Wavy, остальное можно не заполнять). Скопируй сюда API key и Shared secret.", "You need your own key: last.fm/api/account/create (name — Wavy, the rest can be left empty). Copy the API key and Shared secret here.")).color(MUTED).size(12.0));
                             ui.horizontal(|ui| {
                                 ui.label("API key:");
                                 let mut k = lf.api_key.clone();
@@ -3502,36 +3515,36 @@ impl App {
                             ui.horizontal(|ui| {
                                 let ok = !lf.api_key.is_empty() && !lf.secret.is_empty();
                                 match self.lfm_token.clone() {
-                                    None => if ui.add_enabled(ok, pill_btn("Войти через Last.fm", true)).clicked() {
+                                    None => if ui.add_enabled(ok, pill_btn(l!("Войти через Last.fm", "Sign in with Last.fm"), true)).clicked() {
                                         let (tx, c) = (self.tx.clone(), ui.ctx().clone());
                                         std::thread::spawn(move || { let _ = tx.send(Bg::LastfmBegin(wavy_core::lastfm::begin(&lf))); c.request_repaint(); });
                                     },
                                     Some(token) => {
-                                        ui.label("На странице Last.fm нажми «Allow access», потом:");
-                                        if pill(ui, "Готово", true).clicked() {
+                                        ui.label(l!("На странице Last.fm нажми «Allow access», потом:", "On the Last.fm page click “Allow access”, then:"));
+                                        if pill(ui, l!("Готово", "Done"), true).clicked() {
                                             let (tx, c, mut a) = (self.tx.clone(), ui.ctx().clone(), lf.clone());
                                             std::thread::spawn(move || { let r = wavy_core::lastfm::finish(&mut a, &token).map(|_| a); let _ = tx.send(Bg::LastfmDone(r)); c.request_repaint(); });
                                         }
-                                        if pill(ui, "Отмена", false).clicked() { self.lfm_token = None; }
+                                        if pill(ui, l!("Отмена", "Cancel"), false).clicked() { self.lfm_token = None; }
                                     }
                                 }
                             });
                         }
-                        section(ui, "\u{E754}  Аниме");
+                        section(ui, l!("\u{E754}  Аниме", "\u{E754}  Anime"));
                         let mut a = s.anime_autoskip;
-                        if ui.checkbox(&mut a, "Сам пропускать опенинги (время берётся из AniSkip)").changed() { acts.push(Act::Settings(json!({"animeAutoskip": a}))); }
+                        if ui.checkbox(&mut a, l!("Сам пропускать опенинги (время берётся из AniSkip)", "Skip openings automatically (timing from AniSkip)")).changed() { acts.push(Act::Settings(json!({"animeAutoskip": a}))); }
                         let mut n = s.anime_next;
-                        if ui.checkbox(&mut n, "На эндинге предлагать следующую серию").changed() { acts.push(Act::Settings(json!({"animeNext": n}))); }
+                        if ui.checkbox(&mut n, l!("На эндинге предлагать следующую серию", "Offer the next episode at the ending")).changed() { acts.push(Act::Settings(json!({"animeNext": n}))); }
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Шикимори: отмечать просмотренные серии в твоём списке").family(semi()));
+                        ui.label(RichText::new(l!("Шикимори: отмечать просмотренные серии в твоём списке", "Shikimori: mark watched episodes in your list")).family(semi()));
                         let acc = s.shiki.clone();
                         if acc.logged_in() {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Вошёл как {}", acc.nickname)).color(OK));
-                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"shiki": wavy_core::shikimori::Account { client_id: acc.client_id.clone(), client_secret: acc.client_secret.clone(), ..Default::default() }}))); }
+                                ui.label(RichText::new(lf!("Вошёл как {}", "Signed in as {}", acc.nickname)).color(OK));
+                                if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::Settings(json!({"shiki": wavy_core::shikimori::Account { client_id: acc.client_id.clone(), client_secret: acc.client_secret.clone(), ..Default::default() }}))); }
                             });
                         } else {
-                            ui.label(RichText::new("1) На shikimori.io/oauth/applications создай приложение: название Wavy, Redirect URI — urn:ietf:wg:oauth:2.0:oob, доступ user_rates. 2) Вставь сюда его Client ID и Client Secret. 3) Нажми «Войти», разреши доступ и вставь код со страницы.").color(MUTED).size(12.0));
+                            ui.label(RichText::new(l!("1) На shikimori.io/oauth/applications создай приложение: название Wavy, Redirect URI — urn:ietf:wg:oauth:2.0:oob, доступ user_rates. 2) Вставь сюда его Client ID и Client Secret. 3) Нажми «Войти», разреши доступ и вставь код со страницы.", "1) At shikimori.io/oauth/applications create an application: name Wavy, Redirect URI — urn:ietf:wg:oauth:2.0:oob, access user_rates. 2) Paste its Client ID and Client Secret here. 3) Click “Sign in”, allow access and paste the code from the page.")).color(MUTED).size(12.0));
                             let (mut id, mut sec) = (acc.client_id.clone(), acc.client_secret.clone());
                             ui.horizontal(|ui| {
                                 ui.label("Client ID");
@@ -3542,45 +3555,45 @@ impl App {
                                 if ui.add(egui::TextEdit::singleline(&mut sec).password(true).desired_width(280.0)).changed() { acts.push(Act::Settings(json!({"shiki": {"clientSecret": sec.trim()}}))); }
                             });
                             ui.horizontal(|ui| {
-                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn("Войти", false)).clicked() { open_url(&wavy_core::shikimori::authorize_url(&acc.client_id)); }
-                                ui.add(egui::TextEdit::singleline(&mut self.shiki_code).hint_text("код со страницы Шикимори").desired_width(200.0));
-                                if ui.add_enabled(!self.shiki_code.trim().is_empty() && !acc.client_secret.is_empty(), pill_btn("Подтвердить", true)).clicked() {
+                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn(l!("Войти", "Sign in"), false)).clicked() { open_url(&wavy_core::shikimori::authorize_url(&acc.client_id)); }
+                                ui.add(egui::TextEdit::singleline(&mut self.shiki_code).hint_text(l!("код со страницы Шикимори", "code from the Shikimori page")).desired_width(200.0));
+                                if ui.add_enabled(!self.shiki_code.trim().is_empty() && !acc.client_secret.is_empty(), pill_btn(l!("Подтвердить", "Confirm"), true)).clicked() {
                                     let (mut acc, code, tx, c) = (acc.clone(), self.shiki_code.clone(), self.tx.clone(), ui.ctx().clone());
                                     std::thread::spawn(move || { let r = wavy_core::shikimori::login(&mut acc, &code).map(|_| acc); let _ = tx.send(Bg::Shiki(r, true)); c.request_repaint(); });
                                 }
                             });
                         }
-                        section(ui, "\u{E58C}  Видео");
-                        ui.label(RichText::new("H.264 показывается встроенным декодером. Для HEVC (H.265), 10-битного видео, VP9, AV1 и звука Opus/AC3/DTS Wavy один раз скачивает свой маленький ffmpeg (≈6 МБ) — сам, когда такое видео встретится. Если видеокарта умеет этот формат, декодирует она.").color(MUTED).size(12.5));
+                        section(ui, l!("\u{E58C}  Видео", "\u{E58C}  Video"));
+                        ui.label(RichText::new(l!("H.264 показывается встроенным декодером. Для HEVC (H.265), 10-битного видео, VP9, AV1 и звука Opus/AC3/DTS Wavy один раз скачивает свой маленький ffmpeg (≈6 МБ) — сам, когда такое видео встретится. Если видеокарта умеет этот формат, декодирует она.", "H.264 is shown by the built-in decoder. For HEVC (H.265), 10-bit video, VP9, AV1 and Opus/AC3/DTS audio Wavy downloads its own small ffmpeg once (≈6 MB) — by itself, when such a video comes up. If your graphics card supports the format, it does the decoding.")).color(MUTED).size(12.5));
                         match self.ff.state() {
-                            wavy_core::ffmpeg::State::Ready(_) => { ui.label(RichText::new("Декодер ffmpeg: готов").color(OK)); }
-                            wavy_core::ffmpeg::State::Downloading(p) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(format!("Скачиваю декодер… {p}%")).color(MUTED)); }); }
-                            wavy_core::ffmpeg::State::Failed(e) => { ui.label(RichText::new(format!("Декодер: {e}")).color(BAD)); }
+                            wavy_core::ffmpeg::State::Ready(_) => { ui.label(RichText::new(l!("Декодер ffmpeg: готов", "ffmpeg decoder: ready")).color(OK)); }
+                            wavy_core::ffmpeg::State::Downloading(p) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(lf!("Скачиваю декодер… {p}%", "Downloading the decoder… {p}%")).color(MUTED)); }); }
+                            wavy_core::ffmpeg::State::Failed(e) => { ui.label(RichText::new(lf!("Декодер: {e}", "Decoder: {e}")).color(BAD)); }
                             wavy_core::ffmpeg::State::Missing => {
-                                if pill(ui, "Скачать декодер сейчас", false).clicked() { let c = ui.ctx().clone(); self.ff.install_background(move || c.request_repaint()); }
+                                if pill(ui, l!("Скачать декодер сейчас", "Download the decoder now"), false).clicked() { let c = ui.ctx().clone(); self.ff.install_background(move || c.request_repaint()); }
                             }
                         }
 
-                        section(ui, "\u{E58C}  Синхронизация с телефоном");
-                        ui.label(RichText::new("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны. Файл с телефона можно просто перетащить в окно. Локальные файлы не переносятся.").color(MUTED).size(12.5));
+                        section(ui, l!("\u{E58C}  Синхронизация с телефоном", "\u{E58C}  Sync with phone"));
+                        ui.label(RichText::new(l!("Плейлисты и треки YouTube / Spotify переносятся файлом wavy-export.json в обе стороны. Файл с телефона можно просто перетащить в окно. Локальные файлы не переносятся.", "Playlists and YouTube / Spotify tracks are transferred in both directions with the wavy-export.json file. You can just drag the file from the phone into the window. Local files aren't transferred.")).color(MUTED).size(12.5));
                         ui.horizontal(|ui| {
-                            if pill(ui, "Экспорт для телефона", true).clicked() { acts.push(Act::SyncExport); }
-                            if pill(ui, "Импорт с телефона", false).clicked() { acts.push(Act::SyncImport(None)); }
+                            if pill(ui, l!("Экспорт для телефона", "Export for phone"), true).clicked() { acts.push(Act::SyncExport); }
+                            if pill(ui, l!("Импорт с телефона", "Import from phone"), false).clicked() { acts.push(Act::SyncImport(None)); }
                         });
                         let mut w = s.wifi_sync;
-                        if ui.checkbox(&mut w, "По Wi-Fi без файлов (телефон и ПК в одной сети)").changed() {
+                        if ui.checkbox(&mut w, l!("По Wi-Fi без файлов (телефон и ПК в одной сети)", "Over Wi-Fi without files (phone and PC on the same network)")).changed() {
                             let pin = if s.wifi_pin.is_empty() { wavy_core::wifisync::new_pin() } else { s.wifi_pin.clone() };
                             acts.push(Act::Settings(json!({"wifiSync": w, "wifiPin": pin})));
                         }
                         if self.wifi.is_some() {
-                            let addr = format!("{}:{}", wavy_core::wifisync::local_ip().unwrap_or_else(|| "IP-адрес ПК".into()), wavy_core::wifisync::PORT);
-                            ui.label(RichText::new(format!("В приложении на телефоне: Настройки → Синхронизация с ПК → адрес {addr}, PIN {}", s.wifi_pin)).color(OK));
-                            ui.label(RichText::new("Windows может спросить разрешение для сети — разреши для частных сетей.").color(MUTED).size(12.0));
+                            let addr = format!("{}:{}", wavy_core::wifisync::local_ip().unwrap_or_else(|| l!("IP-адрес ПК", "PC IP address").into()), wavy_core::wifisync::PORT);
+                            ui.label(RichText::new(lf!("В приложении на телефоне: Настройки → Синхронизация с ПК → адрес {addr}, PIN {}", "In the phone app: Settings → Sync with PC → address {addr}, PIN {}", s.wifi_pin)).color(OK));
+                            ui.label(RichText::new(l!("Windows может спросить разрешение для сети — разреши для частных сетей.", "Windows may ask for network permission — allow it for private networks.")).color(MUTED).size(12.0));
                         }
 
                         section(ui, "\u{E340}  Spotify");
-                        ui.label(RichText::new("Ссылки на плейлисты, альбомы и треки Spotify импортируются без настроек: каждый трек находится на YouTube. Без ключа — до 100 треков из плейлиста.").color(MUTED).size(12.5));
-                        ui.label(RichText::new("Для больших плейлистов: developer.spotify.com → Create app → скопируй Client ID и Client Secret.").color(MUTED).size(12.5));
+                        ui.label(RichText::new(l!("Ссылки на плейлисты, альбомы и треки Spotify импортируются без настроек: каждый трек находится на YouTube. Без ключа — до 100 треков из плейлиста.", "Spotify playlist, album and track links import without setup: each track is found on YouTube. Without a key — up to 100 tracks from a playlist.")).color(MUTED).size(12.5));
+                        ui.label(RichText::new(l!("Для больших плейлистов: developer.spotify.com → Create app → скопируй Client ID и Client Secret.", "For big playlists: developer.spotify.com → Create app → copy the Client ID and Client Secret.")).color(MUTED).size(12.5));
                         ui.horizontal(|ui| {
                             ui.label("Client ID");
                             let r = ui.add(egui::TextEdit::singleline(sp_id).desired_width(300.0).margin(egui::Margin::symmetric(8, 6)));
@@ -3594,15 +3607,15 @@ impl App {
                             if r.lost_focus() || (r.changed() && sp_secret.len() == 32) { acts.push(Act::Settings(json!({"spotify": {"clientSecret": sp_secret.as_str()}}))); }
                         });
 
-                        section(ui, "\u{E272}  Удобство");
+                        section(ui, l!("\u{E272}  Удобство", "\u{E272}  Convenience"));
                         if cfg!(windows) {
                             let mut ct = s.close_to_tray;
-                            if ui.checkbox(&mut ct, "Крестик сворачивает в трей (музыка продолжает играть)").changed() { acts.push(Act::Settings(json!({"closeToTray": ct}))); }
+                            if ui.checkbox(&mut ct, l!("Крестик сворачивает в трей (музыка продолжает играть)", "The close button minimizes to tray (music keeps playing)")).changed() { acts.push(Act::Settings(json!({"closeToTray": ct}))); }
                         }
                         let mut mini = s.mini;
-                        if ui.checkbox(&mut mini, "Мини-плеер поверх всех окон").changed() { acts.push(Act::ToggleMini); }
+                        if ui.checkbox(&mut mini, l!("Мини-плеер поверх всех окон", "Mini player on top of all windows")).changed() { acts.push(Act::ToggleMini); }
                         ui.add_space(6.0);
-                        ui.label(RichText::new("Горячие клавиши везде (и в игре)").family(semi()));
+                        ui.label(RichText::new(l!("Горячие клавиши везде (и в игре)", "Global hotkeys (work in games too)")).family(semi()));
                         // запись сочетания: следующее нажатие с Ctrl/Alt/Shift
                         if let Some(action) = self.hk_capture.clone() {
                             let ev = ui.ctx().input(|i| i.events.iter().find_map(|e| match e { egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)), _ => None }));
@@ -3617,64 +3630,64 @@ impl App {
                         }
                         egui::Grid::new("hotkeys").num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
                             for (action, label, _) in hotkeys::ACTIONS {
-                                ui.label(*label);
+                                ui.label(wavy_core::i18n::tr(label));
                                 let c = hotkeys::combo(&s.hotkeys, action);
                                 let busy = self.hk_keys.failed.contains(&c);
-                                let shown = if self.hk_capture.as_deref() == Some(*action) { "нажми сочетание… (Esc — отмена, Backspace — выкл)".to_string() } else if c.is_empty() { "выкл".into() } else { c.clone() };
+                                let shown = if self.hk_capture.as_deref() == Some(*action) { l!("нажми сочетание… (Esc — отмена, Backspace — выкл)", "press a combination… (Esc — cancel, Backspace — off)").to_string() } else if c.is_empty() { l!("выкл", "off").into() } else { c.clone() };
                                 let r = ui.add(egui::Button::new(RichText::new(shown).color(if busy { BAD } else { TEXT })).min_size(Vec2::new(150.0, 24.0)));
                                 if r.clicked() { self.hk_capture = Some(action.to_string()); }
-                                if busy { r.on_hover_text("Это сочетание занято другой программой"); }
+                                if busy { r.on_hover_text(l!("Это сочетание занято другой программой", "This combination is taken by another program")); }
                                 // настройки сливаются, а не заменяются — поэтому «по умолчанию» записываем явно
                                 let def = hotkeys::ACTIONS.iter().find(|a| a.0 == *action).map(|a| a.2).unwrap_or("");
-                                if c != def && pill(ui, "по умолчанию", false).clicked() {
+                                if c != def && pill(ui, l!("по умолчанию", "default"), false).clicked() {
                                     acts.push(Act::Settings(json!({"hotkeys": {*action: def}})));
                                 } else if c == def { ui.label(""); }
                                 ui.end_row();
                             }
                         });
-                        ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды").color(MUTED).size(12.0));
-                        section(ui, "\u{E248}  Резервные копии");
+                        ui.label(RichText::new(l!("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды", "Keys in the window: Space — pause · ←/→ — ±5 s · Ctrl+←/→ — track · ↑/↓ — volume · M — mute · L — like · Q — queue · S — shuffle · R — repeat · Ctrl+F — search · Ctrl+K — commands")).color(MUTED).size(12.0));
+                        section(ui, l!("\u{E248}  Резервные копии", "\u{E248}  Backups"));
                         let bdir = if s.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&s.backup_dir) };
-                        ui.label(RichText::new("Раз в день Wavy сохраняет плейлисты, лайки, историю и настройки (14 последних копий). Чтобы копии пережили переустановку Windows, выбери папку на другом диске или в облаке (OneDrive, Google Диск).").color(MUTED).size(12.0));
+                        ui.label(RichText::new(l!("Раз в день Wavy сохраняет плейлисты, лайки, историю и настройки (14 последних копий). Чтобы копии пережили переустановку Windows, выбери папку на другом диске или в облаке (OneDrive, Google Диск).", "Once a day Wavy saves playlists, likes, history and settings (the last 14 copies). For backups to survive a Windows reinstall, choose a folder on another drive or in the cloud (OneDrive, Google Drive).")).color(MUTED).size(12.0));
                         ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(bdir.to_string_lossy()).color(TEXT).size(12.0));
-                            if pill(ui, "Папка…", false).clicked() {
-                                if let Some(d) = rfd::FileDialog::new().set_title("Куда сохранять копии").pick_folder() { acts.push(Act::Settings(json!({"backupDir": d.to_string_lossy()}))); }
+                            if pill(ui, l!("Папка…", "Folder…"), false).clicked() {
+                                if let Some(d) = rfd::FileDialog::new().set_title(l!("Куда сохранять копии", "Where to save backups")).pick_folder() { acts.push(Act::Settings(json!({"backupDir": d.to_string_lossy()}))); }
                             }
-                            if pill(ui, "Открыть", false).clicked() { let _ = std::fs::create_dir_all(&bdir); open_folder(&bdir); }
-                            if pill(ui, "Сделать сейчас", false).clicked() { self.backup_tick(true); }
-                            if pill(ui, "Восстановить…", false).on_hover_text("Заменить библиотеку копией (текущая сохранится рядом)").clicked() {
-                                if let Some(f) = rfd::FileDialog::new().set_title("Резервная копия Wavy").set_directory(&bdir).add_filter("Копия", &["json"]).pick_file() {
+                            if pill(ui, l!("Открыть", "Open"), false).clicked() { let _ = std::fs::create_dir_all(&bdir); open_folder(&bdir); }
+                            if pill(ui, l!("Сделать сейчас", "Back up now"), false).clicked() { self.backup_tick(true); }
+                            if pill(ui, l!("Восстановить…", "Restore…"), false).on_hover_text(l!("Заменить библиотеку копией (текущая сохранится рядом)", "Replace the library with a backup (the current one is saved next to it)")).clicked() {
+                                if let Some(f) = rfd::FileDialog::new().set_title(l!("Резервная копия Wavy", "Wavy backup")).set_directory(&bdir).add_filter(l!("Копия", "Backup"), &["json"]).pick_file() {
                                     let r = self.store.lock().unwrap().restore(&f);
-                                    match r { Ok(n) => self.toast(format!("Библиотека восстановлена: {n} треков"), false), Err(e) => self.toast(format!("Не восстановилось: {e}"), true) }
+                                    match r { Ok(n) => self.toast(lf!("Библиотека восстановлена: {n} треков", "Library restored: {n} tracks"), false), Err(e) => self.toast(lf!("Не восстановилось: {e}", "Restore failed: {e}"), true) }
                                 }
                             }
                         });
-                        if s.last_backup > 0 { ui.label(RichText::new(format!("Последняя копия: {}", fmt_date(s.last_backup))).color(MUTED).size(12.0)); }
-                        section(ui, "\u{E036}  Обновления");
+                        if s.last_backup > 0 { ui.label(RichText::new(lf!("Последняя копия: {}", "Last backup: {}", fmt_date(s.last_backup))).color(MUTED).size(12.0)); }
+                        section(ui, l!("\u{E036}  Обновления", "\u{E036}  Updates"));
                         match update::current_build() {
-                            Some(b) => { ui.label(RichText::new(format!("Версия: сборка {b}")).color(TEXT)); }
-                            None => { ui.label(RichText::new("Локальная сборка — обновляется только exe из GitHub Releases").color(MUTED)); }
+                            Some(b) => { ui.label(RichText::new(lf!("Версия: сборка {b}", "Version: build {b}")).color(TEXT)); }
+                            None => { ui.label(RichText::new(l!("Локальная сборка — обновляется только exe из GitHub Releases", "Local build — only the exe from GitHub Releases updates")).color(MUTED)); }
                         }
                         let mut au = s.auto_update;
-                        if ui.checkbox(&mut au, "Обновляться автоматически").changed() { acts.push(Act::Settings(json!({"autoUpdate": au}))); }
+                        if ui.checkbox(&mut au, l!("Обновляться автоматически", "Update automatically")).changed() { acts.push(Act::Settings(json!({"autoUpdate": au}))); }
                         match &self.upd {
-                            Some(UpdState::Checking) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Проверяю…").color(MUTED)); }); }
-                            Some(UpdState::Downloading(n)) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(format!("Скачиваю сборку {n}…")).color(MUTED)); }); }
-                            Some(UpdState::Ready(n)) => { ui.label(RichText::new(format!("Сборка {n} установлена, осталось перезапустить")).color(OK)); }
-                            Some(UpdState::UpToDate) => { ui.label(RichText::new("У тебя последняя версия").color(OK)); }
+                            Some(UpdState::Checking) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Проверяю…", "Checking…")).color(MUTED)); }); }
+                            Some(UpdState::Downloading(n)) => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(lf!("Скачиваю сборку {n}…", "Downloading build {n}…")).color(MUTED)); }); }
+                            Some(UpdState::Ready(n)) => { ui.label(RichText::new(lf!("Сборка {n} установлена, осталось перезапустить", "Build {n} installed, just restart")).color(OK)); }
+                            Some(UpdState::UpToDate) => { ui.label(RichText::new(l!("У тебя последняя версия", "You have the latest version")).color(OK)); }
                             Some(UpdState::Error(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
                             None => {}
                         }
                         ui.horizontal(|ui| {
                             let busy = matches!(self.upd, Some(UpdState::Checking | UpdState::Downloading(_)));
-                            if ui.add_enabled(update::current_build().is_some() && !busy, pill_btn("Проверить обновления", false)).clicked() { acts.push(Act::CheckUpdate); }
-                            if matches!(self.upd, Some(UpdState::Ready(_))) && pill(ui, "Перезапустить", true).clicked() { acts.push(Act::Restart); }
-                            if let Some(b) = update::current_build() { if pill(ui, "Что нового", false).clicked() { acts.push(Act::WhatsNew(b.saturating_sub(5).max(1), b)); } }
+                            if ui.add_enabled(update::current_build().is_some() && !busy, pill_btn(l!("Проверить обновления", "Check for updates"), false)).clicked() { acts.push(Act::CheckUpdate); }
+                            if matches!(self.upd, Some(UpdState::Ready(_))) && pill(ui, l!("Перезапустить", "Restart"), true).clicked() { acts.push(Act::Restart); }
+                            if let Some(b) = update::current_build() { if pill(ui, l!("Что нового", "What's new"), false).clicked() { acts.push(Act::WhatsNew(b.saturating_sub(5).max(1), b)); } }
                         });
                     });
                     ui.add_space(8.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, "Готово", true).clicked() { close = true; } });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Готово", "Done"), true).clicked() { close = true; } });
                 }
             }
         });
@@ -3695,31 +3708,31 @@ impl App {
     /// Игровой оверлей: отдельное прозрачное окно поверх всего.
     fn sound_ui(&mut self, ui: &mut egui::Ui, s: &wavy_core::store::Settings, acts: &mut Vec<Act>) {
         ui.set_width(330.0);
-        ui.label(RichText::new("Скорость").family(semi()));
+        ui.label(RichText::new(l!("Скорость", "Speed")).family(semi()));
         ui.horizontal(|ui| {
-            for (name, v) in [("Slowed", 0.85f32), ("Обычно", 1.0), ("Nightcore", 1.25)] {
+            for (name, v) in [("Slowed", 0.85f32), (l!("Обычно", "Normal"), 1.0), ("Nightcore", 1.25)] {
                 if ui.selectable_label((s.speed - v).abs() < 0.01, name).clicked() { acts.push(Act::Settings(json!({"speed": v}))); }
             }
         });
         let mut sp = s.speed;
         if ui.add(egui::Slider::new(&mut sp, 0.5..=2.0).step_by(0.05).custom_formatter(|v, _| format!("×{v:.2}"))).changed() { acts.push(Act::Settings(json!({"speed": sp}))); }
-        ui.label(RichText::new("Тон меняется вместе со скоростью — как в nightcore/slowed").color(MUTED).size(11.5));
+        ui.label(RichText::new(l!("Тон меняется вместе со скоростью — как в nightcore/slowed", "The pitch changes with the speed — like nightcore/slowed")).color(MUTED).size(11.5));
         ui.separator();
         let mut cf = s.crossfade;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Кроссфейд").family(semi()));
-            if ui.add(egui::Slider::new(&mut cf, 0.0..=12.0).step_by(1.0).custom_formatter(|v, _| if v == 0.0 { "выкл".into() } else { format!("{v:.0} с") })).changed() { acts.push(Act::Settings(json!({"crossfade": cf}))); }
+            ui.label(RichText::new(l!("Кроссфейд", "Crossfade")).family(semi()));
+            if ui.add(egui::Slider::new(&mut cf, 0.0..=12.0).step_by(1.0).custom_formatter(|v, _| if v == 0.0 { l!("выкл", "off").into() } else { lf!("{v:.0} с", "{v:.0} s") })).changed() { acts.push(Act::Settings(json!({"crossfade": cf}))); }
         });
         let mut nz = s.normalize;
-        if ui.checkbox(&mut nz, "Выравнивать громкость (тихие треки громче, громкие тише)").changed() { acts.push(Act::Settings(json!({"normalize": nz}))); }
+        if ui.checkbox(&mut nz, l!("Выравнивать громкость (тихие треки громче, громкие тише)", "Normalize volume (quiet tracks louder, loud ones quieter)")).changed() { acts.push(Act::Settings(json!({"normalize": nz}))); }
         ui.separator();
         let mut on = s.eq_on;
         ui.horizontal(|ui| {
-            if ui.checkbox(&mut on, RichText::new("Эквалайзер").family(semi())).changed() { acts.push(Act::Settings(json!({"eqOn": on}))); }
+            if ui.checkbox(&mut on, RichText::new(l!("Эквалайзер", "Equalizer")).family(semi())).changed() { acts.push(Act::Settings(json!({"eqOn": on}))); }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.menu_button("Пресеты", |ui| {
+                ui.menu_button(l!("Пресеты", "Presets"), |ui| {
                     for (name, eq) in fx::PRESETS {
-                        if ui.button(*name).clicked() { acts.push(Act::Settings(json!({"eq": eq, "eqOn": true}))); ui.close(); }
+                        if ui.button(wavy_core::i18n::tr(name)).clicked() { acts.push(Act::Settings(json!({"eq": eq, "eqOn": true}))); ui.close(); }
                     }
                 });
             });
@@ -3732,7 +3745,7 @@ impl App {
                 for (i, f) in fx::BANDS.iter().enumerate() {
                     ui.vertical(|ui| {
                         ui.set_width(28.0);
-                        changed |= ui.add(egui::Slider::new(&mut eq[i], -12.0..=12.0).vertical().step_by(1.0).show_value(false)).on_hover_text(format!("{:+.0} дБ", eq[i])).changed();
+                        changed |= ui.add(egui::Slider::new(&mut eq[i], -12.0..=12.0).vertical().step_by(1.0).show_value(false)).on_hover_text(lf!("{:+.0} дБ", "{:+.0} dB", eq[i])).changed();
                         ui.label(RichText::new(if *f >= 1000.0 { format!("{}k", f / 1000.0) } else { format!("{f}") }).size(10.0).color(MUTED));
                     });
                 }
@@ -3782,7 +3795,7 @@ impl App {
                     p.rect_filled(bar, 2, BG3);
                     p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * f, 3.0)), 2, TEXT);
                 }
-                None => { p.text(Pos2::new(cr.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, "Ничего не играет", FontId::proportional(13.0), MUTED); }
+                None => { p.text(Pos2::new(cr.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, l!("Ничего не играет", "Nothing is playing"), FontId::proportional(13.0), MUTED); }
             }
             // кнопки
             let mut x = rect.right() - 120.0;
@@ -3823,7 +3836,7 @@ impl App {
             if !locked {
                 p.rect_filled(rect, 8, Color32::from_white_alpha(12));
                 p.rect_stroke(rect.shrink(1.0), 8, Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
-                p.text(rect.center_top() + Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, "тяни — двигать · угол — ресайз · Ctrl+Shift+L — закрепить", FontId::proportional(11.0), ACCENT_SOFT);
+                p.text(rect.center_top() + Vec2::new(0.0, 10.0), Align2::CENTER_CENTER, l!("тяни — двигать · угол — ресайз · Ctrl+Shift+L — закрепить", "drag — move · corner — resize · Ctrl+Shift+L — lock"), FontId::proportional(11.0), ACCENT_SOFT);
                 let resp = ui.interact(rect, Id::unique("ov-drag"), Sense::click_and_drag());
                 let grip = Rect::from_min_size(rect.right_bottom() - Vec2::splat(16.0), Vec2::splat(16.0));
                 p.line_segment([grip.right_top(), grip.left_bottom()], Stroke::new(2.0, ACCENT));
@@ -3876,7 +3889,7 @@ impl App {
                 if minimal { p.text(pos + Vec2::new(1.0, 1.5), align, &txt, font.clone(), Color32::from_black_alpha((200.0 * fade) as u8)); }
                 p.text(pos, align, txt, font, c);
             };
-            text(Pos2::new(tx, yy), Align2::LEFT_TOP, if playing { "\u{E340}  СЕЙЧАС ИГРАЕТ".into() } else { "\u{E39E}  ПАУЗА".into() }, FontId::proportional(10.5), a(ACCENT_SOFT));
+            text(Pos2::new(tx, yy), Align2::LEFT_TOP, if playing { l!("\u{E340}  СЕЙЧАС ИГРАЕТ", "\u{E340}  NOW PLAYING").into() } else { l!("\u{E39E}  ПАУЗА", "\u{E39E}  PAUSED").into() }, FontId::proportional(10.5), a(ACCENT_SOFT));
             yy += 16.0;
             text(Pos2::new(tx, yy), Align2::LEFT_TOP, ellipsize(&t.title, tw, 18.0), FontId::new(18.0, bold()), a(Color32::WHITE));
             yy += 24.0;
@@ -3913,7 +3926,7 @@ fn fetch_with_cookies(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc,
     let path = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
     let dl = yt.stream_audio(t, &path, true)?;
     if dl.wait_for(200 * 1024, Duration::from_secs(60)) { return Ok(AudioSrc::Stream(dl)); }
-    let e = dl.error().unwrap_or_else(|| "долго нет данных".into());
+    let e = dl.error().unwrap_or_else(|| l!("долго нет данных", "no data for a long time").into());
     dl.cancel();
     Err(e)
 }
@@ -3921,11 +3934,11 @@ fn fetch_with_cookies(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc,
 /// Понятная причина, почему куки не подошли.
 fn cookie_hint(err: &str) -> String {
     let e = err.to_lowercase();
-    if e.contains("could not copy") || e.contains("database is locked") { "браузер держит файл кук — закрой его полностью и попробуй ещё раз".into() }
-    else if e.contains("decrypt") || e.contains("dpapi") { "Chrome/Edge шифруют куки так, что их не достать — возьми Firefox или файл cookies.txt".into() }
-    else if e.contains("netscape") { "это не файл cookies.txt — выгрузи его расширением «Get cookies.txt LOCALLY» на youtube.com".into() }
-    else if e.contains("could not find") { "не нашёл профиль браузера — он установлен?".into() }
-    else if age_restricted(&e) { "в браузере нет входа в YouTube (или аккаунту меньше 18)".into() }
+    if e.contains("could not copy") || e.contains("database is locked") { l!("браузер держит файл кук — закрой его полностью и попробуй ещё раз", "the browser holds the cookie file — close it completely and try again").into() }
+    else if e.contains("decrypt") || e.contains("dpapi") { l!("Chrome/Edge шифруют куки так, что их не достать — возьми Firefox или файл cookies.txt", "Chrome/Edge encrypt cookies so they can't be read — use Firefox or a cookies.txt file").into() }
+    else if e.contains("netscape") { l!("это не файл cookies.txt — выгрузи его расширением «Get cookies.txt LOCALLY» на youtube.com", "this isn't a cookies.txt file — export it with the “Get cookies.txt LOCALLY” extension on youtube.com").into() }
+    else if e.contains("could not find") { l!("не нашёл профиль браузера — он установлен?", "couldn't find the browser profile — is it installed?").into() }
+    else if age_restricted(&e) { l!("в браузере нет входа в YouTube (или аккаунту меньше 18)", "the browser isn't signed in to YouTube (or the account is under 18)").into() }
     else { err.lines().last().unwrap_or(err).chars().take(160).collect() }
 }
 
@@ -3960,7 +3973,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
                     wavy_core::log(&format!("«{}»: поток yt-dlp пошёл через {:.1} с", t.title, t0.elapsed().as_secs_f32()));
                     return Ok(AudioSrc::Stream(dl));
                 }
-                let e = dl.error().unwrap_or_else(|| "долго нет данных".into());
+                let e = dl.error().unwrap_or_else(|| l!("долго нет данных", "no data for a long time").into());
                 dl.cancel();
                 // видео пропало — дальше качать бессмысленно, пусть ищется замена
                 if gone_from_youtube(&e) || age_restricted(&e) { return Err(e); }
@@ -3981,8 +3994,8 @@ fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>
         let sp = store.lock().unwrap().lib.settings.spotify.clone();
         let r = wavy_core::spotify::import(url, yt, Some((&sp.client_id, &sp.client_secret)), &status)?;
         let mut note = String::new();
-        if !r.not_found.is_empty() { note += &format!(", не нашлось на YouTube: {} (список — в wavy.log)", r.not_found.len()); }
-        if r.truncated { note += ". Spotify без ключа отдаёт только первые 100 треков — ключ добавляется в Настройках"; }
+        if !r.not_found.is_empty() { note += &lf!(", не нашлось на YouTube: {} (список — в wavy.log)", ", not found on YouTube: {} (the list is in wavy.log)", r.not_found.len()); }
+        if r.truncated { note += l!(". Spotify без ключа отдаёт только первые 100 треков — ключ добавляется в Настройках", ". Spotify without a key only gives the first 100 tracks — the key is added in Settings"); }
         Ok(((kind != "track").then_some(r.name), r.source, r.tracks, note))
     } else {
         let r = yt.import_url(url.trim(), &status)?;
@@ -3993,25 +4006,25 @@ fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>
 // ---------- мелкие виджеты ----------
 fn track_menu(ui: &mut egui::Ui, ids: &[String], t: &Track, pid: Option<&str>, pls: &[(String, String)], acts: &mut Vec<Act>) {
     let ids = ids.to_vec();
-    if ui.button("Играть далее").clicked() { acts.push(Act::PlayNext(ids.clone())); ui.close(); }
-    if ui.button("Добавить в очередь").clicked() { acts.push(Act::Enqueue(ids.clone())); ui.close(); }
+    if ui.button(l!("Играть далее", "Play next")).clicked() { acts.push(Act::PlayNext(ids.clone())); ui.close(); }
+    if ui.button(l!("Добавить в очередь", "Add to queue")).clicked() { acts.push(Act::Enqueue(ids.clone())); ui.close(); }
     ui.separator();
-    ui.menu_button("Добавить в плейлист", |ui| {
-        if ui.button("+ Новый плейлист…").clicked() { acts.push(Act::Modal(Modal::NewPlaylist { name: String::new(), ids: ids.clone() })); ui.close(); }
+    ui.menu_button(l!("Добавить в плейлист", "Add to playlist"), |ui| {
+        if ui.button(l!("+ Новый плейлист…", "+ New playlist…")).clicked() { acts.push(Act::Modal(Modal::NewPlaylist { name: String::new(), ids: ids.clone() })); ui.close(); }
         if !pls.is_empty() { ui.separator(); }
         for (id, name) in pls { if ui.button(name).clicked() { acts.push(Act::AddTo(id.clone(), ids.clone())); ui.close(); } }
     });
-    let lbl = if ids.len() > 1 { format!("Сохранить как MP3 ({})…", ids.len()) } else { "Сохранить как MP3…".into() };
+    let lbl = if ids.len() > 1 { lf!("Сохранить как MP3 ({})…", "Save as MP3 ({})…", ids.len()) } else { l!("Сохранить как MP3…", "Save as MP3…").into() };
     if ui.button(lbl).clicked() { acts.push(Act::Export(ids.clone(), None)); ui.close(); }
-    if let Some(p) = pid { if ui.button("Убрать из плейлиста").clicked() { acts.push(Act::RemoveFrom(p.into(), ids.clone())); ui.close(); } }
+    if let Some(p) = pid { if ui.button(l!("Убрать из плейлиста", "Remove from playlist")).clicked() { acts.push(Act::RemoveFrom(p.into(), ids.clone())); ui.close(); } }
     if ids.len() == 1 {
-        if t.video_id.is_some() && ui.button("Радио по треку").on_hover_text("Похожие песни с YouTube — в очередь").clicked() { acts.push(Act::Radio(t.id.clone())); ui.close(); }
-        if ui.button("Изменить…").clicked() { acts.push(Act::Modal(Modal::EditTrack { id: t.id.clone(), title: t.title.clone(), artist: t.artist.clone(), album: t.album.clone() })); ui.close(); }
-        if let Some(p) = &t.path { if ui.button("Показать в папке").clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
-        if let Some(u) = &t.url { if ui.button("Открыть в браузере").clicked() { acts.push(Act::OpenUrl(u.clone())); ui.close(); } }
+        if t.video_id.is_some() && ui.button(l!("Радио по треку", "Track radio")).on_hover_text(l!("Похожие песни с YouTube — в очередь", "Similar songs from YouTube — into the queue")).clicked() { acts.push(Act::Radio(t.id.clone())); ui.close(); }
+        if ui.button(l!("Изменить…", "Edit…")).clicked() { acts.push(Act::Modal(Modal::EditTrack { id: t.id.clone(), title: t.title.clone(), artist: t.artist.clone(), album: t.album.clone() })); ui.close(); }
+        if let Some(p) = &t.path { if ui.button(l!("Показать в папке", "Show in folder")).clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
+        if let Some(u) = &t.url { if ui.button(l!("Открыть в браузере", "Open in browser")).clicked() { acts.push(Act::OpenUrl(u.clone())); ui.close(); } }
     }
     ui.separator();
-    let label = if ids.len() > 1 { format!("Удалить из библиотеки ({})", ids.len()) } else { "Удалить из библиотеки".into() };
+    let label = if ids.len() > 1 { lf!("Удалить из библиотеки ({})", "Delete from library ({})", ids.len()) } else { l!("Удалить из библиотеки", "Delete from library").into() };
     if ui.button(RichText::new(label).color(BAD)).clicked() { acts.push(Act::RemoveTracks(ids)); ui.close(); }
 }
 
@@ -4138,7 +4151,7 @@ fn drop_hint(ctx: &egui::Context) {
         let r = ctx.content_rect();
         ui.painter().rect_filled(r, 0, Color32::from_rgba_unmultiplied(10, 10, 12, 220));
         ui.painter().rect_stroke(r.shrink(40.0), 24, Stroke::new(2.0, ACCENT), egui::StrokeKind::Inside);
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, "Отпусти, чтобы добавить музыку \u{E340}", FontId::proportional(22.0), TEXT);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, l!("Отпусти, чтобы добавить музыку \u{E340}", "Drop to add music \u{E340}"), FontId::proportional(22.0), TEXT);
     });
 }
 
@@ -4255,7 +4268,7 @@ fn reveal(path: &str) {
 /// Своя обложка плейлиста: квадрат по центру, до 600 px, JPEG в папке обложек
 /// (новое имя каждый раз — чтобы не показалась старая картинка из кэша миниатюр).
 fn playlist_cover(src: &Path, covers: &Path, id: &str) -> Result<PathBuf, String> {
-    let img = image::open(src).map_err(|e| format!("не открылась картинка: {e}"))?;
+    let img = image::open(src).map_err(|e| lf!("не открылась картинка: {e}", "couldn't open the image: {e}"))?;
     let (w, h) = (img.width(), img.height());
     let side = w.min(h);
     let img = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
@@ -4326,7 +4339,7 @@ fn fmt_date(ms: u64) -> String {
 }
 
 fn fmt_bytes(b: u64) -> String {
-    if b >= 1 << 30 { format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64) } else { format!("{} МБ", b / (1 << 20)) }
+    if b >= 1 << 30 { lf!("{:.1} ГБ", "{:.1} GB", b as f64 / (1u64 << 30) as f64) } else { lf!("{} МБ", "{} MB", b / (1 << 20)) }
 }
 
 #[cfg(test)]

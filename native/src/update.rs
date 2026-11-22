@@ -22,12 +22,12 @@ pub fn check() -> Result<Option<Release>, String> {
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "wavy-player")
         .call()
-        .map_err(|e| format!("не удалось проверить обновления: {e}"))?;
+        .map_err(|e| lf!("не удалось проверить обновления: {e}", "couldn't check for updates: {e}"))?;
     let v: Value = serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let build = v["tag_name"].as_str().and_then(|t| t.strip_prefix("build-")).and_then(|n| n.parse::<u32>().ok()).ok_or("непонятный формат релиза")?;
+    let build = v["tag_name"].as_str().and_then(|t| t.strip_prefix("build-")).and_then(|n| n.parse::<u32>().ok()).ok_or(l!("непонятный формат релиза", "unexpected release format"))?;
     if build <= cur { return Ok(None); }
     let url = v["assets"].as_array().and_then(|a| a.iter().find(|x| x["name"] == "Wavy.exe"))
-        .and_then(|x| x["browser_download_url"].as_str()).ok_or("в релизе нет Wavy.exe")?.to_string();
+        .and_then(|x| x["browser_download_url"].as_str()).ok_or(l!("в релизе нет Wavy.exe", "the release has no Wavy.exe"))?.to_string();
     Ok(Some(Release { build, url }))
 }
 
@@ -35,15 +35,15 @@ pub fn check() -> Result<Option<Release>, String> {
 pub fn install(rel: &Release) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let tmp = exe.with_file_name("Wavy.update.exe");
-    let resp = wavy_core::http().get(&rel.url).header("User-Agent", "wavy-player").call().map_err(|e| format!("не удалось скачать обновление: {e}"))?;
-    let mut f = std::fs::File::create(&tmp).map_err(|e| format!("нет доступа к папке с exe: {e}"))?;
+    let resp = wavy_core::http().get(&rel.url).header("User-Agent", "wavy-player").call().map_err(|e| lf!("не удалось скачать обновление: {e}", "couldn't download the update: {e}"))?;
+    let mut f = std::fs::File::create(&tmp).map_err(|e| lf!("нет доступа к папке с exe: {e}", "no access to the exe folder: {e}"))?;
     let n = std::io::copy(&mut resp.into_body().into_reader(), &mut f).map_err(|e| e.to_string())?;
     drop(f);
     if n < 1_000_000 {
         let _ = std::fs::remove_file(&tmp);
-        return Err("скачанный файл подозрительно маленький".into());
+        return Err(l!("скачанный файл подозрительно маленький", "the downloaded file is suspiciously small").into());
     }
-    let res = self_replace::self_replace(&tmp).map_err(|e| format!("не удалось заменить exe: {e}"));
+    let res = self_replace::self_replace(&tmp).map_err(|e| lf!("не удалось заменить exe: {e}", "couldn't replace the exe: {e}"));
     let _ = std::fs::remove_file(&tmp);
     res?;
     wavy_core::log(&format!("обновление: установлена сборка {}", rel.build));
@@ -64,9 +64,9 @@ pub fn changes(from: u32, to: u32) -> Result<Vec<(String, String)>, String> {
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "wavy-player")
         .call()
-        .map_err(|e| format!("не удалось загрузить список изменений: {e}"))?;
+        .map_err(|e| lf!("не удалось загрузить список изменений: {e}", "couldn't load the changelog: {e}"))?;
     let v: Value = serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let commits = v["commits"].as_array().ok_or("непонятный ответ GitHub")?;
+    let commits = v["commits"].as_array().ok_or(l!("непонятный ответ GitHub", "unexpected GitHub response"))?;
     Ok(parse_changes(commits.iter().rev().filter_map(|c| c["commit"]["message"].as_str())))
 }
 

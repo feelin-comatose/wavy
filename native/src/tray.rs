@@ -55,11 +55,11 @@ mod imp {
         let img = image::load_from_memory(include_bytes!("../assets/icon.png")).ok()?.resize(32, 32, image::imageops::FilterType::Triangle).to_rgba8();
         let icon = tray_icon::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok()?;
         let menu = Menu::new();
-        let show = MenuItem::new("Показать Wavy", true, None);
-        let toggle = MenuItem::new("Пауза / играть", true, None);
-        let next = MenuItem::new("Следующий трек", true, None);
-        let prev = MenuItem::new("Предыдущий трек", true, None);
-        let quit = MenuItem::new("Выход", true, None);
+        let show = MenuItem::new(l!("Показать Wavy", "Show Wavy"), true, None);
+        let toggle = MenuItem::new(wavy_core::i18n::tr("Пауза / играть"), true, None);
+        let next = MenuItem::new(wavy_core::i18n::tr("Следующий трек"), true, None);
+        let prev = MenuItem::new(wavy_core::i18n::tr("Предыдущий трек"), true, None);
+        let quit = MenuItem::new(l!("Выход", "Quit"), true, None);
         menu.append_items(&[&show, &toggle, &next, &prev, &PredefinedMenuItem::separator(), &quit]).ok()?;
         let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Wavy").with_icon(icon).build().ok()?;
         let (tx, rx) = channel();

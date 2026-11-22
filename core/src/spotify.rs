@@ -43,20 +43,20 @@ fn get(url: &str) -> Result<String, String> {
     let mut r = crate::http().get(url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
         .header("Accept-Language", "en")
-        .call().map_err(|e| format!("Spotify не ответил: {e}"))?;
+        .call().map_err(|e| lf!("Spotify не ответил: {e}", "Spotify didn't respond: {e}"))?;
     r.body_mut().with_config().limit(20 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
 }
 
 /// Публичная embed-страница: без ключей, до 100 треков.
 pub fn fetch_embed(kind: &str, id: &str) -> Result<SpList, String> {
     let html = get(&format!("https://open.spotify.com/embed/{kind}/{id}"))?;
-    let start = html.find(r#"<script id="__NEXT_DATA__" type="application/json">"#).ok_or("Spotify изменил страницу — не нашёл данные плейлиста")?;
+    let start = html.find(r#"<script id="__NEXT_DATA__" type="application/json">"#).ok_or(l!("Spotify изменил страницу — не нашёл данные плейлиста", "Spotify changed the page — couldn't find the playlist data"))?;
     let json = &html[start..];
     let json = &json[json.find('>').unwrap() + 1..];
-    let json = &json[..json.find("</script>").ok_or("битая страница Spotify")?];
+    let json = &json[..json.find("</script>").ok_or(l!("битая страница Spotify", "broken Spotify page"))?];
     let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let e = &v["props"]["pageProps"]["state"]["data"]["entity"];
-    if e.is_null() { return Err("плейлист не найден или приватный".into()); }
+    if e.is_null() { return Err(l!("плейлист не найден или приватный", "the playlist wasn't found or is private").into()); }
     let name = e["name"].as_str().unwrap_or("Spotify").to_string();
     let album = if kind == "album" { name.clone() } else { String::new() };
     let list: Vec<SpTrack> = if kind == "track" {
@@ -88,9 +88,9 @@ pub fn fetch_api(kind: &str, id: &str, client_id: &str, secret: &str) -> Result<
         .header("Authorization", &format!("Basic {auth}"))
         .content_type("application/x-www-form-urlencoded")
         .send("grant_type=client_credentials")
-        .map_err(|e| format!("Spotify API: не удалось войти (проверь Client ID / Secret): {e}"))?;
+        .map_err(|e| lf!("Spotify API: не удалось войти (проверь Client ID / Secret): {e}", "Spotify API: couldn't sign in (check the Client ID / Secret): {e}"))?;
     let tok: Value = serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let token = tok["access_token"].as_str().ok_or("Spotify API не выдал токен")?.to_string();
+    let token = tok["access_token"].as_str().ok_or(l!("Spotify API не выдал токен", "Spotify API didn't give a token"))?.to_string();
     let api = |url: &str| -> Result<Value, String> {
         let mut r = crate::http().get(url).header("Authorization", &format!("Bearer {token}")).call().map_err(|e| format!("Spotify API: {e}"))?;
         serde_json::from_str(&r.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())
@@ -123,7 +123,7 @@ pub fn fetch_api(kind: &str, id: &str, client_id: &str, secret: &str) -> Result<
             }
             Ok(SpList { name, tracks, maybe_truncated: false })
         }
-        _ => Err("неизвестный тип ссылки Spotify".into()),
+        _ => Err(l!("неизвестный тип ссылки Spotify", "unknown Spotify link type").into()),
     }
 }
 
@@ -214,13 +214,13 @@ pub struct SpImport {
 
 /// Полный импорт: список из Spotify → поиск на YouTube в несколько потоков.
 pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dyn Fn(&str) + Sync)) -> Result<SpImport, String> {
-    let (kind, id) = parse_url(url).ok_or("это не ссылка на Spotify")?;
-    status("Spotify: читаю список…");
+    let (kind, id) = parse_url(url).ok_or(l!("это не ссылка на Spotify", "this isn't a Spotify link"))?;
+    status(l!("Spotify: читаю список…", "Spotify: reading the list…"));
     let list = match creds {
         Some((cid, sec)) if !cid.is_empty() && !sec.is_empty() => fetch_api(&kind, &id, cid, sec)?,
         _ => fetch_embed(&kind, &id)?,
     };
-    if list.tracks.is_empty() { return Err("в плейлисте Spotify нет треков (или он приватный)".into()); }
+    if list.tracks.is_empty() { return Err(l!("в плейлисте Spotify нет треков (или он приватный)", "the Spotify playlist has no tracks (or it's private)").into()); }
     yt.ensure_binary(&|m| status(m))?;
     let n = list.tracks.len();
     let next = AtomicUsize::new(0);
@@ -234,7 +234,7 @@ pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dy
                 let found = match_on_youtube(yt, &list.tracks[i]).unwrap_or(None);
                 results.lock().unwrap()[i] = found;
                 let d = done.fetch_add(1, Ordering::SeqCst) + 1;
-                if d % 5 == 0 || d == n { status(&format!("Spotify: ищу на YouTube {d}/{n}…")); }
+                if d % 5 == 0 || d == n { status(&lf!("Spotify: ищу на YouTube {d}/{n}…", "Spotify: searching YouTube {d}/{n}…")); }
             });
         }
     });

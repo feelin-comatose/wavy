@@ -51,15 +51,15 @@ pub fn is_mkv(p: &Path) -> bool {
 
 fn lang_name(l: &str) -> &str {
     match l {
-        "rus" | "ru" => "Русский",
-        "jpn" | "ja" => "Японский",
-        "eng" | "en" => "Английский",
-        "ukr" | "uk" => "Украинский",
-        "chi" | "zho" | "zh" => "Китайский",
-        "kor" | "ko" => "Корейский",
-        "ger" | "deu" | "de" => "Немецкий",
-        "fre" | "fra" | "fr" => "Французский",
-        "spa" | "es" => "Испанский",
+        "rus" | "ru" => l!("Русский", "Russian"),
+        "jpn" | "ja" => l!("Японский", "Japanese"),
+        "eng" | "en" => l!("Английский", "English"),
+        "ukr" | "uk" => l!("Украинский", "Ukrainian"),
+        "chi" | "zho" | "zh" => l!("Китайский", "Chinese"),
+        "kor" | "ko" => l!("Корейский", "Korean"),
+        "ger" | "deu" | "de" => l!("Немецкий", "German"),
+        "fre" | "fra" | "fr" => l!("Французский", "French"),
+        "spa" | "es" => l!("Испанский", "Spanish"),
         "und" | "" => "",
         other => other,
     }
@@ -73,7 +73,7 @@ fn label(name: Option<&str>, lang: &str, extra: &str) -> String {
         if !parts.iter().any(|p| p.eq_ignore_ascii_case(n)) { parts.push(n.to_string()); }
     }
     if !extra.is_empty() { parts.push(extra.to_string()); }
-    if parts.is_empty() { "Без названия".into() } else { parts.join(" · ") }
+    if parts.is_empty() { l!("Без названия", "Untitled").into() } else { parts.join(" · ") }
 }
 
 fn audio_supported(codec: &str) -> bool {
@@ -124,7 +124,7 @@ pub fn probe(path: &Path) -> MediaInfo {
         }
     } else {
         info.duration = lofty::read_from_path(path).ok().map(|t| lofty::prelude::AudioFile::properties(&t).duration().as_secs_f64()).filter(|d| *d > 0.0);
-        info.audio.push(AudioTrack { label: "Основная".into(), lang: String::new(), supported: true, default: true });
+        info.audio.push(AudioTrack { label: l!("Основная", "Main").into(), lang: String::new(), supported: true, default: true });
     }
     for p in crate::anime::external_subs(path) {
         let folder = p.parent().filter(|d| Some(*d) != path.parent()).and_then(|d| d.file_name()).map(|d| d.to_string_lossy().into_owned());
@@ -134,7 +134,7 @@ pub fn probe(path: &Path) -> MediaInfo {
         let lang = tail.split('.').last().unwrap_or("").to_lowercase();
         let lang = if lang_name(&lang) != lang { lang } else { String::new() };
         let title = [folder.unwrap_or_default(), tail].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-        let title = if title.is_empty() { "Внешние".to_string() } else { format!("Внешние · {title}") };
+        let title = if title.is_empty() { l!("Внешние", "External").to_string() } else { lf!("Внешние · {title}", "External · {title}") };
         info.subs.push(SubTrack { src: SubSrc::External(p), label: title, lang, default: false, forced: false });
     }
     info

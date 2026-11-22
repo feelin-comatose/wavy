@@ -64,7 +64,7 @@ impl Discord {
                             next_retry = now_ms() + 15_000;
                             let m = e.to_string();
                             if st.lock().unwrap().error.is_none() { crate::log(&format!("discord: connect() -> {m}")); }
-                            let human = if m.to_lowercase().contains("client") || m.contains("4000") { "Неверный Application ID".into() } else { "Discord не запущен (нужно десктоп-приложение)".to_string() };
+                            let human = if m.to_lowercase().contains("client") || m.contains("4000") { l!("Неверный Application ID", "Invalid Application ID").into() } else { l!("Discord не запущен (нужно десктоп-приложение)", "Discord isn't running (the desktop app is needed)").to_string() };
                             set(DiscordStatus { connected: false, error: Some(human) });
                         }
                     }
@@ -78,7 +78,7 @@ impl Discord {
                         if res.is_err() {
                             client = None;
                             next_retry = now_ms() + 5_000;
-                            set(DiscordStatus { connected: false, error: Some("Соединение с Discord потеряно".into()) });
+                            set(DiscordStatus { connected: false, error: Some(l!("Соединение с Discord потеряно", "Lost connection to Discord").into()) });
                         }
                     }
                 }
@@ -117,7 +117,7 @@ fn build(s: &PlayerState, buttons: bool) -> Activity<'static> {
     }
     if buttons {
         if let Some(u) = t.url.clone().filter(|u| u.starts_with("http")) {
-            let label = if u.contains("music.youtube") { "Открыть в YouTube Music" } else { "Открыть трек" };
+            let label = if u.contains("music.youtube") { l!("Открыть в YouTube Music", "Open in YouTube Music") } else { l!("Открыть трек", "Open track") };
             a = a.buttons(vec![Button::new(label, u)]);
         }
     }

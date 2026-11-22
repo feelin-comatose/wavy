@@ -1,5 +1,6 @@
 package app.wavy.android.net
 
+import app.wavy.android.data.L
 import okhttp3.OkHttpClient
 import okhttp3.Request.Builder
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -22,7 +23,7 @@ object Http {
         val b = Builder().url(url).header("User-Agent", UA)
         headers.forEach { (k, v) -> b.header(k, v) }
         client.newCall(b.build()).execute().use { r ->
-            if (!r.isSuccessful) throw java.io.IOException("HTTP ${r.code} для $url")
+            if (!r.isSuccessful) throw java.io.IOException(L("HTTP ${r.code} для $url", "HTTP ${r.code} for $url"))
             return r.body?.string() ?: ""
         }
     }

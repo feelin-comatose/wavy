@@ -1,5 +1,6 @@
 package app.wavy.android.ui
 
+import app.wavy.android.data.L
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -78,7 +79,7 @@ import app.wavy.android.player.PlayerConn
 @Composable
 fun Header(title: String, sub: String? = null, back: (() -> Unit)? = null, actions: @Composable () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().padding(start = if (back == null) 20.dp else 4.dp, end = 8.dp, top = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад") }
+        if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, L("Назад", "Back")) }
         Column(Modifier.weight(1f)) {
             Text(title, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (sub != null) Text(sub, color = Muted, fontSize = 13.sp)
@@ -127,7 +128,7 @@ fun TrackRow(t: Track, index: Int?, playing: Boolean, onClick: () -> Unit, menu:
             Text(listOf(t.artist, fmtTime(t.duration)).filter { it.isNotEmpty() }.joinToString(" · "), color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Box {
-            IconButton(onClick = { open = true }) { Icon(Icons.Rounded.MoreVert, "Ещё", tint = Muted) }
+            IconButton(onClick = { open = true }) { Icon(Icons.Rounded.MoreVert, L("Ещё", "More"), tint = Muted) }
             DropdownMenu(open, onDismissRequest = { open = false }) { menu { open = false } }
         }
     }
@@ -136,12 +137,12 @@ fun TrackRow(t: Track, index: Int?, playing: Boolean, onClick: () -> Unit, menu:
 /** Меню трека: играть далее, в очередь, в плейлист, удалить. */
 @Composable
 fun TrackMenu(ids: List<String>, close: () -> Unit, playlistId: String? = null, onAddToPlaylist: (List<String>) -> Unit) {
-    DropdownMenuItem({ Text("Играть далее") }, onClick = { PlayerConn.playNext(ids); AppState.say("Сыграет следующим"); close() })
-    DropdownMenuItem({ Text("Добавить в очередь") }, onClick = { PlayerConn.enqueue(ids); AppState.say("Добавлено в очередь"); close() })
-    DropdownMenuItem({ Text("Добавить в плейлист…") }, onClick = { close(); onAddToPlaylist(ids) })
-    if (playlistId != null) DropdownMenuItem({ Text("Убрать из плейлиста") }, onClick = { Store.removeFromPlaylist(playlistId, ids.toSet()); close() })
-    if (ids.all { Store.lib.value.tracks.containsKey(it) }) DropdownMenuItem({ Text("Удалить из библиотеки", color = Bad) }, onClick = { Store.removeTracks(ids.toSet()); close() })
-    else DropdownMenuItem({ Text("В библиотеку") }, onClick = { Store.addTracks(ids.mapNotNull(Store::track)); AppState.say("Добавлено в библиотеку"); close() })
+    DropdownMenuItem({ Text(L("Играть далее", "Play next")) }, onClick = { PlayerConn.playNext(ids); AppState.say(L("Сыграет следующим", "Will play next")); close() })
+    DropdownMenuItem({ Text(L("Добавить в очередь", "Add to queue")) }, onClick = { PlayerConn.enqueue(ids); AppState.say(L("Добавлено в очередь", "Added to queue")); close() })
+    DropdownMenuItem({ Text(L("Добавить в плейлист…", "Add to playlist…")) }, onClick = { close(); onAddToPlaylist(ids) })
+    if (playlistId != null) DropdownMenuItem({ Text(L("Убрать из плейлиста", "Remove from playlist")) }, onClick = { Store.removeFromPlaylist(playlistId, ids.toSet()); close() })
+    if (ids.all { Store.lib.value.tracks.containsKey(it) }) DropdownMenuItem({ Text(L("Удалить из библиотеки", "Delete from library"), color = Bad) }, onClick = { Store.removeTracks(ids.toSet()); close() })
+    else DropdownMenuItem({ Text(L("В библиотеку", "To library")) }, onClick = { Store.addTracks(ids.mapNotNull(Store::track)); AppState.say(L("Добавлено в библиотеку", "Added to library")); close() })
 }
 
 @Composable
@@ -171,17 +172,17 @@ fun LibraryScreen(onImport: () -> Unit, onScan: () -> Unit, onAddToPlaylist: (Li
         if (q.isEmpty()) all else all.filter { id -> lib.tracks[id]?.let { "${it.title} ${it.artist} ${it.album}".lowercase().contains(q) } == true }
     }
     TrackList(ids, header = {
-        Header("Библиотека", "${all.size} трек(ов)")
+        Header(L("Библиотека", "Library"), L("${all.size} трек(ов)", "${all.size} track(s)"))
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { Pill("Слушать", Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) } }
-            item { Pill("Вперемешку", Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) } }
-            item { Pill("С телефона", Icons.Rounded.PhoneAndroid) { onScan() } }
-            item { Pill("По ссылке", Icons.Rounded.Link) { onImport() } }
+            item { Pill(L("Слушать", "Play"), Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) } }
+            item { Pill(L("Вперемешку", "Shuffle"), Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) } }
+            item { Pill(L("С телефона", "From phone"), Icons.Rounded.PhoneAndroid) { onScan() } }
+            item { Pill(L("По ссылке", "By link"), Icons.Rounded.Link) { onImport() } }
         }
         if (all.isNotEmpty()) OutlinedTextField(filter, { filter = it }, Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 4.dp),
-            placeholder = { Text("Фильтр по названию, артисту, альбому…") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(99.dp))
-        if (all.isEmpty()) Empty("Тут пока тихо", "Найди музыку и видео на телефоне или вставь ссылку на плейлист YouTube Music / Spotify") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Pill("С телефона", Icons.Rounded.PhoneAndroid, true) { onScan() }; Pill("По ссылке", Icons.Rounded.Link) { onImport() } }
+            placeholder = { Text(L("Фильтр по названию, артисту, альбому…", "Filter by title, artist, album…")) }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true, shape = RoundedCornerShape(99.dp))
+        if (all.isEmpty()) Empty(L("Тут пока тихо", "It's quiet here for now"), L("Найди музыку и видео на телефоне или вставь ссылку на плейлист YouTube Music / Spotify", "Find music and videos on your phone or paste a YouTube Music / Spotify playlist link")) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Pill(L("С телефона", "From phone"), Icons.Rounded.PhoneAndroid, true) { onScan() }; Pill(L("По ссылке", "By link"), Icons.Rounded.Link) { onImport() } }
         }
     }, onAddToPlaylist = onAddToPlaylist)
 }
@@ -196,12 +197,12 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
     if (p == null) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
-                Header("Плейлисты", "${lib.playlists.size}") { IconButton({ create = true }) { Icon(Icons.Rounded.Add, "Новый плейлист") } }
+                Header(L("Плейлисты", "Playlists"), "${lib.playlists.size}") { IconButton({ create = true }) { Icon(Icons.Rounded.Add, L("Новый плейлист", "New playlist")) } }
                 Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pill("Новый", Icons.Rounded.Add) { create = true }
-                    Pill("Из YouTube / Spotify", Icons.Rounded.Link) { onImport(null) }
+                    Pill(L("Новый", "New"), Icons.Rounded.Add) { create = true }
+                    Pill(L("Из YouTube / Spotify", "From YouTube / Spotify"), Icons.Rounded.Link) { onImport(null) }
                 }
-                if (lib.playlists.isEmpty()) Empty("Плейлистов пока нет", "Создай свой или импортируй по ссылке — YouTube Music, YouTube, Spotify")
+                if (lib.playlists.isEmpty()) Empty(L("Плейлистов пока нет", "No playlists yet"), L("Создай свой или импортируй по ссылке — YouTube Music, YouTube, Spotify", "Create your own or import one by link — YouTube Music, YouTube, Spotify"))
                 Spacer(Modifier.height(8.dp))
             }
             items(lib.playlists, key = { it.id }) { pl ->
@@ -210,7 +211,7 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
                     Cover(first, 56.dp, 10.dp)
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text(pl.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${pl.trackIds.size} трек(ов)" + if (pl.isRemote) " · импорт" else "", color = Muted, fontSize = 13.sp)
+                        Text(L("${pl.trackIds.size} трек(ов)", "${pl.trackIds.size} track(s)") + if (pl.isRemote) L(" · импорт", " · import") else "", color = Muted, fontSize = 13.sp)
                     }
                     Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, tint = Muted)
                 }
@@ -220,31 +221,31 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
         val ids = p.trackIds.filter { lib.tracks.containsKey(it) }
         val offline by app.wavy.android.data.Offline.saved.collectAsState()
         TrackList(ids, playlistId = p.id, header = {
-            Header(p.name, "${ids.size} трек(ов) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}", back = { onOpen(null) })
+            Header(p.name, L("${ids.size} трек(ов) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}", "${ids.size} track(s) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}"), back = { onOpen(null) })
             LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { Pill("Слушать", Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) } }
-                item { Pill("Вперемешку", Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) } }
-                if (p.isRemote) item { Pill("Синхронизировать", Icons.Rounded.Sync) { AppState.syncPlaylist(p.id) } }
+                item { Pill(L("Слушать", "Play"), Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) } }
+                item { Pill(L("Вперемешку", "Shuffle"), Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) } }
+                if (p.isRemote) item { Pill(L("Синхронизировать", "Sync"), Icons.Rounded.Sync) { AppState.syncPlaylist(p.id) } }
                 val yt = ids.mapNotNull { lib.tracks[it] }.filter { it.videoId != null }
                 if (yt.isNotEmpty()) item {
                     val have = yt.count { it.videoId in offline }
-                    Pill(if (have == yt.size) "Скачано" else if (have > 0) "Скачать ($have/${yt.size})" else "Скачать", Icons.Rounded.DownloadForOffline) { AppState.downloadOffline(ids) }
+                    Pill(if (have == yt.size) L("Скачано", "Downloaded") else if (have > 0) L("Скачать ($have/${yt.size})", "Download ($have/${yt.size})") else L("Скачать", "Download"), Icons.Rounded.DownloadForOffline) { AppState.downloadOffline(ids) }
                 }
-                item { Pill("Добавить", Icons.Rounded.Link) { onImport(p.id) } }
-                item { Pill("Переименовать", Icons.Rounded.Edit) { rename = p.id } }
-                item { Pill("Удалить", Icons.Rounded.Delete) { delete = p.id } }
+                item { Pill(L("Добавить", "Add"), Icons.Rounded.Link) { onImport(p.id) } }
+                item { Pill(L("Переименовать", "Rename"), Icons.Rounded.Edit) { rename = p.id } }
+                item { Pill(L("Удалить", "Delete"), Icons.Rounded.Delete) { delete = p.id } }
             }
-            if (ids.isEmpty()) Empty("Плейлист пустой", "Добавляй треки через меню ⋮ в библиотеке или поиске")
+            if (ids.isEmpty()) Empty(L("Плейлист пустой", "The playlist is empty"), L("Добавляй треки через меню ⋮ в библиотеке или поиске", "Add tracks with the ⋮ menu in the library or search"))
             Spacer(Modifier.height(8.dp))
         }, onAddToPlaylist = onAddToPlaylist)
     }
-    if (create) TextDialog("Новый плейлист", "", "Создать", { create = false }) { name -> onOpen(Store.createPlaylist(name).id) }
-    rename?.let { id -> TextDialog("Переименовать", lib.playlists.firstOrNull { it.id == id }?.name ?: "", "Сохранить", { rename = null }) { Store.renamePlaylist(id, it) } }
+    if (create) TextDialog(L("Новый плейлист", "New playlist"), "", L("Создать", "Create"), { create = false }) { name -> onOpen(Store.createPlaylist(name).id) }
+    rename?.let { id -> TextDialog(L("Переименовать", "Rename"), lib.playlists.firstOrNull { it.id == id }?.name ?: "", L("Сохранить", "Save"), { rename = null }) { Store.renamePlaylist(id, it) } }
     delete?.let { id ->
-        AlertDialog(onDismissRequest = { delete = null }, title = { Text("Удалить «${lib.playlists.firstOrNull { it.id == id }?.name}»?") },
-            text = { Text("Треки останутся в библиотеке.") },
-            confirmButton = { TextButton({ Store.deletePlaylist(id); delete = null; onOpen(null) }) { Text("Удалить", color = Bad) } },
-            dismissButton = { TextButton({ delete = null }) { Text("Отмена") } })
+        AlertDialog(onDismissRequest = { delete = null }, title = { Text(L("Удалить «${lib.playlists.firstOrNull { it.id == id }?.name}»?", "Delete “${lib.playlists.firstOrNull { it.id == id }?.name}”?")) },
+            text = { Text(L("Треки останутся в библиотеке.", "The tracks will stay in the library.")) },
+            confirmButton = { TextButton({ Store.deletePlaylist(id); delete = null; onOpen(null) }) { Text(L("Удалить", "Delete"), color = Bad) } },
+            dismissButton = { TextButton({ delete = null }) { Text(L("Отмена", "Cancel")) } })
     }
 }
 
@@ -258,17 +259,17 @@ fun SearchScreen(onAddToPlaylist: (List<String>) -> Unit) {
     val st by PlayerConn.state.collectAsState()
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Header("Поиск", "YouTube Music и YouTube")
+            Header(L("Поиск", "Search"), L("YouTube Music и YouTube", "YouTube Music and YouTube"))
             OutlinedTextField(q, { AppState.searchQuery.value = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                placeholder = { Text("Трек, артист — или вставь ссылку") }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true,
+                placeholder = { Text(L("Трек, артист — или вставь ссылку", "Track, artist — or paste a link")) }, leadingIcon = { Icon(Icons.Rounded.Search, null) }, singleLine = true,
                 shape = RoundedCornerShape(99.dp), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { AppState.search() }),
-                trailingIcon = { if (searching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else TextButton({ AppState.search() }) { Text("Найти") } })
+                trailingIcon = { if (searching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else TextButton({ AppState.search() }) { Text(L("Найти", "Find")) } })
             Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(music, { AppState.searchMusic.value = true; if (q.isNotBlank()) AppState.search() }, { Text("Треки") })
-                FilterChip(!music, { AppState.searchMusic.value = false; if (q.isNotBlank()) AppState.search() }, { Text("Видео") })
+                FilterChip(music, { AppState.searchMusic.value = true; if (q.isNotBlank()) AppState.search() }, { Text(L("Треки", "Tracks")) })
+                FilterChip(!music, { AppState.searchMusic.value = false; if (q.isNotBlank()) AppState.search() }, { Text(L("Видео", "Videos")) })
             }
-            if (results.isEmpty() && !searching) Empty("Найди что-нибудь", "Например: «lofi hip hop», «Daft Punk», или вставь ссылку на плейлист")
+            if (results.isEmpty() && !searching) Empty(L("Найди что-нибудь", "Find something"), L("Например: «lofi hip hop», «Daft Punk», или вставь ссылку на плейлист", "For example: “lofi hip hop”, “Daft Punk”, or paste a playlist link"))
         }
         itemsIndexed(results, key = { _, t -> t.id }) { i, t ->
             val inLib = lib.tracks.containsKey(t.id)
@@ -278,7 +279,7 @@ fun SearchScreen(onAddToPlaylist: (List<String>) -> Unit) {
                         TrackMenu(listOf(t.id), close, onAddToPlaylist = { Store.remember(listOf(t)); onAddToPlaylist(it) })
                     }
                 }
-                if (!inLib) IconButton({ Store.addTracks(listOf(t)); AppState.say("Добавлено в библиотеку") }, Modifier.padding(end = 4.dp)) { Icon(Icons.Rounded.Add, "В библиотеку") }
+                if (!inLib) IconButton({ Store.addTracks(listOf(t)); AppState.say(L("Добавлено в библиотеку", "Added to library")) }, Modifier.padding(end = 4.dp)) { Icon(Icons.Rounded.Add, L("В библиотеку", "To library")) }
             }
         }
     }
@@ -292,46 +293,46 @@ fun TextDialog(title: String, initial: String, ok: String, dismiss: () -> Unit, 
     AlertDialog(onDismissRequest = dismiss, title = { Text(title) },
         text = { OutlinedTextField(v, { v = it }, singleLine = true, modifier = Modifier.fillMaxWidth()) },
         confirmButton = { TextButton({ if (v.isNotBlank()) { onOk(v.trim()); dismiss() } }) { Text(ok) } },
-        dismissButton = { TextButton(dismiss) { Text("Отмена") } })
+        dismissButton = { TextButton(dismiss) { Text(L("Отмена", "Cancel")) } })
 }
 
 @Composable
 fun ImportDialog(initial: String, intoPlaylist: String?, dismiss: () -> Unit, opened: (String?) -> Unit) {
     var url by remember { mutableStateOf(initial) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Импорт по ссылке") },
+    AlertDialog(onDismissRequest = dismiss, title = { Text(L("Импорт по ссылке", "Import by link")) },
         text = {
             Column {
-                Text("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp. Можно и через «Поделиться» прямо из их приложений.", color = Muted, fontSize = 13.sp)
+                Text(L("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp. Можно и через «Поделиться» прямо из их приложений.", "Spotify (playlist, album, track), YouTube Music, YouTube, SoundCloud, Bandcamp. You can also use “Share” right from their apps."), color = Muted, fontSize = 13.sp)
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(url, { url = it }, singleLine = true, modifier = Modifier.fillMaxWidth(), placeholder = { Text("https://…") })
             }
         },
-        confirmButton = { TextButton({ if (url.trim().startsWith("http") || url.trim().startsWith("spotify:")) { AppState.importUrl(url.trim(), intoPlaylist, opened); dismiss() } else AppState.say("Нужна ссылка") }) { Text("Импортировать") } },
-        dismissButton = { TextButton(dismiss) { Text("Отмена") } })
+        confirmButton = { TextButton({ if (url.trim().startsWith("http") || url.trim().startsWith("spotify:")) { AppState.importUrl(url.trim(), intoPlaylist, opened); dismiss() } else AppState.say(L("Нужна ссылка", "A link is needed")) }) { Text(L("Импортировать", "Import")) } },
+        dismissButton = { TextButton(dismiss) { Text(L("Отмена", "Cancel")) } })
 }
 
 @Composable
 fun AddToPlaylistDialog(ids: List<String>, dismiss: () -> Unit) {
     val lib by Store.lib.collectAsState()
     var create by remember { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Добавить в плейлист") },
+    AlertDialog(onDismissRequest = dismiss, title = { Text(L("Добавить в плейлист", "Add to playlist")) },
         text = {
             LazyColumn {
                 item { Row(Modifier.fillMaxWidth().clickable { create = true }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null); Spacer(Modifier.width(12.dp)); Text("Новый плейлист…") } }
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null); Spacer(Modifier.width(12.dp)); Text(L("Новый плейлист…", "New playlist…")) } }
                 item { HorizontalDivider() }
                 items(lib.playlists, key = { it.id }) { p ->
                     Text(p.name, Modifier.fillMaxWidth().clickable {
                         Store.addTracks(ids.mapNotNull(Store::track).filter { !lib.tracks.containsKey(it.id) })
-                        Store.addToPlaylist(p.id, ids); AppState.say("Добавлено в «${p.name}»"); dismiss()
+                        Store.addToPlaylist(p.id, ids); AppState.say(L("Добавлено в «${p.name}»", "Added to “${p.name}”")); dismiss()
                     }.padding(vertical = 12.dp))
                 }
             }
         },
-        confirmButton = { TextButton(dismiss) { Text("Закрыть") } })
-    if (create) TextDialog("Новый плейлист", "", "Создать", { create = false }) { name ->
+        confirmButton = { TextButton(dismiss) { Text(L("Закрыть", "Close")) } })
+    if (create) TextDialog(L("Новый плейлист", "New playlist"), "", L("Создать", "Create"), { create = false }) { name ->
         Store.addTracks(ids.mapNotNull(Store::track).filter { !lib.tracks.containsKey(it.id) })
-        Store.createPlaylist(name, ids); AppState.say("Плейлист «$name» создан"); dismiss()
+        Store.createPlaylist(name, ids); AppState.say(L("Плейлист «$name» создан", "Playlist “$name” created")); dismiss()
     }
 }
 

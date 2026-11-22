@@ -39,7 +39,7 @@ impl Audio {
                 self._sink = Some(sink);
                 self.error = None;
             }
-            Err(e) => self.error = Some(format!("Нет устройства вывода звука: {e}")),
+            Err(e) => self.error = Some(lf!("Нет устройства вывода звука: {e}", "No audio output device: {e}")),
         }
     }
 
@@ -56,7 +56,7 @@ impl Audio {
         self.volume = volume;
         let reader = dl.reader().map_err(|e| e.to_string())?;
         let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint("m4a")
-            .build().map_err(|e| format!("не удалось декодировать поток: {e}"))?;
+            .build().map_err(|e| lf!("не удалось декодировать поток: {e}", "couldn't decode the stream: {e}"))?;
         self.duration = 0.0; // у потока длительность неизвестна — берём из трека
         p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
         p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
@@ -134,7 +134,7 @@ impl Audio {
             Ok(d) => d,
             // формат, которого нет в symphonia (Opus, AC3, DTS…) — через ffmpeg, если он есть
             Err(e) => {
-                let Some(ff) = self.ffmpeg.clone() else { return Err(format!("{}не удалось декодировать: {e}", wavy_core::ffmpeg::NEED)) };
+                let Some(ff) = self.ffmpeg.clone() else { return Err(lf!("{}не удалось декодировать: {e}", "{}couldn't decode: {e}", wavy_core::ffmpeg::NEED)) };
                 let src = FfAudio::open(ff, path, 0, 0.0)?;
                 self.duration = src.duration.unwrap_or(0.0);
                 p.append(crate::fx::Fx::new(src, self.fx.clone(), self.pos.clone()));
@@ -248,19 +248,19 @@ impl AudioOfVideo {
         if let Some(e) = path.extension().and_then(|e| e.to_str()) { hint.with_extension(e); }
         let probed = symphonia::default::get_probe()
             .format(&hint, mss, &FormatOptions { enable_gapless: true, ..Default::default() }, &MetadataOptions::default())
-            .map_err(|e| format!("не удалось открыть файл: {e}"))?;
+            .map_err(|e| lf!("не удалось открыть файл: {e}", "couldn't open the file: {e}"))?;
         let format = probed.format;
         let codecs = symphonia::default::get_codecs();
         let audio: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).collect();
         // выбранная дорожка в формате, которого нет в symphonia (Opus, AC3, DTS…) — это работа для ffmpeg
         let track = match audio.get(nth) {
             Some(t) if codecs.get_codec(t.codec_params.codec).is_some() => *t,
-            Some(_) => return Err(format!("{}звук в формате, который нужен ffmpeg", wavy_core::ffmpeg::NEED)),
+            Some(_) => return Err(lf!("{}звук в формате, который нужен ffmpeg", "{}the audio is in a format that needs ffmpeg", wavy_core::ffmpeg::NEED)),
             None => audio.iter().copied().find(|t| codecs.get_codec(t.codec_params.codec).is_some())
-                .ok_or_else(|| format!("{}в видео нет звуковой дорожки, которую можно воспроизвести без ffmpeg", wavy_core::ffmpeg::NEED))?,
+                .ok_or_else(|| lf!("{}в видео нет звуковой дорожки, которую можно воспроизвести без ffmpeg", "{}the video has no audio track that can be played without ffmpeg", wavy_core::ffmpeg::NEED))?,
         };
         let decoder = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
-        let rate = track.codec_params.sample_rate.and_then(std::num::NonZero::new).ok_or("неизвестная частота")?;
+        let rate = track.codec_params.sample_rate.and_then(std::num::NonZero::new).ok_or(l!("неизвестная частота", "unknown sample rate"))?;
         let channels = track.codec_params.channels.map(|c| c.count() as u16).and_then(std::num::NonZero::new).unwrap_or(std::num::NonZero::new(2).unwrap());
         let duration = match (track.codec_params.time_base, track.codec_params.n_frames) {
             (Some(tb), Some(n)) => { let t = tb.calc_time(n); Some(Duration::from_secs_f64(t.seconds as f64 + t.frac)) }
@@ -333,7 +333,7 @@ pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize, ffmpe
                 .arg("-i").arg(path).arg("-map").arg(format!("0:a:{audio}?")).args(["-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"])
                 .output().map_err(|e| format!("ffmpeg: {e}"))?;
             let v: Vec<f32> = out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
-            if v.len() < 16000 * 3 { return Err("слишком мало звука".into()); }
+            if v.len() < 16000 * 3 { return Err(l!("слишком мало звука", "too little audio").into()); }
             Ok(v)
         }
         r => r,
@@ -347,14 +347,14 @@ fn sample_symphonia(path: &Path, start: f64, secs: f64, audio: usize) -> Result<
     let mut hint = Hint::new();
     if let Some(e) = path.extension().and_then(|e| e.to_str()) { hint.with_extension(e); }
     let mut format = symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| format!("{}не удалось открыть файл: {e}", wavy_core::ffmpeg::NEED))?.format;
+        .map_err(|e| lf!("{}не удалось открыть файл: {e}", "{}couldn't open the file: {e}", wavy_core::ffmpeg::NEED))?.format;
     let codecs = symphonia::default::get_codecs();
     let audio_tracks: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).cloned().collect();
     let track = match audio_tracks.get(audio) {
         Some(t) if codecs.get_codec(t.codec_params.codec).is_some() => t.clone(),
-        Some(_) => return Err(format!("{}звук в формате, который нужен ffmpeg", wavy_core::ffmpeg::NEED)),
+        Some(_) => return Err(lf!("{}звук в формате, который нужен ffmpeg", "{}the audio is in a format that needs ffmpeg", wavy_core::ffmpeg::NEED)),
         None => audio_tracks.iter().find(|t| codecs.get_codec(t.codec_params.codec).is_some()).cloned()
-            .ok_or_else(|| format!("{}нет звуковой дорожки, которую можно разобрать", wavy_core::ffmpeg::NEED))?,
+            .ok_or_else(|| lf!("{}нет звуковой дорожки, которую можно разобрать", "{}no audio track that can be parsed", wavy_core::ffmpeg::NEED))?,
     };
     let mut dec = codecs.make(&track.codec_params, &DecoderOptions::default()).map_err(|e| e.to_string())?;
     if start > 0.5 {
@@ -379,7 +379,7 @@ fn sample_symphonia(path: &Path, start: f64, secs: f64, audio: usize) -> Result<
             Err(e) => return Err(e.to_string()),
         }
     }
-    if pcm.len() < rate as usize * ch * 3 { return Err("слишком мало звука".into()); }
+    if pcm.len() < rate as usize * ch * 3 { return Err(l!("слишком мало звука", "too little audio").into()); }
     Ok(wavy_core::shazam::to_mono_16k(&pcm, ch, rate))
 }
 
@@ -410,7 +410,7 @@ impl FfAudio {
         c.arg("-i").arg(&self.path).arg("-map").arg(format!("0:a:{}?", self.track))
             .args(["-vn", "-sn", "-dn", "-ac", "2", "-ar", "48000", "-f", "f32le", "-"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = c.spawn().map_err(|e| format!("не удалось запустить ffmpeg: {e}"))?;
+        let mut child = c.spawn().map_err(|e| lf!("не удалось запустить ffmpeg: {e}", "couldn't start ffmpeg: {e}"))?;
         self.out = child.stdout.take().map(|o| std::io::BufReader::with_capacity(256 * 1024, o));
         self.child = Some(child);
         Ok(())

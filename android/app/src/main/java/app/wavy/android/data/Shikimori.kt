@@ -40,7 +40,7 @@ object Shikimori {
                 }
             } catch (e: Exception) { last = e }
         }
-        throw last ?: java.io.IOException("Шикимори недоступен")
+        throw last ?: java.io.IOException(L("Шикимори недоступен", "Shikimori is unavailable"))
     }
 
     private fun parse(a: JsonObject, host: String): Hit {

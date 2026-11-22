@@ -197,8 +197,8 @@ object Shazam {
             .header("Content-Language", "en_US")
             .post(body.toRequestBody("application/json".toMediaType())).build()
         Http.client.newCall(req).execute().use { r ->
-            if (r.code == 429) throw java.io.IOException("Shazam: слишком много запросов, попробуй через минуту")
-            if (!r.isSuccessful) throw java.io.IOException("Shazam ответил ${r.code}")
+            if (r.code == 429) throw java.io.IOException(L("Shazam: слишком много запросов, попробуй через минуту", "Shazam: too many requests, try again in a minute"))
+            if (!r.isSuccessful) throw java.io.IOException(L("Shazam ответил ${r.code}", "Shazam replied ${r.code}"))
             return parse(r.body?.string() ?: "")
         }
     }

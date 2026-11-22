@@ -22,7 +22,7 @@ fn get(url: &str) -> Result<Value, String> {
     let mut r = crate::http().get(url).header("User-Agent", "Wavy (music & anime player)").header("Accept", "application/json")
         .call().map_err(|e| e.to_string())?;
     let t = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
-    serde_json::from_str(&t).map_err(|_| "непонятный ответ".to_string())
+    serde_json::from_str(&t).map_err(|_| l!("непонятный ответ", "unexpected response").to_string())
 }
 
 pub fn fetch(mal_id: u64) -> Result<Vec<Theme>, String> {
@@ -32,7 +32,7 @@ pub fn fetch(mal_id: u64) -> Result<Vec<Theme>, String> {
         Ok(list) if !list.is_empty() => Ok(list),
         r => {
             if let Err(e) = &r { crate::log(&format!("animethemes: {e} — пробую MyAnimeList")); }
-            let j = get(&format!("https://api.jikan.moe/v4/anime/{mal_id}/themes")).map_err(|e| format!("не получил список опенингов: {e}"))?;
+            let j = get(&format!("https://api.jikan.moe/v4/anime/{mal_id}/themes")).map_err(|e| lf!("не получил список опенингов: {e}", "didn't get the openings list: {e}"))?;
             Ok(parse_jikan(&j))
         }
     }

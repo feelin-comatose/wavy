@@ -1,5 +1,6 @@
 package app.wavy.android
 
+import app.wavy.android.data.L
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -74,11 +75,11 @@ class MainActivity : ComponentActivity() {
     private val sharedUrl = mutableStateOf<String?>(null)
 
     private val askMedia = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
-        if (res.values.any { it }) AppState.scanLocal(this) else AppState.say("Без доступа к файлам музыку с телефона не найти")
+        if (res.values.any { it }) AppState.scanLocal(this) else AppState.say(L("Без доступа к файлам музыку с телефона не найти", "Without file access music on the phone can't be found"))
     }
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) AppState.listen() else AppState.say("Без микрофона Shazam не услышит музыку")
+        if (ok) AppState.listen() else AppState.say(L("Без микрофона Shazam не услышит музыку", "Without the microphone Shazam can't hear the music"))
     }
 
     /** Shazam: разрешение на микрофон → слушать. */
@@ -89,7 +90,7 @@ class MainActivity : ComponentActivity() {
     }
     private val pickImport = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::importFile) }
     private val saveExport = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        uri?.let { runCatching { contentResolver.openOutputStream(it)?.use { o -> o.write(Sync.export().toByteArray()) } }.onSuccess { AppState.say("Экспорт сохранён — открой этот файл в Wavy на ПК") } }
+        uri?.let { runCatching { contentResolver.openOutputStream(it)?.use { o -> o.write(Sync.export().toByteArray()) } }.onSuccess { AppState.say(L("Экспорт сохранён — открой этот файл в Wavy на ПК", "Export saved — open this file in Wavy on the PC")) } }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
 
     private fun importFile(uri: Uri) {
         val text = runCatching { contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()
-        if (text != null && Sync.isExport(text)) AppState.importExport(text) else AppState.say("Это не файл экспорта Wavy")
+        if (text != null && Sync.isExport(text)) AppState.importExport(text) else AppState.say(L("Это не файл экспорта Wavy", "This isn't a Wavy export file"))
     }
 
     private fun scan() {
@@ -133,18 +134,18 @@ class MainActivity : ComponentActivity() {
 
     private fun setFloating(on: Boolean) {
         if (on && !Settings.canDrawOverlays(this)) {
-            AppState.say("Разреши Wavy «Поверх других приложений» и включи снова")
+            AppState.say(L("Разреши Wavy «Поверх других приложений» и включи снова", "Allow Wavy “Display over other apps” and turn it on again"))
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
         Store.settings { it.copy(floatingPlayer = on) }
-        if (on) AppState.say("Мини-плеер появится, когда свернёшь Wavy")
+        if (on) AppState.say(L("Мини-плеер появится, когда свернёшь Wavy", "The mini player will appear when you minimize Wavy"))
     }
 
     private fun installUpdate() {
         when (val u = AppState.update.value) {
             is AppState.Upd.Available -> AppState.downloadUpdate(this, u.rel)
-            is AppState.Upd.Ready -> if (Updater.canInstall(this)) Updater.install(this, u.file) else { AppState.say("Разреши установку из Wavy и нажми «Установить» ещё раз"); Updater.openInstallPermission(this) }
+            is AppState.Upd.Ready -> if (Updater.canInstall(this)) Updater.install(this, u.file) else { AppState.say(L("Разреши установку из Wavy и нажми «Установить» ещё раз", "Allow installs from Wavy and tap “Install” again")); Updater.openInstallPermission(this) }
             else -> {}
         }
     }
@@ -176,7 +177,7 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(msg) { msg?.let { snack.showSnackbar(it); AppState.message.value = null } }
         LaunchedEffect(shared) { shared?.let { importFor = it to null; sharedUrl.value = null } }
-        LaunchedEffect(upd) { if (upd is AppState.Upd.Available) AppState.say("Вышла новая версия Wavy — Настройки → Обновления") }
+        LaunchedEffect(upd) { if (upd is AppState.Upd.Available) AppState.say(L("Вышла новая версия Wavy — Настройки → Обновления", "A new version of Wavy is out — Settings → Updates")) }
         BackHandler(full || openPlaylist != null || openAnime != null) { if (full) full = false else if (openAnime != null) openAnime = null else openPlaylist = null }
 
         Box(Modifier.fillMaxSize().background(Bg)) {
@@ -187,7 +188,7 @@ class MainActivity : ComponentActivity() {
                     Column {
                         MiniPlayer { full = true }
                         NavigationBar(containerColor = Bg3) {
-                            val items = listOf("Библиотека" to Icons.Rounded.LibraryMusic, "Плейлисты" to Icons.AutoMirrored.Rounded.QueueMusic, "Аниме" to Icons.Rounded.LiveTv, "Поиск" to Icons.Rounded.Search, "Настройки" to Icons.Rounded.Settings)
+                            val items = listOf(L("Библиотека", "Library") to Icons.Rounded.LibraryMusic, L("Плейлисты", "Playlists") to Icons.AutoMirrored.Rounded.QueueMusic, L("Аниме", "Anime") to Icons.Rounded.LiveTv, L("Поиск", "Search") to Icons.Rounded.Search, L("Настройки", "Settings") to Icons.Rounded.Settings)
                             items.forEachIndexed { i, (label, icon) ->
                                 NavigationBarItem(tab == i, { tab = i; if (i == 1) openPlaylist = null; if (i == 2) openAnime = null }, { Icon(icon, label) }, label = { Text(label, maxLines = 1, fontSize = 11.sp) },
                                     colors = NavigationBarItemDefaults.colors(selectedIconColor = Bg, indicatorColor = TextC, unselectedIconColor = Muted, unselectedTextColor = Muted))

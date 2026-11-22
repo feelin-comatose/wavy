@@ -58,13 +58,13 @@ impl Ffmpeg {
         {
             let mut st = self.state.lock().unwrap();
             if matches!(*st, State::Ready(_) | State::Downloading(_)) { return; }
-            if !cfg!(windows) { *st = State::Failed("поставь ffmpeg из пакетов системы (apt install ffmpeg)".into()); return; }
+            if !cfg!(windows) { *st = State::Failed(l!("поставь ffmpeg из пакетов системы (apt install ffmpeg)", "install ffmpeg from your system packages (apt install ffmpeg)").into()); return; }
             *st = State::Downloading(0);
         }
         let (state, dir) = (self.state.clone(), self.bin_dir.clone());
         std::thread::Builder::new().name("ffmpeg-install".into()).spawn(move || {
             let r = download(&dir, |p| { *state.lock().unwrap() = State::Downloading(p); on_change(); });
-            crate::log(&format!("ffmpeg: {}", match &r { Ok(p) => format!("скачан в {}", p.display()), Err(e) => format!("ошибка: {e}") }));
+            crate::log(&format!("ffmpeg: {}", match &r { Ok(p) => format!("скачан в {}", p.display()), Err(e) => lf!("ошибка: {e}", "error: {e}") }));
             *state.lock().unwrap() = match r { Ok(p) => State::Ready(p), Err(e) => State::Failed(e) };
             on_change();
         }).ok();
@@ -79,18 +79,18 @@ impl Ffmpeg {
                 match &*st {
                     State::Downloading(_) => {}
                     State::Ready(p) if has_encoder(p, "libmp3lame") => return Ok(p.clone()),
-                    _ if !cfg!(windows) => return Err("нужен ffmpeg с кодировщиком MP3 — поставь его из пакетов системы (apt install ffmpeg)".into()),
+                    _ if !cfg!(windows) => return Err(l!("нужен ffmpeg с кодировщиком MP3 — поставь его из пакетов системы (apt install ffmpeg)", "ffmpeg with an MP3 encoder is needed — install it from your system packages (apt install ffmpeg)").into()),
                     _ => { *st = State::Downloading(0); break; }
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
         let r = download(&self.bin_dir, |p| { *self.state.lock().unwrap() = State::Downloading(p); progress(p); });
-        crate::log(&format!("ffmpeg (MP3): {}", match &r { Ok(p) => format!("скачан в {}", p.display()), Err(e) => format!("ошибка: {e}") }));
+        crate::log(&format!("ffmpeg (MP3): {}", match &r { Ok(p) => lf!("скачан в {}", "downloaded to {}", p.display()), Err(e) => lf!("ошибка: {e}", "error: {e}") }));
         let had_old = self.bin_dir.join(exe());
         *self.state.lock().unwrap() = match &r { Ok(p) => State::Ready(p.clone()), Err(_) if had_old.exists() => State::Ready(had_old), Err(e) => State::Failed(e.clone()) };
         let p = r?;
-        if has_encoder(&p, "libmp3lame") { Ok(p) } else { Err("в декодере с сайта ещё нет MP3 — новая сборка Wavy выйдет через несколько минут, попробуй позже".into()) }
+        if has_encoder(&p, "libmp3lame") { Ok(p) } else { Err(l!("в декодере с сайта ещё нет MP3 — новая сборка Wavy выйдет через несколько минут, попробуй позже", "the decoder from the site doesn't have MP3 yet — a new Wavy build will be out in a few minutes, try later").into()) }
     }
 }
 
@@ -104,7 +104,7 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
     use std::io::{Read, Write};
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let url = "https://github.com/feelin-comatose/wavy/releases/latest/download/ffmpeg.exe";
-    let resp = crate::http().get(url).call().map_err(|e| format!("не удалось скачать декодер: {e}"))?;
+    let resp = crate::http().get(url).call().map_err(|e| lf!("не удалось скачать декодер: {e}", "couldn't download the decoder: {e}"))?;
     let total: u64 = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).unwrap_or(0);
     let dest = dir.join(exe());
     let part = dest.with_extension("part");
@@ -112,7 +112,7 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
     let mut r = resp.into_body().into_reader();
     let (mut buf, mut got, mut last) = (vec![0u8; 256 * 1024], 0u64, 255u8);
     loop {
-        let n = r.read(&mut buf).map_err(|e| format!("загрузка прервалась: {e}"))?;
+        let n = r.read(&mut buf).map_err(|e| lf!("загрузка прервалась: {e}", "the download was interrupted: {e}"))?;
         if n == 0 { break; }
         f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         got += n as u64;
@@ -120,7 +120,7 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
         if p != last { last = p; progress(p); }
     }
     drop(f);
-    if got < 1_000_000 { let _ = std::fs::remove_file(&part); return Err("скачался не тот файл (слишком маленький)".into()); }
+    if got < 1_000_000 { let _ = std::fs::remove_file(&part); return Err(l!("скачался не тот файл (слишком маленький)", "the wrong file was downloaded (too small)").into()); }
     if dest.exists() && std::fs::remove_file(&dest).is_err() {
         // старый ffmpeg сейчас работает (идёт видео) — удалить нельзя, но переименовать Windows разрешает
         let _ = std::fs::rename(&dest, dir.join(format!("ffmpeg.old{}.exe", crate::now_ms())));

@@ -53,7 +53,7 @@ pub fn read_track(file: &Path, covers: &Path) -> Track {
         video_id: None,
         url: None,
         title: file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-        artist: "Неизвестный исполнитель".into(),
+        artist: l!("Неизвестный исполнитель", "Unknown artist").into(),
         album: String::new(),
         duration: 0.0,
         cover: None,

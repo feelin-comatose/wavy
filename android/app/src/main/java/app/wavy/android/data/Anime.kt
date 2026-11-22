@@ -28,12 +28,12 @@ data class Anime(
     val display get() = russian.ifEmpty { name.ifEmpty { title } }
     val meta get() = listOfNotNull(
         kindRu(kind).takeIf { it.isNotEmpty() }, year.takeIf { it > 0 }?.toString(),
-        episodesTotal.takeIf { it > 0 }?.let { "$it эп." }, score.takeIf { it > 0 }?.let { "★ %.2f".format(it) },
+        episodesTotal.takeIf { it > 0 }?.let { L("$it эп.", "$it ep.") }, score.takeIf { it > 0 }?.let { "★ %.2f".format(it) },
     ).joinToString(" · ")
 
     companion object {
         fun kindRu(k: String) = when (k) {
-            "tv" -> "ТВ"; "movie" -> "Фильм"; "ova" -> "OVA"; "ona" -> "ONA"; "special", "tv_special" -> "Спешл"; "music" -> "Клип"; "pv", "cm" -> "Промо"; else -> k
+            "tv" -> L("ТВ", "TV"); "movie" -> L("Фильм", "Movie"); "ova" -> "OVA"; "ona" -> "ONA"; "special", "tv_special" -> L("Спешл", "Special"); "music" -> L("Клип", "Music video"); "pv", "cm" -> L("Промо", "Promo"); else -> k
         }
     }
 }
@@ -144,5 +144,5 @@ object AnimeParse {
         return if ((p.season ?: 1) > 1) "$base ${p.season}" else base
     }
 
-    fun episodeTitle(p: Parsed, stem: String) = p.episode?.let { e -> if (e % 1.0 == 0.0) "Серия ${e.toInt()}" else "Серия $e" } ?: stem
+    fun episodeTitle(p: Parsed, stem: String) = p.episode?.let { e -> if (e % 1.0 == 0.0) L("Серия ${e.toInt()}", "Episode ${e.toInt()}") else L("Серия $e", "Episode $e") } ?: stem
 }
