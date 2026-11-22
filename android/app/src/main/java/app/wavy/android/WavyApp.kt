@@ -8,6 +8,7 @@ class WavyApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Store.init(this)
+        app.wavy.android.data.Offline.init(filesDir)
         Thread { runCatching { YouTube.init() } }.start()
     }
 }

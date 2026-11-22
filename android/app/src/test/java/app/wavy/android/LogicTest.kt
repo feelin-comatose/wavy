@@ -7,6 +7,7 @@ import app.wavy.android.data.Store
 import app.wavy.android.data.Sync
 import app.wavy.android.data.Track
 import app.wavy.android.yt.Spotify
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -117,5 +118,30 @@ class LogicTest {
         // заголовок (кроме CRC) — один в один; в пиках допускаем редкие расхождения в последнем бите округления
         assertTrue("различий: $diff", diff < desktop.size / 50 + 8)
         assertEquals(desktop.copyOfRange(8, 48).toList(), ours.copyOfRange(8, 48).toList())
+    }
+
+    @Test fun offlineChunks() {
+        // сервер с Range, как googlevideo: файл 10 000 байт, качаем кусками по 3000
+        val data = ByteArray(10_000) { (it % 251).toByte() }
+        val srv = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+        val th = Thread {
+            while (!srv.isClosed) {
+                val c = try { srv.accept() } catch (e: Exception) { break }
+                c.use {
+                    val head = c.getInputStream().bufferedReader().let { r -> generateSequence { r.readLine() }.takeWhile { it.isNotEmpty() }.toList() }
+                    val (a, b) = head.first { it.startsWith("Range:", true) }.substringAfter("bytes=").split('-').map { it.trim().toInt() }
+                    val end = minOf(b, data.size - 1)
+                    val o = c.getOutputStream()
+                    o.write("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes $a-$end/${data.size}\r\nContent-Length: ${end - a + 1}\r\nConnection: close\r\n\r\n".toByteArray())
+                    o.write(data, a, end - a + 1)
+                    o.flush()
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        try {
+            val f = java.io.File.createTempFile("wavy", ".part")
+            app.wavy.android.data.Offline.fetch("http://127.0.0.1:${srv.localPort}/a", f, chunk = 3000)
+            assertArrayEquals(data, f.readBytes())
+        } finally { srv.close(); th.join(1000) }
     }
 }

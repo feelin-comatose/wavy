@@ -76,6 +76,15 @@ fun SettingsScreen(
             }
         }
 
+        Section("Без интернета") {
+            val saved by app.wavy.android.data.Offline.saved.collectAsState()
+            val mb = remember(saved) { app.wavy.android.data.Offline.size() / 1_048_576 }
+            Text("Треки с YouTube можно скачать на телефон: кнопка «Скачать» в плейлисте. Скачанное играет без интернета, например в метро.", color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(8.dp))
+            Text("Скачано: ${saved.size} трек(ов), $mb МБ", fontSize = 14.sp)
+            if (saved.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Pill("Удалить скачанное") { app.wavy.android.data.Offline.clear() } }
+        }
+
         Section("Spotify") {
             Text("Ссылки Spotify работают без настроек (до 100 треков из плейлиста). Для больших плейлистов: developer.spotify.com → Create app → Client ID и Client Secret.", color = Muted, fontSize = 13.sp)
             var id by remember(s.spotifyClientId) { mutableStateOf(s.spotifyClientId) }

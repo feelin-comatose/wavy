@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Link
@@ -217,12 +218,18 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
         }
     } else {
         val ids = p.trackIds.filter { lib.tracks.containsKey(it) }
+        val offline by app.wavy.android.data.Offline.saved.collectAsState()
         TrackList(ids, playlistId = p.id, header = {
             Header(p.name, "${ids.size} трек(ов) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}", back = { onOpen(null) })
             LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { Pill("Слушать", Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) } }
                 item { Pill("Вперемешку", Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) } }
                 if (p.isRemote) item { Pill("Синхронизировать", Icons.Rounded.Sync) { AppState.syncPlaylist(p.id) } }
+                val yt = ids.mapNotNull { lib.tracks[it] }.filter { it.videoId != null }
+                if (yt.isNotEmpty()) item {
+                    val have = yt.count { it.videoId in offline }
+                    Pill(if (have == yt.size) "Скачано" else if (have > 0) "Скачать ($have/${yt.size})" else "Скачать", Icons.Rounded.DownloadForOffline) { AppState.downloadOffline(ids) }
+                }
                 item { Pill("Добавить", Icons.Rounded.Link) { onImport(p.id) } }
                 item { Pill("Переименовать", Icons.Rounded.Edit) { rename = p.id } }
                 item { Pill("Удалить", Icons.Rounded.Delete) { delete = p.id } }

@@ -81,6 +81,19 @@ object AppState {
     }
 
     // ---------- синхронизация с ПК по Wi-Fi ----------
+    /** Скачать треки для прослушивания без интернета. */
+    fun downloadOffline(ids: List<String>) = bg("Скачиваю для офлайна…") {
+        val tracks = ids.mapNotNull { Store.track(it) }.filter { it.videoId != null && !app.wavy.android.data.Offline.has(it) }
+        if (tracks.isEmpty()) { say("Всё уже скачано"); return@bg }
+        var ok = 0
+        var failed = 0
+        for ((i, t) in tracks.withIndex()) {
+            busy.value = "Скачиваю для офлайна: ${i + 1} из ${tracks.size} · ${t.title}"
+            try { withContext(Dispatchers.IO) { app.wavy.android.data.Offline.download(t) }; ok++ } catch (e: Exception) { failed++ }
+        }
+        say("Скачано для офлайна: $ok" + if (failed > 0) ", не вышло: $failed" else "")
+    }
+
     /** Открыт ли пульт ПК. */
     val remoteOpen = MutableStateFlow(false)
 

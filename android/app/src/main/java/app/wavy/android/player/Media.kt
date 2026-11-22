@@ -11,6 +11,8 @@ import app.wavy.android.yt.YouTube
 object Media {
     fun uriOf(t: Track): String = when {
         t.isLocal -> t.path ?: ""
+        // скачано для офлайна — играем из файла
+        t.videoId != null && app.wavy.android.data.Offline.file(t.videoId) != null -> Uri.fromFile(app.wavy.android.data.Offline.file(t.videoId)).toString()
         t.videoId != null -> "wavy://yt/${t.videoId}"
         else -> "wavy://url/" + Uri.encode(t.url ?: "")
     }
