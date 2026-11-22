@@ -84,6 +84,8 @@ enum Bg {
     TwitchLogin(Result<wavy_core::twitch::Account, String>),
     TwitchToken(wavy_core::twitch::Account),
     CacheSize(u64, usize),
+    /// опенинги и эндинги: (тайтл, найденные треки)
+    Themes(String, Result<Vec<Track>, String>),
     /// куки для 18+ заданы, но yt-dlp с ними не справился (браузер открыт, нет входа…)
     CookiesFailed(String),
 }
@@ -117,6 +119,8 @@ enum Act {
     DeleteAnime(String), MarkWatched(String, bool), AudioTrack(usize), Subs(Option<usize>), Shazam, ShazamAdd(Found, bool),
     /// треки → MP3 в папку; Some(название) — плейлист целиком (своя подпапка)
     Export(Vec<String>, Option<String>),
+    /// опенинги и эндинги тайтла → плейлист
+    AnimeThemes(String),
     /// (ключ: "library" или id плейлиста, способ)
     Sort(String, String),
     PlaylistCover(String), PlaylistCoverReset(String),
@@ -237,6 +241,8 @@ struct App {
     remote: (Arc<Mutex<serde_json::Value>>, Arc<Mutex<Option<String>>>, Sender<(String, f64)>, Receiver<(String, f64)>),
     /// ждём первую награду за баллы, чтобы запомнить её как «заказ трека»
     reward_bind: bool,
+    /// для какого тайтла сейчас ищутся опенинги
+    themes_busy: Option<String>,
     /// вход в Twitch: код для twitch.tv/activate
     twitch_device: Option<wavy_core::twitch::Device>,
     sr_last: std::collections::HashMap<String, Instant>,
@@ -310,7 +316,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -842,6 +848,32 @@ impl App {
                 let (tx, c) = (self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || { let _ = tx.send(Bg::Changes(update::changes(from, to))); c.request_repaint(); });
             }
+            Act::AnimeThemes(id) => {
+                let Some(a) = self.store.lock().unwrap().anime(&id).cloned() else { return };
+                let Some(mal) = a.shiki_id else { return };
+                self.themes_busy = Some(id.clone());
+                let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let r = wavy_core::animethemes::fetch(mal).and_then(|themes| {
+                        if themes.is_empty() { return Err("у этого тайтла нет опенингов в базе".into()); }
+                        // ищем параллельно, по 4 сразу — 10 песен находятся за пару секунд
+                        let mut found: Vec<Option<Track>> = vec![None; themes.len()];
+                        for (chunk_i, chunk) in themes.chunks(4).enumerate() {
+                            let hs: Vec<_> = chunk.iter().map(|t| { let (yt, t) = (yt.clone(), t.clone()); std::thread::spawn(move || {
+                                let mut tr = yt.lookup(&t.query()).ok()?;
+                                tr.title = format!("{} · {}", t.label(), t.title);
+                                if !t.artist.is_empty() { tr.artist = t.artist.clone(); }
+                                Some(tr)
+                            }) }).collect();
+                            for (i, h) in hs.into_iter().enumerate() { found[chunk_i * 4 + i] = h.join().ok().flatten(); }
+                        }
+                        let list: Vec<Track> = found.into_iter().flatten().collect();
+                        if list.is_empty() { Err("опенинги нашлись, но не на YouTube".into()) } else { Ok(list) }
+                    });
+                    let _ = tx.send(Bg::Themes(id, r));
+                    c.request_repaint();
+                });
+            }
             Act::ToggleMini => { let on = !self.settings().mini; self.store.lock().unwrap().patch_settings(&json!({"mini": on})); }
             Act::ShowWindow => tray::show(ctx),
             Act::Quit => { self.quitting = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
@@ -1149,6 +1181,25 @@ impl App {
                     Err(e) => self.toast(e, true),
                 },
                 Bg::SongRequest(user, r) => self.song_request(user, r, ctx),
+                Bg::Themes(id, r) => {
+                    self.themes_busy = None;
+                    match r {
+                        Ok(list) => {
+                            let name = self.store.lock().unwrap().anime(&id).map(|a| format!("{} — OP/ED", a.display())).unwrap_or_else(|| "OP/ED".into());
+                            let ids: Vec<String> = list.iter().map(|t| t.id.clone()).collect();
+                            let mut s = self.store.lock().unwrap();
+                            s.add_tracks(list);
+                            let pid = match s.lib.playlists.iter().find(|p| p.name == name).map(|p| p.id.clone()) {
+                                Some(pid) => { s.add_to_playlist(&pid, &ids); pid }
+                                None => s.create_playlist(&name, ids.clone(), None).id,
+                            };
+                            drop(s);
+                            self.toast(format!("«{name}»: {} песен", ids.len()), false);
+                            self.apply(Act::View(View::Playlist(pid)), ctx);
+                        }
+                        Err(e) => self.toast(format!("Опенинги: {e}"), true),
+                    }
+                }
                 Bg::TwitchDevice(r) => match r {
                     Ok(d) => { open_url(&d.uri); self.twitch_device = Some(d.clone()); self.twitch_poll(d, ctx); }
                     Err(e) => self.toast(e, true),
@@ -1986,6 +2037,10 @@ impl App {
                         let q = if a.title.is_empty() { a.display().to_string() } else { a.title.clone() };
                         acts.push(Act::Modal(Modal::AnimeMatch { id: a.id.clone(), query: q.clone(), results: vec![], busy: false, err: None }));
                         acts.push(Act::AnimeSearch(q));
+                    }
+                    if a.shiki_id.is_some() {
+                        let busy = self.themes_busy.as_deref() == Some(a.id.as_str());
+                        if ui.add_enabled(!busy, pill_btn(if busy { "\u{E340}  Ищу опенинги…" } else { "\u{E340}  Опенинги и эндинги" }, false)).on_hover_text("Все OP и ED этого тайтла — в отдельный плейлист (треки с YouTube)").clicked() { acts.push(Act::AnimeThemes(a.id.clone())); }
                     }
                     if pill(ui, "\u{EA20}  Добавить серии", false).clicked() { acts.push(Act::ImportAnimeFiles); }
                     if pill(ui, "\u{E4A6}  Удалить", false).clicked() { acts.push(Act::Modal(Modal::DeleteAnime { id: a.id.clone() })); }
