@@ -89,6 +89,10 @@ enum Bg {
     TwitchDevice(Result<wavy_core::twitch::Device, String>),
     TwitchLogin(Result<wavy_core::twitch::Account, String>),
     TwitchToken(wavy_core::twitch::Account),
+    /// импорт из Spotify: что не нашлось на YouTube (плейлист, треки)
+    NotFound(Option<String>, Vec<wavy_core::spotify::SpTrack>),
+    /// результаты поиска для ручного выбора видео
+    Picked(Result<Vec<Track>, String>),
     /// Last.fm: страница входа (токен, ссылка) / вход завершён
     LastfmBegin(Result<(String, String), String>),
     LastfmDone(Result<wavy_core::lastfm::Account, String>),
@@ -113,6 +117,19 @@ enum Modal {
     EditTrack { id: String, title: String, artist: String, album: String },
     Dupes { groups: Vec<Vec<String>> },
     Folder { id: String, name: String },
+    /// треки из Spotify, которых не нашлось на YouTube: (плейлист, куда добавить; треки)
+    NotFound { pid: Option<String>, items: Vec<wavy_core::spotify::SpTrack> },
+    /// ручной выбор видео для трека: поиск по YouTube Music и YouTube
+    Pick { query: String, results: Vec<Track>, busy: bool, err: Option<String>, target: PickTarget, back: Vec<wavy_core::spotify::SpTrack> },
+}
+
+/// Для чего выбираем видео.
+#[derive(Clone)]
+enum PickTarget {
+    /// у трека библиотеки не то видео — заменить (id и плейлисты те же)
+    Replace(String),
+    /// трек из Spotify не нашёлся — добавить в библиотеку (и в плейлист)
+    Add { pid: Option<String>, sp: wavy_core::spotify::SpTrack },
 }
 
 enum Act {
@@ -130,6 +147,8 @@ enum Act {
     Export(Vec<String>, Option<String>),
     /// опенинги и эндинги тайтла → плейлист
     AnimeThemes(String),
+    /// ручной выбор видео: поиск / выбор (видео, для чего, оставшиеся ненайденные)
+    PickSearch(String), PickChoose(Track, PickTarget, Vec<wavy_core::spotify::SpTrack>),
     /// субтитры из любого файла (имя не совпадает с серией)
     PickSubs,
     /// сохранить текущий кадр видео в PNG
@@ -725,7 +744,7 @@ impl App {
             Act::ImportUrl(url, pid) => {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
-                    let (name, source, tracks, note) = fetch_url(&url, &yt, &store, tx)?;
+                    let (name, source, tracks, note, not_found) = fetch_url(&url, &yt, &store, tx)?;
                     let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
                     let n = ids.len();
                     let mut s = store.lock().unwrap();
@@ -733,7 +752,8 @@ impl App {
                     let target = if let Some(pid) = pid { s.add_to_playlist(&pid, &ids); Some(pid) }
                         else { name.map(|name| s.create_playlist(&name, ids, Some(source)).id) };
                     let _ = tx.send(Bg::Status(lf!("Добавлено {n} трек(ов){note}", "Added {n} track(s){note}")));
-                    if let Some(t) = target { let _ = tx.send(Bg::OpenPlaylist(t)); }
+                    if let Some(t) = &target { let _ = tx.send(Bg::OpenPlaylist(t.clone())); }
+                    if !not_found.is_empty() { let _ = tx.send(Bg::NotFound(target, not_found)); }
                     Ok(())
                 });
             }
@@ -777,13 +797,14 @@ impl App {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
                     let src = store.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.source.clone()).filter(|s| s.starts_with("http")).ok_or(l!("У плейлиста нет ссылки", "The playlist has no link"))?;
-                    let (_, _, tracks, note) = fetch_url(&src, &yt, &store, tx)?;
+                    let (_, _, tracks, note, not_found) = fetch_url(&src, &yt, &store, tx)?;
                     let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
                     let n = ids.len();
                     let mut s = store.lock().unwrap();
                     s.add_tracks(tracks);
                     s.set_playlist_tracks(&id, ids);
                     let _ = tx.send(Bg::Status(lf!("Синхронизировано: {n} треков{note}", "Synced: {n} tracks{note}")));
+                    if !not_found.is_empty() { let _ = tx.send(Bg::NotFound(Some(id), not_found)); }
                     Ok(())
                 });
             }
@@ -1045,6 +1066,37 @@ impl App {
                 self.video = None;
                 self.show_video = true;
                 self.load_current(ctx);
+            }
+            Act::PickSearch(q) => {
+                if let Some(Modal::Pick { busy, err, .. }) = &mut self.modal { *busy = true; *err = None; }
+                let (tx, c, yt) = (self.tx.clone(), ctx.clone(), self.yt.clone());
+                std::thread::spawn(move || { let _ = tx.send(Bg::Picked(wavy_core::spotify::candidates(&yt, &q))); c.request_repaint(); });
+            }
+            Act::PickChoose(c, target, back) => {
+                let mut s = self.store.lock().unwrap();
+                match target {
+                    PickTarget::Replace(id) => {
+                        if let Some(old) = s.lib.tracks.get(&id).cloned() {
+                            let ytcover = old.cover.as_deref().is_none_or(|u| u.contains("ytimg.com") || u.contains("googleusercontent"));
+                            let t = Track { video_id: c.video_id.clone(), url: c.url.clone(), cover: if ytcover { c.cover.clone() } else { old.cover.clone() },
+                                duration: if c.duration > 0.0 { c.duration } else { old.duration }, kind: "youtube".into(), ..old };
+                            s.add_tracks(vec![t.clone()]);
+                            drop(s);
+                            if self.current.as_ref().is_some_and(|x| x.id == t.id) { self.current = Some(t.clone()); }
+                            self.toast(lf!("«{}»: видео заменено — со следующего запуска трека", "“{}”: video replaced — takes effect next time the track plays", t.title), false);
+                        }
+                    }
+                    PickTarget::Add { pid, sp } => {
+                        let t = wavy_core::spotify::from_candidate(&c, &sp);
+                        let title = t.title.clone();
+                        let id = t.id.clone();
+                        s.add_tracks(vec![t]);
+                        if let Some(p) = &pid { s.add_to_playlist(p, &[id]); }
+                        drop(s);
+                        self.toast(lf!("Добавлено: {title}", "Added: {title}"), false);
+                        if !back.is_empty() { self.modal = Some(Modal::NotFound { pid, items: back }); }
+                    }
+                }
             }
             Act::AnimeSearch(q) => {
                 if let Some(Modal::AnimeMatch { busy, err, .. }) = &mut self.modal { *busy = true; *err = None; }
@@ -1345,6 +1397,13 @@ impl App {
                     } else if matches!(self.modal, Some(Modal::ImportUrl { busy: true, .. }) | Some(Modal::Shazam { state: ShazamState::Adding, .. })) { self.modal = None; }
                 }
                 Bg::OpenAnime(id) => self.view = match id { Some(id) => View::AnimeTitle(id), None => View::Anime },
+                Bg::NotFound(pid, items) => if self.modal.is_none() { self.modal = Some(Modal::NotFound { pid, items }); },
+                Bg::Picked(r) => {
+                    if let Some(Modal::Pick { results, busy, err, .. }) = &mut self.modal {
+                        *busy = false;
+                        match r { Ok(v) => { if v.is_empty() { *err = Some(l!("Ничего не нашлось — попробуй написать иначе", "Nothing found — try different wording").into()); } *results = v; } Err(e) => *err = Some(e) }
+                    }
+                }
                 Bg::ShikiResults(r) => {
                     if let Some(Modal::AnimeMatch { results, busy, err, .. }) = &mut self.modal {
                         *busy = false;
@@ -3073,7 +3132,7 @@ impl App {
         let pls_name = move |id: &str| store_.lock().unwrap().lib.playlists.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
         let cur_pl = self.cur_playlist();
         let s = self.settings();
-        let resp = egui::Modal::new(Id::unique("modal")).frame(egui::Frame::popup(&ctx.global_style()).fill(BG2).inner_margin(22).corner_radius(16)).show(ctx, |ui| {
+        let resp = egui::Modal::new(Id::unique("modal").with(std::mem::discriminant(&m)).with(if let Modal::NotFound { items, .. } = &m { items.len() } else { 0 })).frame(egui::Frame::popup(&ctx.global_style()).fill(BG2).inner_margin(22).corner_radius(16)).show(ctx, |ui| {
             ui.set_width(500.0);
             match &mut m {
                 Modal::ImportUrl { url, into, busy, err } => {
@@ -3232,6 +3291,86 @@ impl App {
                     });
                     ui.add_space(8.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Отмена", "Cancel"), false).clicked() { close = true; } });
+                }
+                Modal::NotFound { pid, items } => {
+                    ui.label(RichText::new(lf!("Не нашлось на YouTube: {}", "Not found on YouTube: {}", items.len())).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Автопоиск не уверен в этих треках. Нажми «Найти» и выбери нужное видео сам — трек встанет в плейлист.", "The automatic search wasn't sure about these tracks. Click “Find” and pick the right video yourself — the track goes into the playlist.")).color(MUTED));
+                    ui.add_space(8.0);
+                    let mut pick = None;
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for (i, t) in items.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_width(370.0);
+                                    ui.add(egui::Label::new(RichText::new(&t.title).family(semi()).color(TEXT)).truncate());
+                                    let meta = [t.artists.clone(), t.album.clone(), if t.duration > 0.0 { fmt_time(t.duration) } else { String::new() }];
+                                    ui.add(egui::Label::new(RichText::new(meta.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")).color(MUTED).size(12.5)).truncate());
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Найти…", "Find…"), false).clicked() { pick = Some(i); } });
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+                    if let Some(i) = pick {
+                        let mut rest = items.clone();
+                        let sp = rest.remove(i);
+                        let q = format!("{} {}", sp.artists.split(',').next().unwrap_or("").trim(), sp.title).trim().to_string();
+                        acts.push(Act::Modal(Modal::Pick { query: q.clone(), results: Vec::new(), busy: true, err: None, target: PickTarget::Add { pid: pid.clone(), sp }, back: rest }));
+                        acts.push(Act::PickSearch(q));
+                        close = true;
+                    }
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Закрыть", "Close"), true).clicked() { close = true; } });
+                }
+                Modal::Pick { query, results, busy, err, target, back } => {
+                    let (title, cur_vid) = match &*target {
+                        PickTarget::Replace(id) => { let s = self.store.lock().unwrap(); let t = s.lib.tracks.get(id); (t.map(|t| t.title.clone()).unwrap_or_default(), t.and_then(|t| t.video_id.clone())) }
+                        PickTarget::Add { sp, .. } => (sp.title.clone(), None),
+                    };
+                    ui.label(RichText::new(l!("Выбери видео", "Pick a video")).size(20.0).family(bold()));
+                    ui.add(egui::Label::new(RichText::new(match &*target {
+                        PickTarget::Replace(_) => lf!("для «{title}» — трек останется в тех же плейлистах", "for “{title}” — the track stays in the same playlists"),
+                        PickTarget::Add { sp, .. } => format!("{} — {}{}", sp.artists, sp.title, if sp.duration > 0.0 { format!(" · {}", fmt_time(sp.duration)) } else { String::new() }),
+                    }).color(MUTED)).truncate());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(query).desired_width(360.0).margin(egui::Margin::symmetric(10, 8)));
+                        let go = pill(ui, if *busy { l!("Ищу…", "Searching…") } else { l!("Найти", "Find") }, true).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if go && !query.trim().is_empty() && !*busy { acts.push(Act::PickSearch(query.trim().to_string())); }
+                    });
+                    if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
+                    if *busy && results.is_empty() { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Ищу в YouTube Music и YouTube…", "Searching YouTube Music and YouTube…")).color(MUTED)); }); }
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for r in results.iter() {
+                            let resp = ui.horizontal(|ui| {
+                                ui.set_min_height(52.0);
+                                let (pr, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+                                match r.cover.as_ref().and_then(|u| self.thumbs.poster(u, 96)) {
+                                    Some(t) => { egui::Image::new(&t).corner_radius(6).maintain_aspect_ratio(false).paint_at(ui, pr); }
+                                    None => { ui.painter().rect_filled(pr, 6, BG3); }
+                                }
+                                ui.vertical(|ui| {
+                                    ui.set_width(380.0);
+                                    ui.add_space(4.0);
+                                    ui.add(egui::Label::new(RichText::new(&r.title).family(semi()).color(TEXT)).truncate());
+                                    let src = if r.url.as_deref().is_some_and(|u| u.contains("music.youtube")) { "YouTube Music" } else { "YouTube" };
+                                    let now = if r.video_id.is_some() && r.video_id == cur_vid { l!(" · сейчас", " · current") } else { "" };
+                                    let meta = [if r.artist == "YouTube" { String::new() } else { r.artist.clone() }, r.album.clone(), if r.duration > 0.0 { fmt_time(r.duration) } else { String::new() }, format!("{src}{now}")];
+                                    ui.add(egui::Label::new(RichText::new(meta.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ")).color(MUTED).size(12.5)).truncate());
+                                });
+                            }).response.interact(Sense::click());
+                            if resp.hovered() { ui.painter().rect_stroke(resp.rect.expand(2.0), 8, Stroke::new(1.0, LINE), egui::StrokeKind::Outside); }
+                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { acts.push(Act::PickChoose(r.clone(), target.clone(), back.clone())); close = true; }
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if pill(ui, if back.is_empty() { l!("Отмена", "Cancel") } else { l!("Назад к списку", "Back to the list") }, false).clicked() {
+                            if let PickTarget::Add { pid, sp } = &*target { let mut items = back.clone(); items.insert(0, sp.clone()); acts.push(Act::Modal(Modal::NotFound { pid: pid.clone(), items })); }
+                            close = true;
+                        }
+                    });
                 }
                 Modal::DeleteAnime { id } => {
                     let name = self.store.lock().unwrap().anime(id).map(|a| a.display().to_string()).unwrap_or_default();
@@ -3988,19 +4127,19 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
 
 /// Ссылка → треки: Spotify (через поиск на YouTube) или всё, что умеет yt-dlp.
 /// Возвращает (название плейлиста, источник, треки, примечание для пользователя).
-fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>) -> Result<(Option<String>, String, Vec<Track>, String), String> {
+fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>) -> Result<(Option<String>, String, Vec<Track>, String, Vec<wavy_core::spotify::SpTrack>), String> {
     let t2 = tx.clone();
     let status = move |m: &str| { let _ = t2.send(Bg::Status(m.into())); };
     if let Some((kind, _)) = wavy_core::spotify::parse_url(url) {
         let sp = store.lock().unwrap().lib.settings.spotify.clone();
         let r = wavy_core::spotify::import(url, yt, Some((&sp.client_id, &sp.client_secret)), &status)?;
         let mut note = String::new();
-        if !r.not_found.is_empty() { note += &lf!(", не нашлось на YouTube: {} (список — в wavy.log)", ", not found on YouTube: {} (the list is in wavy.log)", r.not_found.len()); }
+        if !r.not_found.is_empty() { note += &lf!(", не нашлось на YouTube: {} — можно выбрать вручную", ", not found on YouTube: {} — you can pick them manually", r.not_found.len()); }
         if r.truncated { note += l!(". Spotify без ключа отдаёт только первые 100 треков — ключ добавляется в Настройках", ". Spotify without a key only gives the first 100 tracks — the key is added in Settings"); }
-        Ok(((kind != "track").then_some(r.name), r.source, r.tracks, note))
+        Ok(((kind != "track").then_some(r.name), r.source, r.tracks, note, r.not_found))
     } else {
         let r = yt.import_url(url.trim(), &status)?;
-        Ok((r.name, r.source, r.tracks, String::new()))
+        Ok((r.name, r.source, r.tracks, String::new(), Vec::new()))
     }
 }
 
@@ -4020,6 +4159,12 @@ fn track_menu(ui: &mut egui::Ui, ids: &[String], t: &Track, pid: Option<&str>, p
     if let Some(p) = pid { if ui.button(l!("Убрать из плейлиста", "Remove from playlist")).clicked() { acts.push(Act::RemoveFrom(p.into(), ids.clone())); ui.close(); } }
     if ids.len() == 1 {
         if t.video_id.is_some() && ui.button(l!("Радио по треку", "Track radio")).on_hover_text(l!("Похожие песни с YouTube — в очередь", "Similar songs from YouTube — into the queue")).clicked() { acts.push(Act::Radio(t.id.clone())); ui.close(); }
+        if t.video_id.is_some() && t.anime.is_none() && ui.button(l!("Выбрать другое видео…", "Pick another video…")).on_hover_text(l!("Если нашлось не то: другая версия, кавер, клип вместо песни", "If the wrong one was found: another version, a cover, a music video instead of the song")).clicked() {
+            let q = if t.artist.is_empty() || t.artist == "YouTube" { t.title.clone() } else { format!("{} {}", t.artist.split(',').next().unwrap_or("").trim(), t.title) };
+            acts.push(Act::Modal(Modal::Pick { query: q.clone(), results: Vec::new(), busy: true, err: None, target: PickTarget::Replace(t.id.clone()), back: Vec::new() }));
+            acts.push(Act::PickSearch(q));
+            ui.close();
+        }
         if ui.button(l!("Изменить…", "Edit…")).clicked() { acts.push(Act::Modal(Modal::EditTrack { id: t.id.clone(), title: t.title.clone(), artist: t.artist.clone(), album: t.album.clone() })); ui.close(); }
         if let Some(p) = &t.path { if ui.button(l!("Показать в папке", "Show in folder")).clicked() { acts.push(Act::Reveal(p.clone())); ui.close(); } }
         if let Some(u) = &t.url { if ui.button(l!("Открыть в браузере", "Open in browser")).clicked() { acts.push(Act::OpenUrl(u.clone())); ui.close(); } }

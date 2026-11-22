@@ -8,7 +8,7 @@ fn main() {
         Ok(r) => {
             println!("«{}»: найдено {} из {}, за {:.0} с{}", r.name, r.tracks.len(), r.tracks.len() + r.not_found.len(), t.elapsed().as_secs_f32(), if r.truncated { " (возможно обрезано до 100)" } else { "" });
             for x in &r.tracks { println!("  ✓ {} — {} [{}] {}", x.artist, x.title, wavy_core::fmt_time(x.duration), x.url.clone().unwrap_or_default()); }
-            for x in &r.not_found { println!("  ✗ {x}"); }
+            for x in &r.not_found { println!("  ✗ {} — {}", x.artists, x.title); }
         }
         Err(e) => println!("ОШИБКА: {e}"),
     }

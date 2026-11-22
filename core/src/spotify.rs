@@ -160,55 +160,98 @@ pub fn find_replacements(yt: &YouTube, old: &Track) -> Result<Vec<Track>, String
     }).collect())
 }
 
+/// Название без хвостов, которых нет в названии видео: «(feat. X)», «- Remastered 2011», «- Radio Edit».
+pub fn clean_title(s: &str) -> String {
+    let mut t = s.to_lowercase();
+    for (open, close) in [('(', ')'), ('[', ']')] {
+        while let Some(a) = t.find(open) {
+            let Some(b) = t[a..].find(close).map(|b| a + b) else { break };
+            let inner = &t[a + 1..b];
+            if ["feat", "ft.", "with ", "remaster", "radio edit", "from ", "bonus", "explicit"].iter().any(|w| inner.contains(w)) { t.replace_range(a..=b, ""); } else { break; }
+        }
+    }
+    if let Some(a) = t.find(" - ") {
+        let tail = &t[a + 3..];
+        if ["remaster", "radio edit", "feat", "mono", "stereo", "single version", "album version"].iter().any(|w| tail.contains(w)) { t.truncate(a); }
+    }
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Кандидаты по запросу: сначала каталог YouTube Music (официальные аудио), потом обычный поиск YouTube.
+/// Сбои сети повторяем — иначе при импорте в 6 потоков трек молча записывался в «не нашлось».
+pub fn candidates(yt: &YouTube, q: &str) -> Result<Vec<Track>, String> {
+    let mut out = yt.search_music(q, 8).unwrap_or_else(|e| { crate::log(&format!("поиск YT Music «{q}»: {e}")); Vec::new() });
+    if out.len() < 3 {
+        let mut last = None;
+        for attempt in 0..3u64 {
+            if attempt > 0 { std::thread::sleep(std::time::Duration::from_millis(800 * attempt)); }
+            match yt.search(q, 6) {
+                Ok(v) => { for c in v { if !out.iter().any(|x| x.video_id == c.video_id) { out.push(c); } } last = None; break; }
+                Err(e) => last = Some(e),
+            }
+        }
+        if let (Some(e), true) = (last, out.is_empty()) { return Err(e); }
+    }
+    Ok(out)
+}
+
 fn ranked(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Vec<Track>, String> {
     let main_artist = t.artists.split(',').next().unwrap_or("").trim().to_string();
-    let q = if main_artist.is_empty() { t.title.clone() } else { format!("{main_artist} - {}", t.title) };
-    let mut cands = yt.search(&q, 6)?;
+    let q = if main_artist.is_empty() { t.title.clone() } else { format!("{main_artist} {}", t.title) };
+    let mut cands = candidates(yt, &q)?;
     cands.retain(|c| c.video_id.is_some() && c.video_id.as_deref() != exclude);
-    let norm = |s: &str| s.to_lowercase();
-    let title_l = norm(&t.title);
-    let best = cands.into_iter().map(|c| {
+    let title_l = clean_title(&t.title);
+    let artist_l = main_artist.to_lowercase();
+    let mut best = cands.into_iter().enumerate().map(|(i, c)| {
         let mut score = 0.0f64;
+        let ct = c.title.to_lowercase();
+        let title_ok = ct.contains(&title_l) || clean_title(&c.title) == title_l || (!title_l.is_empty() && title_l.contains(&clean_title(&c.title)) && clean_title(&c.title).len() > 3);
+        let artist_ok = !artist_l.is_empty() && (c.artist.to_lowercase().contains(&artist_l) || ct.contains(&artist_l));
+        if title_ok { score += 8.0; }
+        if artist_ok { score += 5.0; }
         if t.duration > 0.0 && c.duration > 0.0 {
             let d = (c.duration - t.duration).abs();
-            score -= d.min(120.0) / 4.0; // каждые 4 с расхождения — минус балл
-            if d > 30.0 { score -= 20.0; }
+            // клипы бывают длиннее трека (вступление), поэтому при совпавших названии и исполнителе штрафуем мягче
+            score -= d.min(120.0) / if title_ok && artist_ok { 10.0 } else { 4.0 };
+            if d > 30.0 && !(title_ok && artist_ok) { score -= 20.0; }
         }
-        let ct = norm(&c.title);
-        if ct.contains(&title_l) { score += 6.0; }
-        if !main_artist.is_empty() && (norm(&c.artist).contains(&norm(&main_artist)) || ct.contains(&norm(&main_artist))) { score += 4.0; }
-        for bad in ["live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction"] {
+        for bad in ["live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"] {
             if ct.contains(bad) && !title_l.contains(bad) { score -= 8.0; }
         }
+        if c.url.as_deref().is_some_and(|u| u.contains("music.youtube")) && !c.album.is_empty() { score += 3.0; } // песня из каталога YT Music
         if ct.contains("official audio") || ct.contains("audio") { score += 2.0; }
+        score -= i as f64 * 0.3; // при равенстве — порядок поиска
         (score, c)
     }).filter(|(s, _)| *s > -25.0).collect::<Vec<_>>();
-    let mut best = best;
     best.sort_by(|a, b| b.0.total_cmp(&a.0));
-    Ok(best.into_iter().map(|(_, c)| {
-        let vid = c.video_id.clone().unwrap_or_default();
-        Track {
-            id: c.id.clone(),
-            kind: "youtube".into(),
-            path: None,
-            url: Some(format!("https://music.youtube.com/watch?v={vid}")),
-            cover: c.cover.clone(),
-            video_id: c.video_id.clone(),
-            title: t.title.clone(),
-            artist: if t.artists.is_empty() { c.artist.clone() } else { t.artists.clone() },
-            album: t.album.clone(),
-            duration: if t.duration > 0.0 { t.duration } else { c.duration },
-            added_at: now_ms(),
-            video: false, anime: None, episode: None,
-        }
-    }).collect())
+    Ok(best.into_iter().map(|(_, c)| from_candidate(&c, t)).collect())
+}
+
+/// Трек библиотеки из найденного видео: название, исполнитель и альбом — из Spotify.
+pub fn from_candidate(c: &Track, t: &SpTrack) -> Track {
+    let vid = c.video_id.clone().unwrap_or_default();
+    Track {
+        id: c.id.clone(),
+        kind: "youtube".into(),
+        path: None,
+        url: Some(format!("https://music.youtube.com/watch?v={vid}")),
+        cover: c.cover.clone(),
+        video_id: c.video_id.clone(),
+        title: if t.title.is_empty() { c.title.clone() } else { t.title.clone() },
+        artist: if t.artists.is_empty() { c.artist.clone() } else { t.artists.clone() },
+        album: if t.album.is_empty() { c.album.clone() } else { t.album.clone() },
+        duration: if t.duration > 0.0 { t.duration } else { c.duration },
+        added_at: now_ms(),
+        video: false, anime: None, episode: None,
+    }
 }
 
 pub struct SpImport {
     pub name: String,
     pub source: String,
     pub tracks: Vec<Track>,
-    pub not_found: Vec<String>,
+    /// треки, которых не нашлось — их можно найти вручную
+    pub not_found: Vec<SpTrack>,
     pub truncated: bool,
 }
 
@@ -231,7 +274,11 @@ pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dy
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 if i >= n { break; }
-                let found = match_on_youtube(yt, &list.tracks[i]).unwrap_or(None);
+                // сбой поиска — ещё одна попытка чуть позже (YouTube притормаживает частые запросы)
+                let found = match match_on_youtube(yt, &list.tracks[i]) {
+                    Ok(f) => f,
+                    Err(e) => { crate::log(&format!("Spotify → YouTube «{}»: {e}", list.tracks[i].title)); std::thread::sleep(std::time::Duration::from_secs(2)); match_on_youtube(yt, &list.tracks[i]).unwrap_or(None) }
+                };
                 results.lock().unwrap()[i] = found;
                 let d = done.fetch_add(1, Ordering::SeqCst) + 1;
                 if d % 5 == 0 || d == n { status(&lf!("Spotify: ищу на YouTube {d}/{n}…", "Spotify: searching YouTube {d}/{n}…")); }
@@ -247,10 +294,10 @@ pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dy
         match r {
             Some(mut t) if seen.insert(t.id.clone()) => { t.added_at = base + (n - i) as u64; tracks.push(t); }
             Some(_) => {}
-            None => not_found.push(format!("{} — {}", list.tracks[i].artists, list.tracks[i].title)),
+            None => not_found.push(list.tracks[i].clone()),
         }
     }
-    if !not_found.is_empty() { crate::log(&format!("Spotify: не найдено на YouTube: {}", not_found.join("; "))); }
+    if !not_found.is_empty() { crate::log(&format!("Spotify: не найдено на YouTube: {}", not_found.iter().map(|t| format!("{} — {}", t.artists, t.title)).collect::<Vec<_>>().join("; "))); }
     Ok(SpImport { name: list.name, source: url.trim().to_string(), tracks, not_found, truncated: list.maybe_truncated })
 }
 
@@ -277,5 +324,13 @@ mod tests {
         assert_eq!(parse_url("spotify:track:3h5T5JypYU7huFiVYhv1dr"), Some(("track".into(), "3h5T5JypYU7huFiVYhv1dr".into())));
         assert_eq!(parse_url("https://music.youtube.com/playlist?list=x"), None);
         assert_eq!(base64(b"ab:cd"), "YWI6Y2Q=");
+    }
+    #[test]
+    fn titles() {
+        assert_eq!(clean_title("Come Together - Remastered 2009"), "come together");
+        assert_eq!(clean_title("Stay (feat. Justin Bieber)"), "stay");
+        assert_eq!(clean_title("Idol [Explicit]"), "idol");
+        assert_eq!(clean_title("Song (Live)"), "song (live)");
+        assert_eq!(clean_title("Gurenge - TV Size"), "gurenge - tv size");
     }
 }

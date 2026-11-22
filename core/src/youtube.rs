@@ -251,6 +251,37 @@ impl YouTube {
         Ok(json.get("entries").and_then(Value::as_array).map(|a| a.iter().filter(|e| !e.is_null() && !is_live(e)).map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
     }
 
+    /// Поиск по каталогу YouTube Music (песни: официальные аудио с альбомом и точной длительностью).
+    /// Без yt-dlp, через rustypipe; при сбое сети — ещё две попытки.
+    pub fn search_music(&self, query: &str, limit: usize) -> Result<Vec<Track>, String> {
+        let rp = self.rustypipe()?;
+        let mut last = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 { std::thread::sleep(std::time::Duration::from_millis(700 * attempt)); }
+            let res = rt().block_on(async {
+                let r = rp.query().music_search_tracks(query).await?.items.items;
+                if !r.is_empty() { return Ok(r); }
+                // фильтр «Песни» иногда пустой — берём песни из общей выдачи
+                Ok::<_, rustypipe::error::Error>(rp.query().music_search_main(query).await?.items.items.into_iter()
+                    .filter_map(|i| if let rustypipe::model::MusicItem::Track(t) = i { Some(t) } else { None }).collect())
+            });
+            match res {
+                Ok(r) => return Ok(r.into_iter().take(limit).map(|t| {
+                    let cover = t.cover.iter().max_by_key(|c| c.width).map(|c| c.url.clone()).unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", t.id));
+                    Track {
+                        id: format!("yt_{}", t.id), kind: "youtube".into(), path: None,
+                        url: Some(format!("https://music.youtube.com/watch?v={}", t.id)), cover: Some(cover),
+                        title: t.name, artist: t.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                        album: t.album.map(|a| a.name).unwrap_or_default(), duration: t.duration.unwrap_or(0) as f64,
+                        video_id: Some(t.id), added_at: now_ms(), video: false, anime: None, episode: None,
+                    }
+                }).collect()),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(format!("YouTube Music: {last}"))
+    }
+
     /// Один трек по ссылке или по названию (первый результат поиска) — для заказов из чата.
     pub fn lookup(&self, query: &str) -> Result<Track, String> {
         if query.starts_with("http") {
