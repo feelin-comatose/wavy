@@ -16,7 +16,7 @@ use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layou
 use egui_extras::{Column, TableBuilder};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -228,7 +228,8 @@ struct App {
     sr_tx: Sender<wavy_core::twitch::Request>,
     sr_rx: Receiver<wavy_core::twitch::Request>,
     sr_last: std::collections::HashMap<String, Instant>,
-    sr_ids: HashSet<String>,
+    /// заказы из чата: id трека → кто заказал
+    sr_by: HashMap<String, String>,
     cache_size: Option<(u64, usize)>,
     cache_trimmed: Instant,
     cache_counting: bool,
@@ -257,7 +258,7 @@ impl App {
         let overlay = OverlayServer::new();
         let s = store.lib.settings.clone();
         discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
-        overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec);
+        overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
         let mut toast = None;
         if let Err(e) = overlay.start(s.overlay.port) { wavy_core::log(&format!("оверлей: {e}")); toast = Some((format!("Оверлей: {e}"), true, Instant::now())); }
 
@@ -297,7 +298,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -838,7 +839,7 @@ impl App {
                 self.store.lock().unwrap().patch_settings(&patch);
                 let s = self.settings();
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
-                self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec);
+                self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
                 self.yt.set_cookies(&s.yt_cookies);
                 if let Some(m) = &self._hotkeys { self.hk_keys.apply(m, &s.hotkeys); }
                 if let Err(e) = self.overlay.start(s.overlay.port) { self.toast(format!("Оверлей: {e}"), true); }
@@ -1101,7 +1102,12 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Bg::Status(s) => self.toast(s, false),
-                Bg::Lyrics(id, r) => if let Some((cur, slot)) = &mut self.lyrics { if *cur == id { *slot = Some(r); self.lyrics_line = None; } },
+                Bg::Lyrics(id, r) => if let Some((cur, slot)) = &mut self.lyrics { if *cur == id {
+                    let synced = r.as_ref().ok().filter(|l| !l.synced.is_empty()).map(|l| json!(l.synced));
+                    *slot = Some(r);
+                    self.lyrics_line = None;
+                    self.overlay.set_lyrics(synced.unwrap_or(serde_json::Value::Null));
+                } },
                 Bg::Radio(id, r) => match r {
                     Ok(list) if !list.is_empty() => {
                         let ids: Vec<String> = list.iter().map(|t| t.id.clone()).collect();
@@ -2332,6 +2338,7 @@ impl App {
 
     /// Чат Twitch (заказы) и лимит кэша.
     fn stream_tick(&mut self, ctx: &egui::Context) {
+        self.overlay_extra(ctx);
         let st = self.settings();
         let want = (st.twitch_sr && !st.twitch_channel.trim().is_empty()).then(|| st.twitch_channel.trim().to_lowercase());
         if self.twitch.as_ref().map(|t| &t.0) != want.as_ref() {
@@ -2381,11 +2388,11 @@ impl App {
         let id = t.id.clone();
         self.radio.retain(|x| x.id != id);
         self.radio.push(t);
-        self.sr_ids.insert(id.clone());
+        self.sr_by.insert(id.clone(), user.clone());
         if self.current.is_none() || self.queue.is_empty() { self.play_list(vec![id], 0, false, ctx); return; }
         // после текущего и уже заказанных — по очереди
         let mut at = self.qi + 1;
-        while at < self.queue.len() && self.sr_ids.contains(&self.queue[at]) { at += 1; }
+        while at < self.queue.len() && self.sr_by.contains_key(&self.queue[at]) { at += 1; }
         self.queue.insert(at, id);
     }
 
@@ -2498,19 +2505,38 @@ impl App {
         });
     }
 
+    /// Загрузить текст текущего трека (для панели «Текст» и оверлея), если ещё не загружен.
+    fn ensure_lyrics(&mut self, ctx: &egui::Context) {
+        let Some(t) = self.current.clone() else { return };
+        if self.lyrics.as_ref().map(|l| &l.0) == Some(&t.id) { return; }
+        self.lyrics = Some((t.id.clone(), None));
+        self.overlay.set_lyrics(serde_json::Value::Null);
+        if t.anime.is_some() { return; }
+        let (tx, c, dir) = (self.tx.clone(), ctx.clone(), wavy_core::data_dir().join("lyrics"));
+        std::thread::spawn(move || { let id = t.id.clone(); let _ = tx.send(Bg::Lyrics(id, wavy_core::lyrics::fetch(&t, &dir))); c.request_repaint(); });
+    }
+
+    /// Оверлей: что дальше в очереди и текст песни.
+    fn overlay_extra(&mut self, ctx: &egui::Context) {
+        let ov = self.settings().overlay;
+        let queue: Vec<serde_json::Value> = if ov.show_queue {
+            self.queue.iter().skip(self.qi + 1).take(3).filter_map(|id| self.track(id).map(|t| {
+                let by = self.sr_by.get(id).cloned();
+                json!({"title": t.title, "artist": t.artist, "by": by})
+            })).collect()
+        } else { vec![] };
+        self.overlay.set_queue(json!(queue));
+        if ov.show_lyrics { self.ensure_lyrics(ctx); }
+    }
+
     fn lyrics_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Текст").family(semi()).size(15.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_lyrics = false; } });
         });
         ui.separator();
-        let Some(t) = self.current.clone() else { ui.label(RichText::new("Ничего не играет").color(MUTED)); return };
-        // загрузка текста для нового трека
-        if self.lyrics.as_ref().map(|l| &l.0) != Some(&t.id) {
-            self.lyrics = Some((t.id.clone(), None));
-            let (tx, c, dir) = (self.tx.clone(), ui.ctx().clone(), wavy_core::data_dir().join("lyrics"));
-            std::thread::spawn(move || { let id = t.id.clone(); let _ = tx.send(Bg::Lyrics(id, wavy_core::lyrics::fetch(&t, &dir))); c.request_repaint(); });
-        }
+        if self.current.is_none() { ui.label(RichText::new("Ничего не играет").color(MUTED)); return };
+        self.ensure_lyrics(ui.ctx());
         let Some((_, slot)) = &self.lyrics else { return };
         match slot {
             None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Ищу текст…").color(MUTED)); }); }
@@ -2842,7 +2868,7 @@ impl App {
                             ui.add(egui::TextEdit::singleline(&mut u).desired_width(340.0).margin(egui::Margin::symmetric(10, 7)));
                             if pill(ui, "Копировать", false).clicked() { ui.ctx().copy_text(url.clone()); acts.push(Act::Settings(json!({}))); self.toast = Some(("Ссылка скопирована — вставь в OBS → Browser Source".into(), false, Instant::now())); }
                         });
-                        ui.label(RichText::new("Ширина 500, высота 160 (вертикальный — 260×320). Стиль можно задать и в ссылке: ?theme=compact, vertical, minimal, text, vinyl").color(MUTED).size(12.0));
+                        ui.label(RichText::new("Ширина 500, высота 160 (вертикальный — 260×320; с очередью или текстом — высота 260). Стиль можно задать и в ссылке: ?theme=compact, vertical, minimal, text, vinyl").color(MUTED).size(12.0));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.label("Стиль OBS:");
@@ -2852,6 +2878,12 @@ impl App {
                                 for (k, name) in THEMES { ui.selectable_value(&mut th, k.into(), name); }
                             });
                             if th != s.overlay.theme { acts.push(Act::Settings(json!({"overlay": {"theme": th}}))); }
+                        });
+                        ui.horizontal(|ui| {
+                            let mut q = s.overlay.show_queue;
+                            if ui.checkbox(&mut q, "Показывать, что дальше в очереди").changed() { acts.push(Act::Settings(json!({"overlay": {"showQueue": q}}))); }
+                            let mut l = s.overlay.show_lyrics;
+                            if ui.checkbox(&mut l, "Текст песни (строка в такт)").changed() { acts.push(Act::Settings(json!({"overlay": {"showLyrics": l}}))); }
                             ui.add_space(12.0);
                             ui.label("Скрывать через, сек:");
                             let mut h = s.overlay.auto_hide_sec;

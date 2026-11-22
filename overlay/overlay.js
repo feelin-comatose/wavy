@@ -41,10 +41,28 @@
     if (sec > 0) hideTimer = setTimeout(() => ov.classList.add('hidden'), sec * 1000);
   }
 
+  const flag = (k, cfg) => qs.has(k) ? qs.get(k) !== '0' : !!cfg;
+  let lyricIdx = -1;
+
+  // «Дальше»: до трёх треков, заказы из чата подписаны ником
+  function renderQueue(data) {
+    const box = $('queue');
+    const list = flag('queue', data.config?.showQueue) ? (data.queue || []) : [];
+    box.replaceChildren(...list.map((q, i) => {
+      const row = document.createElement('div');
+      row.className = 'q';
+      row.textContent = (i === 0 ? 'Дальше: ' : '') + (q.artist ? q.artist + ' — ' : '') + q.title + (q.by ? '  · от ' + q.by : '');
+      return row;
+    }));
+    box.style.display = list.length ? 'block' : 'none';
+  }
+
   function render(data) {
     const prev = st;
     st = data;
     applyTheme(data.config || {});
+    renderQueue(data);
+    lyricIdx = -1;
     const t = data.track;
     if (!t) { ov.classList.add('hidden'); lastId = null; return; }
     ov.classList.toggle('paused', !data.playing);
@@ -68,6 +86,17 @@
       $('fill').style.width = st.duration ? (pos / st.duration) * 100 + '%' : '0%';
       $('cur').textContent = fmt(pos);
       $('dur').textContent = fmt(st.duration);
+      // текущая строка текста песни
+      const ly = flag('lyrics', st.config?.showLyrics) ? st.lyrics : null;
+      let idx = -1;
+      if (ly && ly.length) { for (let i = 0; i < ly.length; i++) { if (ly[i][0] <= pos + 0.2) idx = i; else break; } }
+      if (idx !== lyricIdx) {
+        lyricIdx = idx;
+        const el = $('lyric');
+        el.textContent = idx >= 0 ? ly[idx][1] : '';
+        el.style.display = ly && ly.length ? 'block' : 'none';
+        el.classList.remove('in'); void el.offsetWidth; el.classList.add('in');
+      }
     }
     requestAnimationFrame(tick);
   }

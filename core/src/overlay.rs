@@ -14,6 +14,9 @@ struct Shared {
     state: PlayerState,
     at: u64,
     config: Value,
+    /// что дальше в очереди и текст песни со временем (если включены в настройках)
+    queue: Value,
+    lyrics: Value,
     clients: Vec<Box<dyn Write + Send>>,
 }
 
@@ -27,7 +30,7 @@ pub struct OverlayServer {
 impl OverlayServer {
     pub fn new() -> Self {
         let s = Self { shared: Default::default(), port: Default::default(), server: Default::default() };
-        s.shared.lock().unwrap().config = json!({ "theme": "card", "autoHideSec": 0 });
+        { let mut sh = s.shared.lock().unwrap(); sh.config = json!({ "theme": "card", "autoHideSec": 0 }); sh.queue = json!([]); }
         s
     }
 
@@ -89,7 +92,7 @@ impl OverlayServer {
             let cover = t.cover.as_ref().map(|c| if c.starts_with("http") { c.clone() } else { format!("/cover/{}?v={}", t.id, sh.at) });
             json!({ "id": t.id, "title": t.title, "artist": t.artist, "album": t.album, "cover": cover, "url": t.url, "type": t.kind })
         });
-        json!({ "track": track, "playing": sh.state.playing, "position": sh.state.position, "duration": sh.state.duration, "at": sh.at, "config": sh.config })
+        json!({ "track": track, "playing": sh.state.playing, "position": sh.state.position, "duration": sh.state.duration, "at": sh.at, "config": sh.config, "queue": sh.queue, "lyrics": sh.lyrics })
     }
 
     pub fn update(&self, state: &PlayerState) {
@@ -99,9 +102,25 @@ impl OverlayServer {
         Self::broadcast(&mut sh);
     }
 
-    pub fn set_config(&self, theme: &str, auto_hide_sec: u32) {
+    pub fn set_config(&self, theme: &str, auto_hide_sec: u32, show_queue: bool, show_lyrics: bool) {
         let mut sh = self.shared.lock().unwrap();
-        sh.config = json!({ "theme": theme, "autoHideSec": auto_hide_sec });
+        sh.config = json!({ "theme": theme, "autoHideSec": auto_hide_sec, "showQueue": show_queue, "showLyrics": show_lyrics });
+        Self::broadcast(&mut sh);
+    }
+
+    /// Следующие треки: [{title, artist, by}] (by — кто заказал из чата).
+    pub fn set_queue(&self, queue: Value) {
+        let mut sh = self.shared.lock().unwrap();
+        if sh.queue == queue { return; }
+        sh.queue = queue;
+        Self::broadcast(&mut sh);
+    }
+
+    /// Текст песни со временем: [[секунды, строка], …] или null.
+    pub fn set_lyrics(&self, lyrics: Value) {
+        let mut sh = self.shared.lock().unwrap();
+        if sh.lyrics == lyrics { return; }
+        sh.lyrics = lyrics;
         Self::broadcast(&mut sh);
     }
 
