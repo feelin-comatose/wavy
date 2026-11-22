@@ -81,6 +81,11 @@ class ScreenshotTest {
         Store.markWatched("and_v_1")
     }
 
+    @Test fun remote() {
+        val st = app.wavy.android.ui.Remote.parse("""{"track":{"id":"a","title":"Gurenge","artist":"LiSA","cover":null},"playing":true,"position":42.5,"duration":238,"volume":0.6,
+            "queue":[{"i":0,"title":"Gurenge","artist":"LiSA","current":true},{"i":1,"title":"Unravel","artist":"TK from Ling tosite sigure","current":false},{"i":2,"title":"Blue Bird","artist":"Ikimonogakari","current":false}],"extra":1}""")
+        shot("9-remote") { app.wavy.android.ui.RemoteScreen("192.168.1.5", "123456", back = {}, initial = st) }
+    }
     @Test fun anime() { animeData(); shot("7-anime") { AnimeScreen(null, {}, {}, {}, {}) } }
     @Test fun animeTitle() { animeData(); shot("8-anime-title") { AnimeScreen(Store.lib.value.anime.first().id, {}, {}, {}, {}) } }
     @Test fun shazam() {

@@ -233,6 +233,8 @@ struct App {
     sr_tx: Sender<wavy_core::twitch::Msg>,
     sr_rx: Receiver<wavy_core::twitch::Msg>,
     skip_vote: wavy_core::twitch::SkipVote,
+    /// пульт с телефона: состояние для него и команды от него
+    remote: (Arc<Mutex<serde_json::Value>>, Arc<Mutex<Option<String>>>, Sender<(String, f64)>, Receiver<(String, f64)>),
     /// ждём первую награду за баллы, чтобы запомнить её как «заказ трека»
     reward_bind: bool,
     /// вход в Twitch: код для twitch.tv/activate
@@ -308,7 +310,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), reward_bind: false, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -2385,7 +2387,9 @@ impl App {
             self.wifi = None;
             if let Some(pin) = want {
                 let (tx, c) = (self.tx.clone(), ctx.clone());
-                match wavy_core::wifisync::start(self.store.clone(), pin.clone(), move |m| { let _ = tx.send(Bg::Status(m)); c.request_repaint(); }) {
+                let c2 = ctx.clone();
+                let remote = wavy_core::wifisync::Remote { state: self.remote.0.clone(), cover: self.remote.1.clone(), cmds: self.remote.2.clone(), wake: Arc::new(move || c2.request_repaint()) };
+                match wavy_core::wifisync::start(self.store.clone(), pin.clone(), remote, move |m| { let _ = tx.send(Bg::Status(m)); c.request_repaint(); }) {
                     Ok(srv) => self.wifi = Some((pin, srv)),
                     Err(e) => { self.toast(format!("Синхронизация по Wi-Fi: {e}"), true); self.store.lock().unwrap().patch_settings(&json!({"wifiSync": false})); }
                 }
@@ -2634,6 +2638,33 @@ impl App {
         } else { vec![] };
         self.overlay.set_queue(json!(queue));
         if ov.show_lyrics { self.ensure_lyrics(ctx); }
+        if self.wifi.is_some() { self.remote_tick(ctx); }
+    }
+
+    /// Пульт с телефона: выполнить команды и обновить состояние, которое он видит.
+    fn remote_tick(&mut self, ctx: &egui::Context) {
+        let cmds: Vec<(String, f64)> = self.remote.3.try_iter().collect();
+        for (cmd, v) in cmds {
+            let act = match cmd.as_str() {
+                "toggle" => Act::TogglePlay, "next" => Act::Next, "prev" => Act::Prev,
+                "volume" => { self.apply(Act::Volume(v.clamp(0.0, 1.0) as f32), ctx); Act::SaveVolume }
+                "seek" => Act::Seek(v.max(0.0)),
+                "jump" if (v.max(0.0) as usize) < self.queue.len() => Act::JumpQueue(v.max(0.0) as usize),
+                _ => continue,
+            };
+            self.apply(act, ctx);
+        }
+        let t = self.current.clone();
+        *self.remote.1.lock().unwrap() = t.as_ref().and_then(|t| t.cover.clone()).filter(|c| !c.starts_with("http"));
+        let queue: Vec<serde_json::Value> = self.queue.iter().enumerate().skip(self.qi.saturating_sub(1)).take(30)
+            .filter_map(|(i, id)| self.track(id).map(|t| json!({"i": i, "title": t.title, "artist": t.artist, "current": i == self.qi}))).collect();
+        let duration = if self.audio.duration > 0.0 { self.audio.duration } else { t.as_ref().map(|t| t.duration).unwrap_or(0.0) };
+        *self.remote.0.lock().unwrap() = json!({
+            "track": t.as_ref().map(|t| json!({"id": t.id, "title": t.title, "artist": t.artist,
+                "cover": t.cover.as_ref().map(|c| if c.starts_with("http") { c.clone() } else { "local".into() })})),
+            "playing": self.audio.is_playing(), "position": self.audio.position(), "duration": duration,
+            "volume": self.settings().volume, "queue": queue,
+        });
     }
 
     fn lyrics_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {

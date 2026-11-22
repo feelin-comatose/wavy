@@ -155,6 +155,7 @@ class MainActivity : ComponentActivity() {
         var openPlaylist by rememberSaveable { mutableStateOf<String?>(null) }
         var openAnime by rememberSaveable { mutableStateOf<String?>(null) }
         val shazamOpen by AppState.shazamOpen.collectAsState()
+        val remoteOpen by AppState.remoteOpen.collectAsState()
         // серия досмотрена (последние 10 %) — отмечаем
         LaunchedEffect(Unit) {
             while (true) {
@@ -207,6 +208,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
             AnimatedVisibility(full, enter = slideInVertically { it }, exit = slideOutVertically { it }) { FullPlayer { full = false } }
+            if (remoteOpen) {
+                val st by Store.lib.collectAsState()
+                BackHandler { AppState.remoteOpen.value = false }
+                Box(Modifier.fillMaxSize().statusBarsPadding()) { app.wavy.android.ui.RemoteScreen(st.settings.syncAddr, st.settings.syncPin, back = { AppState.remoteOpen.value = false }) }
+            }
         }
         importFor?.let { (url, pl) -> ImportDialog(url, pl, dismiss = { importFor = null }) { pid -> if (pid != null) { tab = 1; openPlaylist = pid } } }
         addTo?.let { ids -> AddToPlaylistDialog(ids) { addTo = null } }

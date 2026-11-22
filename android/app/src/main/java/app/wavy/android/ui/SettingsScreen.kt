@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material3.CircularProgressIndicator
@@ -69,7 +70,10 @@ fun SettingsScreen(
             OutlinedTextField(addr, { v -> addr = v.trim(); Store.settings { it.copy(syncAddr = addr) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Адрес ПК (например 192.168.1.5:3738)") }, singleLine = true)
             OutlinedTextField(pin, { v -> pin = v.filter { it.isDigit() }.take(6); Store.settings { it.copy(syncPin = pin) } }, Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("PIN") }, singleLine = true)
             Spacer(Modifier.height(8.dp))
-            Pill("Синхронизировать", Icons.Rounded.Sync, primary = true) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.wifiSync(addr, pin) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Синхронизировать", Icons.Rounded.Sync, primary = true) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.wifiSync(addr, pin) }
+                Pill("Пульт ПК", Icons.Rounded.SettingsRemote) { if (addr.isBlank() || pin.length < 6) AppState.say("Впиши адрес ПК и PIN из 6 цифр") else AppState.remoteOpen.value = true }
+            }
         }
 
         Section("Spotify") {

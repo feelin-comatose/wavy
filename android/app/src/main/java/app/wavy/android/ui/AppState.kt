@@ -81,6 +81,9 @@ object AppState {
     }
 
     // ---------- синхронизация с ПК по Wi-Fi ----------
+    /** Открыт ли пульт ПК. */
+    val remoteOpen = MutableStateFlow(false)
+
     fun wifiSync(addr: String, pin: String) = bg("Синхронизация с ПК…") {
         val base = "http://" + addr.trim().removePrefix("http://").trimEnd('/').let { if (':' in it) it else "$it:3738" } + "/wavy/sync?pin=" + pin.trim()
         val r = withContext(Dispatchers.IO) {
