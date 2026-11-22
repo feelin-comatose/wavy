@@ -8,6 +8,7 @@ mod player;
 mod thumbs;
 mod export;
 mod tray;
+mod instance;
 mod fx;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -232,6 +233,8 @@ struct App {
     /// трек, для которого уже начат кроссфейд
     xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
+    /// команды от следующих запусков Wavy (показать окно / закрыться после обновления)
+    instance: Option<Receiver<instance::Cmd>>,
     /// шрифт с иероглифами уже подгружен (или искали и не нашли)
     cjk_loaded: bool,
     cjk_check: Instant,
@@ -291,7 +294,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -898,6 +901,9 @@ impl App {
             }
             Act::CheckUpdate => { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
             Act::Restart => {
+                // иначе «крестик в трей» спрячет старое окно, и оно продолжит играть рядом с новым
+                self.quitting = true;
+                self.audio.stop();
                 self.save_session();
                 update::restart();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1421,6 +1427,13 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.tick(&ctx);
         let mut acts = Vec::new();
+        let cmds: Vec<instance::Cmd> = self.instance.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for c in cmds {
+            match c {
+                instance::Cmd::Show => acts.push(Act::ShowWindow),
+                instance::Cmd::Quit => { wavy_core::log("закрываюсь: запустилась новая версия"); self.audio.stop(); self.save_session(); acts.push(Act::Quit); }
+            }
+        }
         if let Some((_, rx)) = &self.tray {
             while let Ok(c) = rx.try_recv() {
                 acts.push(match c { tray::Cmd::Show => continue, tray::Cmd::Toggle => Act::TogglePlay, tray::Cmd::Next => Act::Next, tray::Cmd::Prev => Act::Prev, tray::Cmd::Quit => Act::Quit });
@@ -3646,8 +3659,14 @@ fn open_url(url: &str) {
 }
 
 fn main() -> eframe::Result {
-    // запуск после автообновления: даём старому процессу закрыться (порт оверлея, файлы)
-    if std::env::args().any(|a| a == "--restarted") { std::thread::sleep(Duration::from_millis(1500)); }
+    // один Wavy за раз: после обновления старый процесс закрывается, повторный запуск показывает окно
+    let restarted = std::env::args().any(|a| a == "--restarted");
+    let listener = match instance::start(restarted) {
+        instance::Start::First(l) => l,
+        instance::Start::AlreadyRunning => return Ok(()),
+    };
+    // даём старому процессу отпустить порт оверлея и файлы
+    if restarted { std::thread::sleep(Duration::from_millis(500)); }
     // паника → в лог (в Windows-сборке нет консоли)
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -3660,7 +3679,12 @@ fn main() -> eframe::Result {
             .with_icon(Arc::new(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default())),
         ..Default::default()
     };
-    eframe::run_native("Wavy", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("Wavy", opts, Box::new(move |cc| {
+        let mut app = App::new(cc);
+        let c = cc.egui_ctx.clone();
+        app.instance = Some(instance::listen(listener, move || c.request_repaint()));
+        Ok(Box::new(app))
+    }))
 }
 
 /// Миллисекунды Unix → «21.11.2026».
