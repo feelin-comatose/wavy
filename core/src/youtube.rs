@@ -16,7 +16,12 @@ pub struct YouTube {
     streams: Mutex<HashMap<String, (String, u64)>>, // url -> (stream, expires_ms)
     deno: Arc<Mutex<Deno>>,
     rp: std::sync::OnceLock<Option<rustypipe::client::RustyPipe>>,
+    /// куки для видео 18+ (браузер или файл cookies.txt) — только для повторной попытки такого видео
+    cookies: Mutex<String>,
 }
+
+/// Браузеры, из которых yt-dlp умеет брать куки.
+pub const COOKIE_BROWSERS: &[(&str, &str)] = &[("firefox", "Firefox"), ("chrome", "Chrome"), ("edge", "Edge"), ("brave", "Brave"), ("opera", "Opera"), ("vivaldi", "Vivaldi"), ("chromium", "Chromium")];
 
 /// Прямая ссылка на поток (без скачивания): адрес и размер, если известен.
 #[derive(Clone, Debug)]
@@ -48,10 +53,20 @@ pub struct UrlImport {
 
 impl YouTube {
     pub fn new(bin_dir: PathBuf) -> Self {
-        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)), rp: std::sync::OnceLock::new() }
+        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)), rp: std::sync::OnceLock::new(), cookies: Mutex::new(String::new()) }
     }
 
     pub fn deno_status(&self) -> Deno { self.deno.lock().unwrap().clone() }
+
+    /// Куки YouTube: имя браузера или путь к cookies.txt (пусто — без кук).
+    pub fn set_cookies(&self, v: &str) { *self.cookies.lock().unwrap() = v.trim().to_string(); }
+    pub fn has_cookies(&self) -> bool { !self.cookies.lock().unwrap().is_empty() }
+
+    fn cookie_args(&self) -> Vec<String> {
+        let v = self.cookies.lock().unwrap().clone();
+        if v.is_empty() { return vec![]; }
+        if COOKIE_BROWSERS.iter().any(|b| b.0 == v) { vec!["--cookies-from-browser".into(), v] } else { vec!["--cookies".into(), v] }
+    }
 
     fn rustypipe(&self) -> Result<&rustypipe::client::RustyPipe, String> {
         self.rp.get_or_init(|| {
@@ -275,7 +290,8 @@ impl YouTube {
 
     /// Звук потоком через yt-dlp (-o -): он сам проходит защиту YouTube (deno), а мы играем с первых
     /// килобайт, пока остальное докачивается в `path`. Только m4a (AAC) — его декодирует symphonia.
-    pub fn stream_audio(&self, track: &Track, path: &Path) -> Result<crate::stream::Download, String> {
+    /// `auth` — с куками (для видео 18+, если они заданы в настройках).
+    pub fn stream_audio(&self, track: &Track, path: &Path, auth: bool) -> Result<crate::stream::Download, String> {
         use std::process::Stdio;
         let key = track.url.clone().ok_or("У трека нет ссылки")?;
         let bin = self.ensure_binary(&|_| {})?;
@@ -284,6 +300,7 @@ impl YouTube {
         self.wait_deno(std::time::Duration::from_secs(60));
         let mut c = cmd(&bin);
         if let Some(d) = self.deno_path() { c.arg("--js-runtimes").arg(format!("deno:{d}")); }
+        if auth { c.args(self.cookie_args()); }
         c.args(["-f", "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]", "--no-playlist", "--no-warnings", "--no-progress", "--quiet",
                 "--no-part", "--match-filter", "!is_live", "-o", "-", &key])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());

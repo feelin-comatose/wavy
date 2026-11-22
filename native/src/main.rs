@@ -55,8 +55,8 @@ enum Bg {
     OpenPlaylist(String),
     Search(Result<Vec<Track>, String>),
     Ready { token: u64, path: PathBuf },
-    /// видео трека пропало с YouTube — нашли такой же трек в другом видео
-    Replaced(Track),
+    /// видео трека пропало с YouTube или стало 18+ — нашли такой же трек в другом видео (bool: 18+)
+    Replaced(Track, bool),
     ReadyStream { token: u64, dl: wavy_core::stream::Download },
     VideoDownloading { id: String, dl: wavy_core::stream::Download },
     LoadFailed { token: u64, err: String },
@@ -78,6 +78,8 @@ enum Bg {
     Shiki(Result<wavy_core::shikimori::Account, String>, bool),
     SongRequest(String, Result<Track, String>),
     CacheSize(u64, usize),
+    /// куки для 18+ заданы, но yt-dlp с ними не справился (браузер открыт, нет входа…)
+    CookiesFailed(String),
 }
 
 enum Modal {
@@ -241,6 +243,7 @@ impl App {
         style(&ctx);
         let dir = wavy_core::data_dir();
         let store = Store::open(&dir);
+        let yt_cookies = store.lib.settings.yt_cookies.clone();
         let (tx, rx) = channel();
         let (sr_tx, sr_rx) = channel();
         let (t2, c2) = (tx.clone(), ctx.clone());
@@ -275,7 +278,7 @@ impl App {
             overlay_open: false,
             overlay_init: s.overlay_window.bounds.unwrap_or([24.0, 24.0, 440.0, 124.0]),
             store: Arc::new(Mutex::new(store)),
-            yt: Arc::new(YouTube::new(dir.join("bin"))),
+            yt: Arc::new({ let y = YouTube::new(dir.join("bin")); y.set_cookies(&yt_cookies); y }),
             discord, discord_status: Default::default(), overlay, audio,
             thumbs: thumbs::Thumbs::new(&ctx),
             tx, rx, covers: dir.join("covers"), cache,
@@ -419,16 +422,33 @@ impl App {
             std::thread::spawn(move || {
                 let t0 = Instant::now();
                 let mut res = fetch_audio(&yt, &t, &cache);
-                // видео удалено / закрыто / недоступно в стране — ищем этот же трек в другом видео
+                // видео удалено / закрыто / недоступно в стране / 18+ (без входа не дают) — ищем этот же трек в другом видео
                 if let Err(e) = &res {
-                    if gone_from_youtube(e) && t.video_id.is_some() {
-                        wavy_core::log(&format!("«{}»: видео недоступно ({e}) — ищу замену", t.title));
-                        let _ = tx.send(Bg::Status(format!("«{}» больше нет на YouTube — ищу такой же трек…", t.title)));
+                    let age = age_restricted(e);
+                    // 18+ и в настройках есть куки — пробуем то же видео «со входом»
+                    if age && yt.has_cookies() {
+                        let _ = tx.send(Bg::Status(format!("«{}»: видео 18+ — пробую с куками браузера…", t.title)));
                         c.request_repaint();
-                        if let Ok(Some(n)) = wavy_core::spotify::find_replacement(&yt, &t) {
-                            wavy_core::log(&format!("«{}»: замена {:?}", t.title, n.video_id));
-                            let r2 = fetch_audio(&yt, &n, &cache);
-                            if r2.is_ok() { let _ = tx.send(Bg::Replaced(n)); res = r2; }
+                        match fetch_with_cookies(&yt, &t, &cache) {
+                            Ok(r) => res = Ok(r),
+                            Err(e2) => { wavy_core::log(&format!("«{}»: с куками не вышло: {e2}", t.title)); let _ = tx.send(Bg::CookiesFailed(e2)); }
+                        }
+                    }
+                }
+                if let Err(e) = &res {
+                    let age = age_restricted(e);
+                    if (age || gone_from_youtube(e)) && t.video_id.is_some() {
+                        wavy_core::log(&format!("«{}»: видео недоступно ({e}) — ищу замену", t.title));
+                        let why = if age { "видео 18+, YouTube не даёт его без входа" } else { "больше нет на YouTube" };
+                        let _ = tx.send(Bg::Status(format!("«{}»: {why} — ищу такой же трек в другом видео…", t.title)));
+                        c.request_repaint();
+                        // первая замена может оказаться тоже 18+ (YouTube смотрит на название) — пробуем до трёх
+                        for n in wavy_core::spotify::find_replacements(&yt, &t).unwrap_or_default().into_iter().take(3) {
+                            wavy_core::log(&format!("«{}»: пробую замену {:?}", t.title, n.video_id));
+                            match fetch_audio(&yt, &n, &cache) {
+                                Ok(r2) => { let _ = tx.send(Bg::Replaced(n, age)); res = Ok(r2); break; }
+                                Err(e2) => wavy_core::log(&format!("замена {:?} не играет: {e2}", n.video_id)),
+                            }
                         }
                     }
                 }
@@ -511,7 +531,8 @@ impl App {
             self.toast("Скачиваю декодер для этого формата (≈6 МБ, один раз)…", false);
             return;
         }
-        let err = wavy_core::ffmpeg::human(&err).to_string();
+        let err = if age_restricted(&err) { "видео 18+, YouTube не даёт его без входа, а другой загрузки этого трека не нашлось".to_string() }
+            else { wavy_core::ffmpeg::human(&err).to_string() };
         let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
         self.toast(format!("Не получилось воспроизвести «{title}»: {err}"), true);
         self.errors_in_row += 1;
@@ -812,6 +833,7 @@ impl App {
                 let s = self.settings();
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
                 self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec);
+                self.yt.set_cookies(&s.yt_cookies);
                 if let Err(e) = self.overlay.start(s.overlay.port) { self.toast(format!("Оверлей: {e}"), true); }
             }
             Act::ToggleOverlay => {
@@ -1121,14 +1143,16 @@ impl App {
                     self.searching = false;
                     match r { Ok(v) => self.results = v, Err(e) => self.toast(e, true) }
                 }
-                Bg::Replaced(t) => {
+                Bg::CookiesFailed(e) => self.toast(format!("Куки браузера не сработали: {}", cookie_hint(&e)), true),
+                Bg::Replaced(t, age) => {
                     // запоминаем новое видео в библиотеке (id тот же — плейлисты не трогаем)
                     let mut s = self.store.lock().unwrap();
                     if s.lib.tracks.contains_key(&t.id) { s.add_tracks(vec![t.clone()]); }
                     drop(s);
                     if self.current.as_ref().is_some_and(|c| c.id == t.id) { self.current = Some(t.clone()); }
                     self.video_error = None;
-                    self.toast(format!("«{}»: старое видео пропало с YouTube, нашёл замену", t.title), false);
+                    self.toast(if age { format!("«{}»: видео 18+ без входа не играет — нашёл тот же трек в другом видео", t.title) }
+                        else { format!("«{}»: старое видео пропало с YouTube, нашёл замену", t.title) }, false);
                 }
                 Bg::Ready { token, path } => if token == self.token { self.start_file(&path); },
                 Bg::ReadyStream { token, dl } => if token == self.token { self.start_stream(dl); } else if !dl.done() { dl.cancel(); },
@@ -2882,6 +2906,30 @@ impl App {
                                 self.cache_counting = false;
                             }
                         });
+                        section(ui, "\u{E4FC}  YouTube 18+");
+                        ui.label(RichText::new("Видео с возрастным ограничением YouTube без входа не отдаёт. Wavy сначала ищет такой же трек в другом видео, а если задать куки — сыграет и само видео, как будто ты вошёл. Куки берутся только для таких видео.").color(MUTED).size(12.0));
+                        ui.horizontal(|ui| {
+                            ui.label("Куки из:");
+                            let cur = s.yt_cookies.clone();
+                            let is_file = !cur.is_empty() && !wavy_core::youtube::COOKIE_BROWSERS.iter().any(|b| b.0 == cur);
+                            let shown = if cur.is_empty() { "не брать".to_string() } else if is_file { "файла cookies.txt".to_string() }
+                                else { wavy_core::youtube::COOKIE_BROWSERS.iter().find(|b| b.0 == cur).map(|b| b.1.to_string()).unwrap_or_default() };
+                            let mut pick: Option<String> = None;
+                            egui::ComboBox::from_id_salt("yt-cookies").selected_text(shown).show_ui(ui, |ui| {
+                                if ui.selectable_label(cur.is_empty(), "не брать").clicked() { pick = Some(String::new()); }
+                                for (id, name) in wavy_core::youtube::COOKIE_BROWSERS {
+                                    if ui.selectable_label(cur == *id, *name).clicked() { pick = Some(id.to_string()); }
+                                }
+                                if ui.selectable_label(is_file, "файла cookies.txt…").clicked() {
+                                    if let Some(f) = rfd::FileDialog::new().set_title("Файл cookies.txt").add_filter("cookies.txt", &["txt"]).pick_file() { pick = Some(f.to_string_lossy().into_owned()); }
+                                }
+                            });
+                            if let Some(v) = pick { if v != cur { acts.push(Act::Settings(json!({"ytCookies": v}))); } }
+                            if is_file { ui.label(RichText::new(&cur).color(MUTED).size(12.0)); }
+                        });
+                        if matches!(s.yt_cookies.as_str(), "chrome" | "edge" | "brave" | "opera" | "vivaldi" | "chromium") {
+                            ui.label(RichText::new("Chrome и похожие браузеры на Windows прячут куки, и часто достать их не выходит. Надёжнее Firefox (с входом в YouTube) или файл cookies.txt из расширения «Get cookies.txt LOCALLY».").color(MUTED).size(12.0));
+                        }
                         section(ui, "\u{E754}  Аниме");
                         let mut a = s.anime_autoskip;
                         if ui.checkbox(&mut a, "Сам пропускать опенинги (время берётся из AniSkip)").changed() { acts.push(Act::Settings(json!({"animeAutoskip": a}))); }
@@ -3216,6 +3264,35 @@ impl App {
 enum AudioSrc { File(PathBuf), Stream(wavy_core::stream::Download) }
 
 /// Ошибка «видео больше нет»: удалено, закрыто, заблокировано в стране или по жалобе.
+/// YouTube просит войти, чтобы подтвердить возраст (видео 18+). Проверку «не бот» сюда не относим:
+/// она касается всех видео, и замена не поможет.
+fn age_restricted(err: &str) -> bool {
+    let e = err.to_lowercase();
+    ["confirm your age", "age-restricted", "age restricted", "inappropriate for some users"].iter().any(|m| e.contains(m))
+}
+
+/// Видео 18+ с куками из настроек: только поток через yt-dlp (rustypipe кук не умеет).
+fn fetch_with_cookies(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
+    let key = t.url.clone().unwrap_or_default();
+    let path = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
+    let dl = yt.stream_audio(t, &path, true)?;
+    if dl.wait_for(200 * 1024, Duration::from_secs(60)) { return Ok(AudioSrc::Stream(dl)); }
+    let e = dl.error().unwrap_or_else(|| "долго нет данных".into());
+    dl.cancel();
+    Err(e)
+}
+
+/// Понятная причина, почему куки не подошли.
+fn cookie_hint(err: &str) -> String {
+    let e = err.to_lowercase();
+    if e.contains("could not copy") || e.contains("database is locked") { "браузер держит файл кук — закрой его полностью и попробуй ещё раз".into() }
+    else if e.contains("decrypt") || e.contains("dpapi") { "Chrome/Edge шифруют куки так, что их не достать — возьми Firefox или файл cookies.txt".into() }
+    else if e.contains("netscape") { "это не файл cookies.txt — выгрузи его расширением «Get cookies.txt LOCALLY» на youtube.com".into() }
+    else if e.contains("could not find") { "не нашёл профиль браузера — он установлен?".into() }
+    else if age_restricted(&e) { "в браузере нет входа в YouTube (или аккаунту меньше 18)".into() }
+    else { err.lines().last().unwrap_or(err).chars().take(160).collect() }
+}
+
 fn gone_from_youtube(err: &str) -> bool {
     let e = err.to_lowercase();
     ["video unavailable", "not available", "private video", "has been removed", "been terminated", "copyright", "unavailable"].iter().any(|m| e.contains(m))
@@ -3241,7 +3318,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
         }
         // yt-dlp потоком: играем, пока он качает (с 2025 года ссылки rustypipe YouTube часто отклоняет — 403)
         let t0 = std::time::Instant::now();
-        match yt.stream_audio(t, &path) {
+        match yt.stream_audio(t, &path, false) {
             Ok(dl) => {
                 if dl.wait_for(200 * 1024, Duration::from_secs(40)) {
                     wavy_core::log(&format!("«{}»: поток yt-dlp пошёл через {:.1} с", t.title, t0.elapsed().as_secs_f32()));
@@ -3250,7 +3327,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
                 let e = dl.error().unwrap_or_else(|| "долго нет данных".into());
                 dl.cancel();
                 // видео пропало — дальше качать бессмысленно, пусть ищется замена
-                if gone_from_youtube(&e) { return Err(e); }
+                if gone_from_youtube(&e) || age_restricted(&e) { return Err(e); }
                 wavy_core::log(&format!("поток yt-dlp «{}» не пошёл: {e} — качаю целиком", t.title));
             }
             Err(e) => wavy_core::log(&format!("yt-dlp потоком «{}»: {e}", t.title)),
@@ -3603,4 +3680,23 @@ fn fmt_date(ms: u64) -> String {
 
 fn fmt_bytes(b: u64) -> String {
     if b >= 1 << 30 { format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64) } else { format!("{} МБ", b / (1 << 20)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn age_errors() {
+        let age = "ERROR: [youtube] pLT99PuEOmY: Sign in to confirm your age. This video may be inappropriate for some users.";
+        assert!(age_restricted(age));
+        assert!(age_restricted("ERROR: [youtube] x: Sign in to confirm your age. This video is age-restricted and only available on YouTube."));
+        // проверка «не бот» — не про возраст: замена тут не поможет
+        assert!(!age_restricted("ERROR: [youtube] x: Sign in to confirm you’re not a bot."));
+        assert!(!gone_from_youtube(age));
+        assert!(cookie_hint("ERROR: could not find firefox cookies database in '/root/.mozilla/firefox'").contains("профиль"));
+        assert!(cookie_hint("ERROR: 'c.txt' does not look like a Netscape format cookies file").contains("cookies.txt"));
+        assert!(cookie_hint("ERROR: Failed to decrypt with DPAPI").contains("Firefox"));
+        assert!(cookie_hint(age).contains("нет входа"));
+    }
 }
