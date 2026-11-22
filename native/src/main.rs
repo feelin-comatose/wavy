@@ -2305,7 +2305,8 @@ impl App {
                 // звук: скорость, кроссфейд, громкость, эквалайзер
                 let fx_on = (s.speed - 1.0).abs() > 0.01 || s.crossfade > 0.0 || s.normalize || s.eq_on;
                 let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text(l!("Звук: скорость, кроссфейд, эквалайзер", "Sound: speed, crossfade, equalizer"));
-                let force = std::mem::take(&mut self.sound_open).then_some(egui::SetOpenCommand::Bool(true));
+                // клик по кнопке — открыть/закрыть; из палитры Ctrl+K — открыть
+                let force = if std::mem::take(&mut self.sound_open) { Some(egui::SetOpenCommand::Bool(true)) } else { r.clicked().then_some(egui::SetOpenCommand::Toggle) };
                 egui::Popup::from_toggle_button_response(&r).open_memory(force).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
                 // таймер сна
                 let r = icon_btn(ui, "\u{E330}", 34.0, self.sleep.is_some()).on_hover_text(match self.sleep {
