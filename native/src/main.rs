@@ -2492,6 +2492,7 @@ impl App {
     /// Чат Twitch (заказы) и лимит кэша.
     fn stream_tick(&mut self, ctx: &egui::Context) {
         self.overlay_extra(ctx);
+        self.backup_tick(false);
         let st = self.settings();
         let acc = Some(st.twitch_account.clone()).filter(|a| a.logged_in());
         let want = (st.twitch_sr && !st.twitch_channel.trim().is_empty())
@@ -2532,6 +2533,27 @@ impl App {
             let (dir, limit) = (self.cache.clone(), st.cache_limit_gb as u64 * 1_073_741_824);
             std::thread::spawn(move || { let f = wavy_core::stream::trim_dir(&dir, limit, &keep); if f > 0 { wavy_core::log(&format!("кэш: удалено {} МБ старого", f / 1_048_576)); } });
         }
+    }
+
+    /// Автобэкап библиотеки раз в сутки (или сейчас, если `force`).
+    fn backup_tick(&mut self, force: bool) {
+        let st = self.settings();
+        let now = wavy_core::now_ms();
+        if !force && now.saturating_sub(st.last_backup) < 86_400_000 { return; }
+        if !force && self.started.elapsed() < Duration::from_secs(60) { return; } // не мешаем запуску
+        self.store.lock().unwrap().patch_settings(&json!({"lastBackup": now}));
+        let dir = if st.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&st.backup_dir) };
+        let d = fmt_date(now); // 21.11.2026 → 2026-11-21 (чтобы копии сортировались по дате)
+        let p: Vec<&str> = d.split('.').collect();
+        let name = format!("wavy-backup-{}-{}-{}.json", p[2], p[1], p[0]);
+        let (store, tx) = (self.store.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let r = store.lock().unwrap().backup(&dir, &name, 14);
+            match r {
+                Ok(p) => { wavy_core::log(&format!("бэкап: {}", p.display())); if force { let _ = tx.send(Bg::Status(format!("Копия сохранена: {}", p.display()))); } }
+                Err(e) => { wavy_core::log(&format!("бэкап не удался: {e}")); let _ = tx.send(Bg::Status(format!("Резервная копия не сохранилась: {e}"))); }
+            }
+        });
     }
 
     /// Last.fm: «сейчас слушает» при старте трека, скроббл после половины (или 4 минут).
@@ -3508,6 +3530,24 @@ impl App {
                             }
                         });
                         ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск").color(MUTED).size(12.0));
+                        section(ui, "\u{E248}  Резервные копии");
+                        let bdir = if s.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&s.backup_dir) };
+                        ui.label(RichText::new("Раз в день Wavy сохраняет плейлисты, лайки, историю и настройки (14 последних копий). Чтобы копии пережили переустановку Windows, выбери папку на другом диске или в облаке (OneDrive, Google Диск).").color(MUTED).size(12.0));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(bdir.to_string_lossy()).color(TEXT).size(12.0));
+                            if pill(ui, "Папка…", false).clicked() {
+                                if let Some(d) = rfd::FileDialog::new().set_title("Куда сохранять копии").pick_folder() { acts.push(Act::Settings(json!({"backupDir": d.to_string_lossy()}))); }
+                            }
+                            if pill(ui, "Открыть", false).clicked() { let _ = std::fs::create_dir_all(&bdir); open_folder(&bdir); }
+                            if pill(ui, "Сделать сейчас", false).clicked() { self.backup_tick(true); }
+                            if pill(ui, "Восстановить…", false).on_hover_text("Заменить библиотеку копией (текущая сохранится рядом)").clicked() {
+                                if let Some(f) = rfd::FileDialog::new().set_title("Резервная копия Wavy").set_directory(&bdir).add_filter("Копия", &["json"]).pick_file() {
+                                    let r = self.store.lock().unwrap().restore(&f);
+                                    match r { Ok(n) => self.toast(format!("Библиотека восстановлена: {n} треков"), false), Err(e) => self.toast(format!("Не восстановилось: {e}"), true) }
+                                }
+                            }
+                        });
+                        if s.last_backup > 0 { ui.label(RichText::new(format!("Последняя копия: {}", fmt_date(s.last_backup))).color(MUTED).size(12.0)); }
                         section(ui, "\u{E036}  Обновления");
                         match update::current_build() {
                             Some(b) => { ui.label(RichText::new(format!("Версия: сборка {b}")).color(TEXT)); }

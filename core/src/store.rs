@@ -101,10 +101,13 @@ pub struct Settings {
     pub hotkeys: HashMap<String, String>,
     /// Скробблинг в Last.fm.
     pub lastfm: crate::lastfm::Account,
+    /// Автобэкап библиотеки раз в день: папка (пусто — data_dir/backups) и когда был последний (мс).
+    pub backup_dir: String,
+    pub last_backup: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new(), lastfm: Default::default() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new(), lastfm: Default::default(), backup_dir: String::new(), last_backup: 0 }
     }
 }
 
@@ -143,6 +146,32 @@ impl Store {
                 let _ = std::fs::rename(&tmp, &self.file);
             }
         }
+    }
+
+    /// Резервная копия библиотеки (плейлисты, треки, лайки, история, настройки) в `dir`.
+    /// Хранит `keep` последних копий, старые удаляет.
+    pub fn backup(&self, dir: &std::path::Path, name: &str, keep: usize) -> Result<std::path::PathBuf, String> {
+        std::fs::create_dir_all(dir).map_err(|e| format!("папка недоступна: {e}"))?;
+        let path = dir.join(name);
+        let s = serde_json::to_string(&self.lib).map_err(|e| e.to_string())?;
+        std::fs::write(&path, s).map_err(|e| format!("не записалось: {e}"))?;
+        let mut old: Vec<std::path::PathBuf> = std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten().map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| { let n = n.to_string_lossy(); n.starts_with("wavy-backup-") && n.ends_with(".json") })).collect();
+        old.sort();
+        while old.len() > keep { let _ = std::fs::remove_file(old.remove(0)); }
+        Ok(path)
+    }
+
+    /// Восстановить библиотеку из копии. Текущая библиотека сначала сохраняется рядом (library.before-restore.json).
+    pub fn restore(&mut self, path: &std::path::Path) -> Result<usize, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("не читается: {e}"))?;
+        let lib: Library = serde_json::from_str(&text).map_err(|_| "это не резервная копия Wavy".to_string())?;
+        if lib.tracks.is_empty() && lib.playlists.is_empty() { return Err("копия пустая".into()); }
+        let _ = std::fs::copy(&self.file, self.file.with_file_name("library.before-restore.json"));
+        let n = lib.tracks.len();
+        self.lib = lib;
+        self.save();
+        Ok(n)
     }
 
     /// Применить JSON-патч к настройкам (глубокое слияние).
@@ -531,6 +560,25 @@ mod sort_tests {
         s.lib.plays.insert("c".into(), 5);
         s.lib.plays.insert("a".into(), 2);
         assert_eq!(j(s.sorted(ids, "plays", true)), "cab");
+    }
+
+    #[test]
+    fn backup_restore() {
+        let dir = std::env::temp_dir().join(format!("wavy-bk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Store { file: dir.join("library.json"), lib: Library::default() };
+        s.lib.tracks.insert("a".into(), tr("a", "Gurenge", "LiSA", ""));
+        s.save();
+        for d in 1..=5 { s.backup(&dir.join("bk"), &format!("wavy-backup-2026-11-0{d}.json"), 3).unwrap(); }
+        let mut left: Vec<String> = std::fs::read_dir(dir.join("bk")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, vec!["wavy-backup-2026-11-03.json", "wavy-backup-2026-11-04.json", "wavy-backup-2026-11-05.json"]);
+        s.lib.tracks.clear();
+        assert_eq!(s.restore(&dir.join("bk/wavy-backup-2026-11-05.json")), Ok(1));
+        assert!(s.lib.tracks.contains_key("a"));
+        assert!(dir.join("library.before-restore.json").exists());
+        assert!(s.restore(&dir.join("library.json.nope")).is_err());
     }
 
     #[test]
