@@ -239,6 +239,42 @@ impl Store {
     }
 
     /// Засчитать прослушивание.
+    /// Умный плейлист: собирается сам по правилу (см. SMART). Без серий аниме.
+    pub fn smart(&self, rule: &str) -> Vec<String> {
+        const DAY: u64 = 86_400_000;
+        let now = now_ms();
+        let music = |id: &String| self.lib.tracks.get(id).is_some_and(|t| t.anime.is_none());
+        let mut last: HashMap<&str, u64> = HashMap::new();
+        for (id, at) in &self.lib.history { let e = last.entry(id.as_str()).or_default(); *e = (*e).max(*at); }
+        let top = |since: u64| -> Vec<String> {
+            let mut n: HashMap<&str, u32> = HashMap::new();
+            for (id, at) in &self.lib.history { if *at >= since { *n.entry(id.as_str()).or_default() += 1; } }
+            let mut v: Vec<(&str, u32)> = n.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            v.into_iter().map(|(id, _)| id.to_string()).filter(music).take(50).collect()
+        };
+        let unplayed = |since: u64| -> Vec<String> {
+            let mut v: Vec<&Track> = self.lib.tracks.values().filter(|t| t.anime.is_none() && t.added_at >= since && self.lib.plays.get(&t.id).copied().unwrap_or(0) == 0).collect();
+            v.sort_by(|a, b| b.added_at.cmp(&a.added_at).then(a.id.cmp(&b.id)));
+            v.into_iter().map(|t| t.id.clone()).collect()
+        };
+        match rule {
+            // лайкнутое, что не играло месяц
+            "forgotten" => self.lib.liked.iter().filter(|id| music(id) && last.get(id.as_str()).is_none_or(|at| *at < now.saturating_sub(30 * DAY))).cloned().collect(),
+            "week" => top(now.saturating_sub(7 * DAY)),
+            "month" => top(now.saturating_sub(30 * DAY)),
+            "alltime" => {
+                let mut v: Vec<(&String, &u32)> = self.lib.plays.iter().filter(|(id, n)| **n > 0 && music(id)).collect();
+                v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                v.into_iter().take(50).map(|(id, _)| id.clone()).collect()
+            }
+            // добавлено за две недели и ещё ни разу не слушалось
+            "fresh" => unplayed(now.saturating_sub(14 * DAY)),
+            "never" => unplayed(0),
+            _ => vec![],
+        }
+    }
+
     pub fn count_play(&mut self, id: &str) {
         *self.lib.plays.entry(id.to_string()).or_default() += 1;
         self.lib.history.push((id.to_string(), now_ms()));
@@ -461,6 +497,16 @@ fn merge(a: &mut Value, b: &Value) {
     }
 }
 
+/// Умные плейлисты: (правило, название, пояснение).
+pub const SMART: &[(&str, &str, &str)] = &[
+    ("week", "Топ недели", "Чаще всего за 7 дней"),
+    ("month", "Топ месяца", "Чаще всего за 30 дней"),
+    ("alltime", "На повторе", "Самое слушаемое за всё время"),
+    ("forgotten", "Забытое любимое", "Лайкнутое, что не играло больше месяца"),
+    ("fresh", "Свежее", "Добавлено за две недели, ещё не слушал"),
+    ("never", "Ни разу не слушал", "Всё, что ещё ни разу не играло"),
+];
+
 #[cfg(test)]
 mod sort_tests {
     use super::*;
@@ -483,6 +529,27 @@ mod sort_tests {
         s.lib.plays.insert("c".into(), 5);
         s.lib.plays.insert("a".into(), 2);
         assert_eq!(j(s.sorted(ids, "plays", true)), "cab");
+    }
+
+    #[test]
+    fn smart_lists() {
+        let mut s = Store { file: std::env::temp_dir().join(format!("wavy-smart-{}.json", std::process::id())), lib: Library::default() };
+        let now = now_ms();
+        let day = 86_400_000;
+        for (id, added) in [("a", now - 40 * day), ("b", now - 3 * day), ("c", now - day), ("d", now - 50 * day)] {
+            let mut t = tr(id, id, "", ""); t.added_at = added; s.lib.tracks.insert(id.into(), t);
+        }
+        let mut ep = tr("e", "Серия 1", "", ""); ep.anime = Some("an".into()); s.lib.tracks.insert("e".into(), ep);
+        s.lib.liked = vec!["a".into(), "d".into()];
+        // a играл давно, d — вчера, c — дважды на этой неделе, серия аниме — не в счёт
+        s.lib.history = vec![("a".into(), now - 45 * day), ("d".into(), now - day), ("c".into(), now - 2 * day), ("c".into(), now - day), ("e".into(), now)];
+        s.lib.plays = [("a", 1), ("d", 1), ("c", 2), ("e", 9)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        assert_eq!(s.smart("forgotten"), vec!["a"]);
+        assert_eq!(s.smart("week"), vec!["c", "d"]);
+        assert_eq!(s.smart("month"), vec!["c", "d"]);
+        assert_eq!(s.smart("alltime"), vec!["c", "a", "d"]);
+        assert_eq!(s.smart("fresh"), vec!["b"]);
+        assert_eq!(s.smart("never"), vec!["b"]);
     }
 
     #[test]

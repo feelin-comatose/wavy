@@ -44,7 +44,7 @@ const OPENINGS: &str = "Опенинги";
 enum Sleep { At(Instant), EndOfTrack }
 
 #[derive(Clone, PartialEq)]
-enum View { Library, Liked, Stats, Playlist(String), Search, Anime, AnimeTitle(String) }
+enum View { Library, Liked, Stats, Playlist(String), Search, Anime, AnimeTitle(String), Smart(String) }
 
 #[derive(Clone)]
 enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
@@ -402,6 +402,10 @@ impl App {
             View::Playlist(id) => s.lib.playlists.iter().find(|p| &p.id == id).map(|p| p.track_ids.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect()).unwrap_or_default(),
             View::Search => return self.results.iter().map(|t| t.id.clone()).collect(),
             View::Anime | View::AnimeTitle(_) | View::Stats => return vec![],
+            View::Smart(rule) => {
+                let q = self.filter.trim().to_lowercase();
+                return s.smart(rule).into_iter().filter(|id| q.is_empty() || s.lib.tracks.get(id).is_some_and(|t| format!("{} {} {}", t.title, t.artist, t.album).to_lowercase().contains(&q))).collect();
+            }
         };
         let (key, pl) = match &self.view { View::Playlist(id) => (id.clone(), true), View::Liked => ("liked".to_string(), true), _ => ("library".to_string(), false) };
         let ids = s.sorted(ids, s.lib.settings.sort.get(&key).map(String::as_str).unwrap_or(""), pl);
@@ -1658,7 +1662,14 @@ impl App {
         if nav(ui, "\u{E30C}  Поиск на YouTube", self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
         let n_anime = self.store.lock().unwrap().lib.anime.len();
         if nav(ui, "\u{E754}  Аниме", matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
-        ui.add_space(14.0);
+        // умные плейлисты — собираются сами по истории прослушиваний
+        let smart_open = matches!(self.view, View::Smart(_));
+        egui::CollapsingHeader::new(RichText::new("\u{E5FE}  Умные плейлисты").color(if smart_open { TEXT } else { MUTED })).id_salt("smart").default_open(smart_open).show(ui, |ui| {
+            for (rule, name, hint) in wavy_core::store::SMART {
+                if nav(ui, name, self.view == View::Smart(rule.to_string()), None).on_hover_text(*hint).clicked() { acts.push(Act::View(View::Smart(rule.to_string()))); }
+            }
+        });
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("ПЛЕЙЛИСТЫ").size(11.0).color(MUTED));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1711,6 +1722,7 @@ impl App {
             match &self.view {
                 View::Library => ("КОЛЛЕКЦИЯ", "Библиотека".to_string(), None),
                 View::Liked => ("КОЛЛЕКЦИЯ", "Любимое".to_string(), None),
+                View::Smart(r) => ("УМНЫЙ ПЛЕЙЛИСТ", wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| x.1.to_string()).unwrap_or_default(), None),
                 View::Stats => ("ТВОЯ МУЗЫКА", "Итоги".to_string(), None),
                 View::Search => ("YOUTUBE", "Поиск".to_string(), None),
                 View::Anime | View::AnimeTitle(_) => ("АНИМЕ", "Аниме".to_string(), None),
@@ -1759,6 +1771,13 @@ impl App {
                     if !ids.is_empty() && self.view != View::Search {
                         if pill(ui, "\u{E3D0}  Слушать", true).clicked() { acts.push(Act::Play(ids.to_vec(), 0, false)); }
                         if pill(ui, "\u{E422}  Вперемешку", false).clicked() { acts.push(Act::Play(ids.to_vec(), 0, true)); }
+                    }
+                    if let View::Smart(r) = &self.view {
+                        if !ids.is_empty() && pill(ui, "\u{E248}  Сохранить копию", false).on_hover_text("Обычный плейлист с этими треками — он уже не будет меняться сам").clicked() {
+                            let name = format!("{} · {}", wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| x.1).unwrap_or(""), fmt_date(wavy_core::now_ms()));
+                            acts.push(Act::CreatePlaylist(name, ids.to_vec()));
+                        }
+                        if let Some((_, _, hint)) = wavy_core::store::SMART.iter().find(|x| x.0 == r) { ui.label(RichText::new(*hint).color(MUTED)); }
                     }
                     if self.view == View::Library && !ids.is_empty() && pill(ui, "\u{E1CA}  Дубли", false).on_hover_text("Найти одинаковые треки").clicked() {
                         let groups = self.store.lock().unwrap().duplicates();
