@@ -83,6 +83,9 @@ enum Bg {
     TwitchDevice(Result<wavy_core::twitch::Device, String>),
     TwitchLogin(Result<wavy_core::twitch::Account, String>),
     TwitchToken(wavy_core::twitch::Account),
+    /// Last.fm: страница входа (токен, ссылка) / вход завершён
+    LastfmBegin(Result<(String, String), String>),
+    LastfmDone(Result<wavy_core::lastfm::Account, String>),
     CacheSize(u64, usize),
     /// опенинги и эндинги: (тайтл, найденные треки)
     Themes(String, Result<Vec<Track>, String>),
@@ -247,6 +250,11 @@ struct App {
     reward_bind: bool,
     /// для какого тайтла сейчас ищутся опенинги
     themes_busy: Option<String>,
+    /// Last.fm: кому уже отправлено «сейчас слушает», что уже заскробблено, когда начал играть (с), токен входа
+    lfm_np: Option<String>,
+    lfm_done: Option<String>,
+    lfm_started: u64,
+    lfm_token: Option<String>,
     /// вход в Twitch: код для twitch.tv/activate
     twitch_device: Option<wavy_core::twitch::Device>,
     sr_last: std::collections::HashMap<String, Instant>,
@@ -320,7 +328,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -437,7 +445,7 @@ impl App {
         let Some(id) = self.queue.get(self.qi).cloned() else { return };
         let Some(t) = self.track(&id) else { return };
         // новый запуск трека — новое прослушивание (а продолжение после обрыва — то же самое)
-        if self.resume.as_ref().map(|r| &r.0) != Some(&id) { self.counted = None; }
+        if self.resume.as_ref().map(|r| &r.0) != Some(&id) { self.counted = None; self.lfm_np = None; self.lfm_done = None; }
         self.token += 1;
         let token = self.token;
         self.current = Some(t.clone());
@@ -1248,6 +1256,14 @@ impl App {
                         Err(e) => self.toast(e, true),
                     }
                 }
+                Bg::LastfmBegin(r) => match r {
+                    Ok((token, url)) => { open_url(&url); self.lfm_token = Some(token); }
+                    Err(e) => self.toast(e, true),
+                },
+                Bg::LastfmDone(r) => match r {
+                    Ok(a) => { self.lfm_token = None; self.toast(format!("Last.fm: вошёл как {}", a.user), false); self.store.lock().unwrap().patch_settings(&json!({"lastfm": a})); }
+                    Err(e) => self.toast(e, true),
+                },
                 Bg::TwitchToken(a) => { self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
                 Bg::CacheSize(b, n) => self.cache_size = Some((b, n)),
                 Bg::Changes(r) => if let Some(Modal::WhatsNew { items, .. }) = &mut self.modal { *items = Some(r); },
@@ -1346,6 +1362,7 @@ impl App {
         if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_none() && self.counted.as_deref() != Some(t.id.as_str())) {
             if self.audio.is_playing() && self.audio.position() > 30.0 { let id = t.id.clone(); self.store.lock().unwrap().count_play(&id); self.counted = Some(id); }
         }
+        self.lastfm_tick();
 
         while let Ok(cmd) = self.media_rx.try_recv() {
             use media::MediaCmd::*;
@@ -2516,6 +2533,31 @@ impl App {
         }
     }
 
+    /// Last.fm: «сейчас слушает» при старте трека, скроббл после половины (или 4 минут).
+    fn lastfm_tick(&mut self) {
+        let acc = self.settings().lastfm;
+        if !acc.ready() || !self.audio.is_playing() { return; }
+        let Some(t) = self.current.clone().filter(|t| t.anime.is_none()) else { return };
+        let pos = self.audio.position();
+        let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
+        let send = |acc: wavy_core::lastfm::Account, t: Track, dur: f64, scrobble: Option<u64>| {
+            std::thread::spawn(move || {
+                let p = wavy_core::lastfm::Play { artist: &t.artist, title: &t.title, album: &t.album, duration: dur };
+                let r = match scrobble { Some(ts) => wavy_core::lastfm::scrobble(&acc, &p, ts), None => wavy_core::lastfm::now_playing(&acc, &p) };
+                if let Err(e) = r { wavy_core::log(&format!("last.fm «{}»: {e}", t.title)); }
+            });
+        };
+        if self.lfm_np.as_deref() != Some(t.id.as_str()) {
+            self.lfm_np = Some(t.id.clone());
+            self.lfm_started = wavy_core::now_ms() / 1000 - pos as u64;
+            send(acc.clone(), t.clone(), dur, None);
+        }
+        if self.lfm_done.as_deref() != Some(t.id.as_str()) && wavy_core::lastfm::due(pos, dur) {
+            self.lfm_done = Some(t.id.clone());
+            send(acc, t, dur, Some(self.lfm_started));
+        }
+    }
+
     /// Написать в чат Twitch (если вошли).
     fn say(&self, text: &str) {
         if let Some((_, _, chat)) = &self.twitch { chat.say(text); }
@@ -3284,6 +3326,45 @@ impl App {
                         });
                         if matches!(s.yt_cookies.as_str(), "chrome" | "edge" | "brave" | "opera" | "vivaldi" | "chromium") {
                             ui.label(RichText::new("Chrome и похожие браузеры на Windows прячут куки, и часто достать их не выходит. Надёжнее Firefox (с входом в YouTube) или файл cookies.txt из расширения «Get cookies.txt LOCALLY».").color(MUTED).size(12.0));
+                        }
+                        section(ui, "\u{E340}  Last.fm");
+                        let lf = s.lastfm.clone();
+                        if !lf.session.is_empty() {
+                            ui.horizontal(|ui| {
+                                let mut on = lf.enabled;
+                                if ui.checkbox(&mut on, format!("Скробблить в Last.fm ({})", lf.user)).changed() { acts.push(Act::Settings(json!({"lastfm": {"enabled": on}}))); }
+                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"lastfm": {"session": "", "user": "", "enabled": false}}))); }
+                            });
+                            ui.label(RichText::new("Трек засчитывается, когда проиграна половина (или 4 минуты). Серии аниме не скробблятся.").color(MUTED).size(12.0));
+                        } else {
+                            ui.label(RichText::new("Нужен свой ключ: last.fm/api/account/create (название — Wavy, остальное можно не заполнять). Скопируй сюда API key и Shared secret.").color(MUTED).size(12.0));
+                            ui.horizontal(|ui| {
+                                ui.label("API key:");
+                                let mut k = lf.api_key.clone();
+                                if ui.add(egui::TextEdit::singleline(&mut k).desired_width(240.0)).changed() { acts.push(Act::Settings(json!({"lastfm": {"apiKey": k.trim()}}))); }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Shared secret:");
+                                let mut k = lf.secret.clone();
+                                if ui.add(egui::TextEdit::singleline(&mut k).desired_width(240.0).password(true)).changed() { acts.push(Act::Settings(json!({"lastfm": {"secret": k.trim()}}))); }
+                            });
+                            ui.horizontal(|ui| {
+                                let ok = !lf.api_key.is_empty() && !lf.secret.is_empty();
+                                match self.lfm_token.clone() {
+                                    None => if ui.add_enabled(ok, pill_btn("Войти через Last.fm", true)).clicked() {
+                                        let (tx, c) = (self.tx.clone(), ui.ctx().clone());
+                                        std::thread::spawn(move || { let _ = tx.send(Bg::LastfmBegin(wavy_core::lastfm::begin(&lf))); c.request_repaint(); });
+                                    },
+                                    Some(token) => {
+                                        ui.label("На странице Last.fm нажми «Allow access», потом:");
+                                        if pill(ui, "Готово", true).clicked() {
+                                            let (tx, c, mut a) = (self.tx.clone(), ui.ctx().clone(), lf.clone());
+                                            std::thread::spawn(move || { let r = wavy_core::lastfm::finish(&mut a, &token).map(|_| a); let _ = tx.send(Bg::LastfmDone(r)); c.request_repaint(); });
+                                        }
+                                        if pill(ui, "Отмена", false).clicked() { self.lfm_token = None; }
+                                    }
+                                }
+                            });
                         }
                         section(ui, "\u{E754}  Аниме");
                         let mut a = s.anime_autoskip;
