@@ -251,6 +251,10 @@ struct App {
     reward_bind: bool,
     /// для какого тайтла сейчас ищутся опенинги
     themes_busy: Option<String>,
+    /// палитра команд (Ctrl+K): запрос и выбранная строка
+    palette: Option<(String, usize)>,
+    /// открыть окошко «Звук» (из палитры команд)
+    sound_open: bool,
     /// Last.fm: кому уже отправлено «сейчас слушает», что уже заскробблено, когда начал играть (с), токен входа
     lfm_np: Option<String>,
     lfm_done: Option<String>,
@@ -329,7 +333,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -1599,6 +1603,8 @@ impl eframe::App for App {
             tray::hide(&ctx);
         }
         if self.settings().mini { self.mini_window(&ctx, &mut acts); }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) { self.palette = if self.palette.is_some() { None } else { Some((String::new(), 0)) }; }
+        if self.palette.is_some() { self.palette_ui(&ctx, &mut acts); }
         self.keys(&ctx, &mut acts);
 
         if self.fullscreen {
@@ -2292,7 +2298,8 @@ impl App {
                 // звук: скорость, кроссфейд, громкость, эквалайзер
                 let fx_on = (s.speed - 1.0).abs() > 0.01 || s.crossfade > 0.0 || s.normalize || s.eq_on;
                 let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text("Звук: скорость, кроссфейд, эквалайзер");
-                egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
+                let force = std::mem::take(&mut self.sound_open).then_some(egui::SetOpenCommand::Bool(true));
+                egui::Popup::from_toggle_button_response(&r).open_memory(force).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
                 // таймер сна
                 let r = icon_btn(ui, "\u{E330}", 34.0, self.sleep.is_some()).on_hover_text(match self.sleep {
                     Some(Sleep::At(t)) => format!("Таймер сна: через {} мин", (t.saturating_duration_since(Instant::now()).as_secs() + 59) / 60),
@@ -2533,6 +2540,102 @@ impl App {
             let (dir, limit) = (self.cache.clone(), st.cache_limit_gb as u64 * 1_073_741_824);
             std::thread::spawn(move || { let f = wavy_core::stream::trim_dir(&dir, limit, &keep); if f > 0 { wavy_core::log(&format!("кэш: удалено {} МБ старого", f / 1_048_576)); } });
         }
+    }
+
+    /// Палитра команд (Ctrl+K): вбиваешь «эквалайзер», «мини», название трека или плейлиста — Enter.
+    fn palette_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        enum Cmd { Act(Act), Lyrics, Queue, Settings, Sound }
+        let (mut q, mut sel) = self.palette.clone().unwrap_or_default();
+        let ql = q.trim().to_lowercase();
+        let words: Vec<&str> = ql.split_whitespace().collect();
+        let fits = |label: &str, keys: &str| { let l = format!("{label} {keys}").to_lowercase(); words.iter().all(|w| l.contains(w)) };
+        // (иконка, название, подпись, что сделать)
+        let mut items: Vec<(&str, String, String, Cmd)> = Vec::new();
+        let mut add = |icon: &'static str, label: &str, hint: &str, keys: &str, c: Cmd| { if fits(label, keys) { items.push((icon, label.to_string(), hint.to_string(), c)); } };
+        let playing = self.audio.is_playing();
+        add("\u{E3D0}", if playing { "Пауза" } else { "Играть" }, "Пробел", "pause play пауза играть стоп", Cmd::Act(Act::TogglePlay));
+        add("\u{E5A6}", "Следующий трек", "Ctrl+→", "next skip дальше", Cmd::Act(Act::Next));
+        add("\u{E5A4}", "Предыдущий трек", "Ctrl+←", "prev назад", Cmd::Act(Act::Prev));
+        add("\u{E422}", "Перемешать", "S", "shuffle", Cmd::Act(Act::Shuffle));
+        add("\u{E40E}", "Повтор", "R", "repeat", Cmd::Act(Act::Repeat));
+        add("\u{E1D8}", "Звук: эквалайзер, скорость, кроссфейд", "", "eq эквалайзер nightcore скорость громкость нормализация", Cmd::Sound);
+        add("\u{E8F4}", "Текст песни", "T", "lyrics слова", Cmd::Lyrics);
+        add("\u{E106}", "Очередь", "Q", "queue", Cmd::Queue);
+        add("\u{E594}", "Мини-плеер", "", "mini поверх", Cmd::Act(Act::ToggleMini));
+        add("\u{E466}", "Оверлей поверх игры", "Ctrl+Shift+O", "overlay obs", Cmd::Act(Act::ToggleOverlay));
+        add("\u{E340}", "Библиотека", "", "library треки", Cmd::Act(Act::View(View::Library)));
+        add("\u{E2A8}", "Любимое", "", "liked лайки", Cmd::Act(Act::View(View::Liked)));
+        add("\u{E150}", "Итоги", "", "stats статистика топ", Cmd::Act(Act::View(View::Stats)));
+        add("\u{E754}", "Аниме", "", "anime серии", Cmd::Act(Act::View(View::Anime)));
+        add("\u{EA20}", "Добавить файлы", "", "import импорт музыка", Cmd::Act(Act::ImportFiles));
+        add("\u{E256}", "Добавить папку", "", "import импорт folder", Cmd::Act(Act::ImportFolder));
+        add("\u{E2E2}", "Импорт по ссылке", "Ctrl+V", "youtube spotify url link плейлист", Cmd::Act(Act::Modal(Modal::ImportUrl { url: String::new(), into: false, busy: false, err: None })));
+        add("\u{E272}", "Настройки", "", "settings discord twitch last.fm хоткеи бэкап", Cmd::Settings);
+        add("\u{E036}", "Проверить обновления", "", "update версия", Cmd::Act(Act::CheckUpdate));
+        for (rule, name, hint) in wavy_core::store::SMART { add("\u{E5FE}", name, hint, "умный smart", Cmd::Act(Act::View(View::Smart(rule.to_string())))); }
+        if !words.is_empty() {
+            let s = self.store.lock().unwrap();
+            for p in &s.lib.playlists { if fits(&p.name, "плейлист") { items.push(("\u{E6AA}", p.name.clone(), format!("плейлист · {}", p.track_ids.len()), Cmd::Act(Act::View(View::Playlist(p.id.clone()))))); } }
+            for a in &s.lib.anime { if fits(a.display(), &a.name) { items.push(("\u{E754}", a.display().to_string(), "аниме".into(), Cmd::Act(Act::View(View::AnimeTitle(a.id.clone()))))); } }
+            if ql.chars().count() >= 2 {
+                let mut n = 0;
+                for t in s.lib.tracks.values().filter(|t| t.anime.is_none()) {
+                    if n >= 8 { break; }
+                    if fits(&t.title, &t.artist) { items.push(("\u{E3D0}", t.title.clone(), t.artist.clone(), Cmd::Act(Act::Play(vec![t.id.clone()], 0, false)))); n += 1; }
+                }
+            }
+            items.push(("\u{E30C}", format!("Найти на YouTube: {}", q.trim()), String::new(), Cmd::Act(Act::Search(q.trim().to_string()))));
+        }
+        sel = sel.min(items.len().saturating_sub(1));
+        let mut chosen: Option<usize> = None;
+        let mut close = false;
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) { sel = (sel + 1).min(items.len().saturating_sub(1)); }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) { sel = sel.saturating_sub(1); }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) && !items.is_empty() { chosen = Some(sel); }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) { close = true; }
+        });
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Foreground).fixed_pos(Pos2::new(screen.center().x - 280.0, screen.top() + 90.0)).show(ctx, |ui| {
+            egui::Frame::new().fill(BG2).stroke(Stroke::new(1.0, LINE)).corner_radius(16).inner_margin(12).shadow(egui::epaint::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(160) }).show(ui, |ui| {
+                ui.set_width(560.0);
+                let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Команда, трек, плейлист…  (Esc — закрыть)").desired_width(f32::INFINITY).font(FontId::new(17.0, egui::FontFamily::Proportional)).frame(egui::Frame::NONE));
+                r.request_focus();
+                if r.changed() { sel = 0; }
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                    if items.is_empty() { ui.label(RichText::new("Ничего не нашлось").color(MUTED)); }
+                    for (i, (icon, label, hint, _)) in items.iter().enumerate() {
+                        let on = i == sel;
+                        let resp = egui::Frame::new().fill(if on { BG3 } else { Color32::TRANSPARENT }).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(*icon).color(if on { TEXT } else { MUTED }));
+                                ui.add(egui::Label::new(RichText::new(label).color(TEXT)).truncate());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui.label(RichText::new(hint).color(MUTED).size(12.0)); });
+                            });
+                        }).response.interact(Sense::click());
+                        if on { resp.scroll_to_me(None); }
+                        if resp.clicked() { chosen = Some(i); }
+                        if resp.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) { sel = i; }
+                    }
+                });
+            });
+        });
+        if let Some(i) = chosen {
+            close = true;
+            match items.swap_remove(i).3 {
+                Cmd::Act(a) => {
+                    if let Act::Search(_) = a { acts.push(Act::View(View::Search)); }
+                    acts.push(a);
+                }
+                Cmd::Lyrics => { self.show_lyrics = true; self.show_queue = false; }
+                Cmd::Queue => { self.show_queue = true; self.show_lyrics = false; }
+                Cmd::Settings => { let s = self.settings(); acts.push(Act::Modal(Modal::Settings { client_id: s.discord.client_id, port: s.overlay.port.to_string(), sp_id: s.spotify.client_id, sp_secret: s.spotify.client_secret })); }
+                Cmd::Sound => { self.sound_open = true; }
+            }
+        }
+        self.palette = if close { None } else { Some((q, sel)) };
     }
 
     /// Автобэкап библиотеки раз в сутки (или сейчас, если `force`).
@@ -3529,7 +3632,7 @@ impl App {
                                 ui.end_row();
                             }
                         });
-                        ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск").color(MUTED).size(12.0));
+                        ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды").color(MUTED).size(12.0));
                         section(ui, "\u{E248}  Резервные копии");
                         let bdir = if s.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&s.backup_dir) };
                         ui.label(RichText::new("Раз в день Wavy сохраняет плейлисты, лайки, историю и настройки (14 последних копий). Чтобы копии пережили переустановку Windows, выбери папку на другом диске или в облаке (OneDrive, Google Диск).").color(MUTED).size(12.0));
