@@ -10,6 +10,7 @@ mod export;
 mod tray;
 mod instance;
 mod hotkeys;
+mod recap;
 mod fx;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -2737,6 +2738,31 @@ impl App {
             big(ui, if m >= 120 { format!("{} ч {} мин", m / 60, m % 60) } else { format!("{m} мин") }, "музыки");
             if let Some((a, _)) = st.top_artists.first() { big(ui, a.clone(), "артист №1"); }
         });
+        if pill(ui, "\u{E10E}  Картинка для соцсетей", false).on_hover_text("PNG 1080×1350 в «Изображения/Wavy»").clicked() {
+            let m = st.minutes.round() as u64;
+            let year = fmt_date(now).rsplit('.').next().unwrap_or("").to_string();
+            let tracks: Vec<(String, String, Option<String>)> = st.top_tracks.iter().take(5).filter_map(|(id, n)| self.track(id).map(|t| (t.title.clone(), format!("{} · {n} раз", t.artist), t.cover.clone()))).collect();
+            let r = (["Месяц".to_string(), year, "Всё время".to_string()][self.stats_period as usize].clone(),
+                if m >= 120 { format!("{} ч", m / 60) } else { format!("{m} мин") }, st.plays, st.top_artists.first().map(|a| a.0.clone()), tracks, st.top_artists.clone());
+            let (tx, c) = (self.tx.clone(), ui.ctx().clone());
+            std::thread::spawn(move || {
+                let tmp = std::env::temp_dir().join("wavy-recap");
+                let _ = std::fs::create_dir_all(&tmp);
+                // обложки с YouTube — скачиваем на время
+                let tracks = r.4.into_iter().enumerate().map(|(i, (title, sub, cover))| {
+                    let cover = cover.and_then(|c| if c.starts_with("http") {
+                        let p = tmp.join(format!("{i}.jpg"));
+                        wavy_core::http().get(&c).call().ok().and_then(|mut resp| resp.body_mut().read_to_vec().ok()).and_then(|b| std::fs::write(&p, b).ok()).map(|_| p)
+                    } else { Some(PathBuf::from(c)) });
+                    recap::Entry { title, sub, cover }
+                }).collect();
+                let img = recap::render(&recap::Recap { period: r.0.clone(), hours: r.1, plays: r.2, top_artist: r.3, tracks, artists: r.5 }, load_cjk_fonts().into_iter().next().map(|f| f.1));
+                let path = wavy_core::pictures_dir().join(format!("Итоги Wavy · {} · {}.png", r.0, fmt_date(wavy_core::now_ms())));
+                let msg = match img.save(&path) { Ok(()) => { open_folder(&path); format!("Картинка сохранена: {}", path.display()) } Err(e) => format!("Не сохранилось: {e}") };
+                let _ = tx.send(Bg::Status(msg));
+                c.request_repaint();
+            });
+        }
         if let Some(f) = first { ui.label(RichText::new(format!("История ведётся с {}", fmt_date(f))).size(11.5).color(MUTED)); }
         ui.add_space(16.0);
         ui.columns_const(|[l, r]| {

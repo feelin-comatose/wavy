@@ -8,6 +8,7 @@ wavy-core = { path = "../core" }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "clipboard"] }
 egui_extras = { version = "0.37" }
 rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-all"] }
+ab_glyph = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rfd = "0.18"
 global-hotkey = "0.7"
