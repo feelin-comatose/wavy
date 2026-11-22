@@ -83,6 +83,11 @@ pub struct Settings {
     pub twitch_channel: String,
     pub twitch_sr: bool,
     pub twitch_max_min: u32,
+    /// Вход в Twitch (чтобы отвечать в чат), сколько голосов «!skip» пропускает трек (0 — выкл),
+    /// награда за баллы канала, которая заказывает трек (id; пусто — нет).
+    pub twitch_account: crate::twitch::Account,
+    pub twitch_skip_votes: u32,
+    pub twitch_reward: String,
     /// Писать «Исполнитель — Название» в файл now_playing.txt (для OBS «Текст из файла»).
     pub now_playing_file: bool,
     /// Лимит кэша (ГБ, 0 — без лимита): старое удаляется само.
@@ -97,7 +102,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new() }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), hotkeys: HashMap::new() }
     }
 }
 

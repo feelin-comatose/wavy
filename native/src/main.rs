@@ -79,6 +79,10 @@ enum Bg {
     /// вход/синхронизация с Шикимори: обновлённый аккаунт (токены) или ошибка
     Shiki(Result<wavy_core::shikimori::Account, String>, bool),
     SongRequest(String, Result<Track, String>),
+    /// Twitch: код для входа / вход завершён / обновился токен
+    TwitchDevice(Result<wavy_core::twitch::Device, String>),
+    TwitchLogin(Result<wavy_core::twitch::Account, String>),
+    TwitchToken(wavy_core::twitch::Account),
     CacheSize(u64, usize),
     /// куки для 18+ заданы, но yt-dlp с ними не справился (браузер открыт, нет входа…)
     CookiesFailed(String),
@@ -224,9 +228,15 @@ struct App {
     stay_ep: Option<String>,
     shiki_code: String,
     /// чат Twitch: (канал, флаг остановки), заказы, кто когда заказывал, id заказанных в очереди
-    twitch: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
-    sr_tx: Sender<wavy_core::twitch::Request>,
-    sr_rx: Receiver<wavy_core::twitch::Request>,
+    /// чат Twitch: (канал|вход, стоп, отправка в чат)
+    twitch: Option<(String, Arc<std::sync::atomic::AtomicBool>, wavy_core::twitch::Chat)>,
+    sr_tx: Sender<wavy_core::twitch::Msg>,
+    sr_rx: Receiver<wavy_core::twitch::Msg>,
+    skip_vote: wavy_core::twitch::SkipVote,
+    /// ждём первую награду за баллы, чтобы запомнить её как «заказ трека»
+    reward_bind: bool,
+    /// вход в Twitch: код для twitch.tv/activate
+    twitch_device: Option<wavy_core::twitch::Device>,
     sr_last: std::collections::HashMap<String, Instant>,
     /// заказы из чата: id трека → кто заказал
     sr_by: HashMap<String, String>,
@@ -298,7 +308,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), reward_bind: false, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
         app.overlay_open = s.overlay_window.visible;
@@ -1137,6 +1147,18 @@ impl App {
                     Err(e) => self.toast(e, true),
                 },
                 Bg::SongRequest(user, r) => self.song_request(user, r, ctx),
+                Bg::TwitchDevice(r) => match r {
+                    Ok(d) => { open_url(&d.uri); self.twitch_device = Some(d.clone()); self.twitch_poll(d, ctx); }
+                    Err(e) => self.toast(e, true),
+                },
+                Bg::TwitchLogin(r) => {
+                    self.twitch_device = None;
+                    match r {
+                        Ok(a) => { self.toast(format!("Twitch: вошёл как {}", a.login), false); self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
+                        Err(e) => self.toast(e, true),
+                    }
+                }
+                Bg::TwitchToken(a) => { self.store.lock().unwrap().patch_settings(&json!({"twitchAccount": a})); }
                 Bg::CacheSize(b, n) => self.cache_size = Some((b, n)),
                 Bg::Changes(r) => if let Some(Modal::WhatsNew { items, .. }) = &mut self.modal { *items = Some(r); },
                 Bg::Exported(r) => {
@@ -2340,23 +2362,23 @@ impl App {
     fn stream_tick(&mut self, ctx: &egui::Context) {
         self.overlay_extra(ctx);
         let st = self.settings();
-        let want = (st.twitch_sr && !st.twitch_channel.trim().is_empty()).then(|| st.twitch_channel.trim().to_lowercase());
+        let acc = Some(st.twitch_account.clone()).filter(|a| a.logged_in());
+        let want = (st.twitch_sr && !st.twitch_channel.trim().is_empty())
+            .then(|| format!("{}|{}", wavy_core::twitch::clean_channel(&st.twitch_channel), acc.as_ref().map(|a| a.login.as_str()).unwrap_or("")));
         if self.twitch.as_ref().map(|t| &t.0) != want.as_ref() {
-            if let Some((_, stop)) = self.twitch.take() { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
-            if let Some(ch) = want {
+            if let Some((_, stop, _)) = self.twitch.take() { stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+            if let Some(key) = want {
                 let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let (tx, c) = (self.sr_tx.clone(), ctx.clone());
-                wavy_core::twitch::listen(&ch, "!sr", stop.clone(), move |r| { let _ = tx.send(r); c.request_repaint(); });
-                self.twitch = Some((ch, stop));
+                let (btx, c2) = (self.tx.clone(), ctx.clone());
+                let chat = wavy_core::twitch::listen(&st.twitch_channel, acc, stop.clone(),
+                    move |m| { let _ = tx.send(m); c.request_repaint(); },
+                    move |a| { let _ = btx.send(Bg::TwitchToken(a)); c2.request_repaint(); });
+                self.twitch = Some((key, stop, chat));
             }
         }
-        while let Ok(r) = self.sr_rx.try_recv() {
-            // не чаще раза в 30 с от одного человека
-            if self.sr_last.get(&r.user).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) { continue; }
-            self.sr_last.insert(r.user.clone(), Instant::now());
-            let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
-            std::thread::spawn(move || { let _ = tx.send(Bg::SongRequest(r.user, yt.lookup(&r.query))); c.request_repaint(); });
-        }
+        let msgs: Vec<wavy_core::twitch::Msg> = self.sr_rx.try_iter().collect();
+        for m in msgs { self.chat_message(m, ctx); }
         // синхронизация с телефоном по Wi-Fi
         let want = (st.wifi_sync && !st.wifi_pin.is_empty()).then(|| st.wifi_pin.clone());
         if self.wifi.as_ref().map(|w| &w.0) != want.as_ref() {
@@ -2379,21 +2401,106 @@ impl App {
         }
     }
 
+    /// Написать в чат Twitch (если вошли).
+    fn say(&self, text: &str) {
+        if let Some((_, _, chat)) = &self.twitch { chat.say(text); }
+    }
+
+    fn track_name(t: &Track) -> String { if t.artist.is_empty() { t.title.clone() } else { format!("{} — {}", t.artist, t.title) } }
+
+    /// Сообщение из чата: заказ, !skip, !song, !queue, награда за баллы.
+    fn chat_message(&mut self, m: wavy_core::twitch::Msg, ctx: &egui::Context) {
+        let st = self.settings();
+        // привязка награды: первая выкупленная награда с текстом становится «заказом трека»
+        if let Some(r) = m.reward.as_ref().filter(|_| self.reward_bind) {
+            self.reward_bind = false;
+            self.store.lock().unwrap().patch_settings(&json!({"twitchReward": r}));
+            self.toast("Награда привязана: теперь она заказывает трек", false);
+            return;
+        }
+        let by_reward = m.reward.is_some() && m.reward.as_deref() == Some(st.twitch_reward.as_str()) && !st.twitch_reward.is_empty();
+        let query = if by_reward { Some(m.text.clone()) } else { m.command("!sr") };
+        if let Some(q) = query {
+            if q.is_empty() { self.say(&format!("@{} напиши: !sr ссылка или название", m.user)); return; }
+            // не чаще раза в 30 с от одного человека (за баллы — без лимита, их и так тратят)
+            if !by_reward && !m.is_mod && self.sr_last.get(&m.user).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) { return; }
+            self.sr_last.insert(m.user.clone(), Instant::now());
+            let (yt, tx, c, user) = (self.yt.clone(), self.tx.clone(), ctx.clone(), m.user.clone());
+            std::thread::spawn(move || { let _ = tx.send(Bg::SongRequest(user, yt.lookup(&q))); c.request_repaint(); });
+            return;
+        }
+        let cur = self.current.clone();
+        if m.command("!skip").is_some() {
+            let Some(t) = cur else { return };
+            if m.is_mod { self.say(&format!("Пропускаю «{}»", t.title)); self.apply(Act::Next, ctx); return; }
+            let need = st.twitch_skip_votes;
+            if need == 0 { return; }
+            if self.skip_vote.vote(&t.id, &m.user, need) {
+                self.say(&format!("Чат решил: пропускаю «{}»", t.title));
+                self.toast(format!("Чат пропустил «{}»", t.title), false);
+                self.apply(Act::Next, ctx);
+            } else {
+                self.say(&format!("!skip {}/{need}", self.skip_vote.count(&t.id)));
+            }
+            return;
+        }
+        if m.command("!song").is_some() {
+            match cur {
+                Some(t) => {
+                    let link = t.video_id.as_ref().map(|v| format!(" · youtu.be/{v}")).unwrap_or_default();
+                    self.say(&format!("Сейчас играет: {}{link}", Self::track_name(&t)));
+                }
+                None => self.say("Сейчас ничего не играет"),
+            }
+            return;
+        }
+        if m.command("!queue").is_some() {
+            let next: Vec<String> = self.queue.iter().skip(self.qi + 1).take(3).filter_map(|id| self.track(id)).map(|t| Self::track_name(&t)).collect();
+            self.say(&if next.is_empty() { "Очередь пуста — закажи: !sr название".to_string() } else { format!("Дальше: {}", next.join(" | ")) });
+        }
+    }
+
+    /// Ждать, пока человек введёт код на twitch.tv/activate.
+    fn twitch_poll(&self, d: wavy_core::twitch::Device, ctx: &egui::Context) {
+        let (tx, c, id) = (self.tx.clone(), ctx.clone(), self.settings().twitch_account.client_id);
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let r = loop {
+                std::thread::sleep(Duration::from_secs(d.interval.max(2)));
+                match wavy_core::twitch::device_poll(&id, &d) {
+                    Ok(Some(a)) => break Ok(a),
+                    Ok(None) if t0.elapsed() < Duration::from_secs(600) => continue,
+                    Ok(None) => break Err("Twitch: код не ввели за 10 минут".to_string()),
+                    Err(e) => break Err(e),
+                }
+            };
+            let _ = tx.send(Bg::TwitchLogin(r));
+            c.request_repaint();
+        });
+    }
+
     fn song_request(&mut self, user: String, r: Result<Track, String>, ctx: &egui::Context) {
-        let t = match r { Ok(t) => t, Err(e) => { wavy_core::log(&format!("заказ от {user}: {e}")); return; } };
+        let t = match r { Ok(t) => t, Err(e) => { wavy_core::log(&format!("заказ от {user}: {e}")); self.say(&format!("@{user} не нашёл такой трек")); return; } };
         let max = self.settings().twitch_max_min as f64 * 60.0;
-        if max > 0.0 && t.duration > max { self.toast(format!("{user} заказал слишком длинный трек ({})", fmt_time(t.duration)), true); return; }
-        if self.queue.iter().skip(self.qi).any(|q| *q == t.id) { return; }
+        if max > 0.0 && t.duration > max { self.toast(format!("{user} заказал слишком длинный трек ({})", fmt_time(t.duration)), true); self.say(&format!("@{user} трек длиннее {} мин — не беру", max as u32 / 60)); return; }
+        if self.queue.iter().skip(self.qi).any(|q| *q == t.id) { self.say(&format!("@{user} «{}» уже в очереди", t.title)); return; }
         self.toast(format!("\u{E340}  {user} заказал: {} — {}", t.artist, t.title), false);
         let id = t.id.clone();
         self.radio.retain(|x| x.id != id);
         self.radio.push(t);
         self.sr_by.insert(id.clone(), user.clone());
-        if self.current.is_none() || self.queue.is_empty() { self.play_list(vec![id], 0, false, ctx); return; }
+        if self.current.is_none() || self.queue.is_empty() {
+            if let Some(t) = self.track(&id) { self.say(&format!("@{user} включаю: {}", Self::track_name(&t))); }
+            self.play_list(vec![id], 0, false, ctx);
+            return;
+        }
         // после текущего и уже заказанных — по очереди
         let mut at = self.qi + 1;
         while at < self.queue.len() && self.sr_by.contains_key(&self.queue[at]) { at += 1; }
         self.queue.insert(at, id);
+        let ahead = at - self.qi - 1;
+        let name = self.track(&self.queue[at]).map(|t| Self::track_name(&t)).unwrap_or_default();
+        self.say(&format!("@{user} добавил: {name}{}", if ahead == 0 { " — играет следующим".to_string() } else { format!(" — через {ahead}") }));
     }
 
     /// Отметить на Шикимори, сколько серий тайтла просмотрено.
@@ -2937,7 +3044,49 @@ impl App {
                             let mut m = s.twitch_max_min;
                             if ui.add(egui::DragValue::new(&mut m).range(0..=60)).changed() { acts.push(Act::Settings(json!({"twitchMaxMin": m}))); }
                         });
-                        if let Some((ch, _)) = &self.twitch { ui.label(RichText::new(format!("Слушаю чат #{ch}. Заказ встаёт в очередь после текущего трека, от одного зрителя — не чаще раза в 30 с.")).color(OK).size(12.0)); }
+                        if let Some((key, _, chat)) = &self.twitch {
+                            let ch = key.split('|').next().unwrap_or_default();
+                            ui.label(RichText::new(format!("Слушаю чат #{ch}{}. Заказ встаёт в очередь после текущего трека, от одного зрителя — не чаще раза в 30 с.", if chat.can_say() { " и отвечаю в него" } else { "" })).color(OK).size(12.0));
+                        }
+                        ui.label(RichText::new("Команды: !sr — заказ · !skip — голосование за пропуск (модер и стример пропускают сразу) · !song — что играет · !queue — что дальше").color(MUTED).size(12.0));
+                        ui.horizontal(|ui| {
+                            ui.label("!skip пропускает после голосов:");
+                            let mut v = s.twitch_skip_votes;
+                            if ui.add(egui::DragValue::new(&mut v).range(0..=50)).on_hover_text("0 — голосование выключено").changed() { acts.push(Act::Settings(json!({"twitchSkipVotes": v}))); }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Заказ за баллы канала:");
+                            if s.twitch_reward.is_empty() {
+                                if self.reward_bind { ui.label(RichText::new("жду: выкупи награду на своём канале…").color(OK)); if pill(ui, "Отмена", false).clicked() { self.reward_bind = false; } }
+                                else if pill(ui, "Привязать награду", false).on_hover_text("Сделай на Twitch награду с галочкой «Зритель должен ввести текст», нажми здесь и выкупи её сам — Wavy запомнит").clicked() { self.reward_bind = true; }
+                            } else {
+                                ui.label(RichText::new("привязана").color(OK));
+                                if pill(ui, "Отвязать", false).clicked() { acts.push(Act::Settings(json!({"twitchReward": ""}))); }
+                            }
+                        });
+                        // вход: чтобы Wavy отвечал в чат
+                        let acc = s.twitch_account.clone();
+                        ui.horizontal(|ui| {
+                            if acc.logged_in() {
+                                ui.label(RichText::new(format!("Отвечаю в чат как {}", acc.login)).color(OK));
+                                if pill(ui, "Выйти", false).clicked() { acts.push(Act::Settings(json!({"twitchAccount": {"access": "", "refresh": "", "login": ""}}))); }
+                            } else if let Some(d) = &self.twitch_device {
+                                ui.label(RichText::new(format!("Введи код {} на twitch.tv/activate", d.user_code)).family(semi()));
+                                if pill(ui, "Копировать", false).clicked() { ui.ctx().copy_text(d.user_code.clone()); }
+                                if pill(ui, "Открыть", false).clicked() { open_url(&d.uri); }
+                            } else {
+                                ui.label("Client ID:");
+                                let mut id = acc.client_id.clone();
+                                if ui.add(egui::TextEdit::singleline(&mut id).desired_width(200.0).hint_text("с dev.twitch.tv")).changed() { acts.push(Act::Settings(json!({"twitchAccount": {"clientId": id.trim()}}))); }
+                                if ui.add_enabled(!acc.client_id.is_empty(), pill_btn("Войти", false)).clicked() {
+                                    let (tx, c, id) = (self.tx.clone(), ui.ctx().clone(), acc.client_id.clone());
+                                    std::thread::spawn(move || { let _ = tx.send(Bg::TwitchDevice(wavy_core::twitch::device_start(&id))); c.request_repaint(); });
+                                }
+                            }
+                        });
+                        if !acc.logged_in() && self.twitch_device.is_none() {
+                            ui.label(RichText::new("Чтобы Wavy отвечал в чат (!song, !queue, «добавил»): dev.twitch.tv → Applications → Register: название Wavy, OAuth Redirect URL http://localhost, категория Application Integration, тип клиента Public. Скопируй Client ID сюда и нажми «Войти». Без входа заказы и !skip всё равно работают.").color(MUTED).size(12.0));
+                        }
                         let mut np = s.now_playing_file;
                         if ui.checkbox(&mut np, "Писать текущий трек в файл (для OBS → Текст → «Читать из файла»)").changed() { acts.push(Act::Settings(json!({"nowPlayingFile": np}))); }
                         if s.now_playing_file {
@@ -3101,9 +3250,11 @@ impl App {
                                 let r = ui.add(egui::Button::new(RichText::new(shown).color(if busy { BAD } else { TEXT })).min_size(Vec2::new(150.0, 24.0)));
                                 if r.clicked() { self.hk_capture = Some(action.to_string()); }
                                 if busy { r.on_hover_text("Это сочетание занято другой программой"); }
-                                if s.hotkeys.contains_key(*action) && pill(ui, "по умолчанию", false).clicked() {
-                                    let mut map = s.hotkeys.clone(); map.remove(*action); acts.push(Act::Settings(json!({"hotkeys": map})));
-                                } else { ui.label(""); }
+                                // настройки сливаются, а не заменяются — поэтому «по умолчанию» записываем явно
+                                let def = hotkeys::ACTIONS.iter().find(|a| a.0 == *action).map(|a| a.2).unwrap_or("");
+                                if c != def && pill(ui, "по умолчанию", false).clicked() {
+                                    acts.push(Act::Settings(json!({"hotkeys": {*action: def}})));
+                                } else if c == def { ui.label(""); }
                                 ui.end_row();
                             }
                         });
