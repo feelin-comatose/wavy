@@ -9,11 +9,12 @@ mod thumbs;
 mod export;
 mod tray;
 mod instance;
+mod hotkeys;
 mod fx;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use egui_extras::{Column, TableBuilder};
-use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -183,7 +184,9 @@ struct App {
     restore_window: Option<(Pos2, Vec2, bool, u8)>,
     _hotkeys: Option<GlobalHotKeyManager>,
     hk_rx: Receiver<u32>,
-    hk_ids: (u32, u32),
+    hk_keys: hotkeys::Keys,
+    /// запись нового сочетания в настройках: для какого действия
+    hk_capture: Option<String>,
     /// Дорожки текущего видео и что выбрано (звук — номер среди звуковых, субтитры — номер в списке).
     media_info: Option<(String, MediaInfo)>,
     audio_sel: usize,
@@ -258,11 +261,11 @@ impl App {
         let mut toast = None;
         if let Err(e) = overlay.start(s.overlay.port) { wavy_core::log(&format!("оверлей: {e}")); toast = Some((format!("Оверлей: {e}"), true, Instant::now())); }
 
-        // глобальные хоткеи: Ctrl+Shift+O — оверлей, Ctrl+Shift+L — закрепить/двигать
+        // глобальные хоткеи (работают и в игре): пауза, треки, громкость, оверлей… — настраиваются
         let (hk_tx, hk_rx) = channel();
-        let ko = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
-        let kl = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyL);
-        let hotkeys = GlobalHotKeyManager::new().ok().filter(|m| m.register(ko).is_ok() && m.register(kl).is_ok());
+        let hotkeys = GlobalHotKeyManager::new().ok();
+        let mut hk_keys = hotkeys::Keys::default();
+        if let Some(m) = &hotkeys { hk_keys.apply(m, &s.hotkeys); }
         let c3 = ctx.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
             if e.state == HotKeyState::Pressed { let _ = hk_tx.send(e.id); c3.request_repaint(); }
@@ -292,7 +295,7 @@ impl App {
             modal: None, toast, show_queue: false, yt_version: None,
             media, media_rx, resume: None, session_saved: Instant::now(), spin: 0.0,
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
-            _hotkeys: hotkeys, hk_rx, hk_ids: (ko.id(), kl.id()),
+            _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
             ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, sr_last: Default::default(), sr_ids: HashSet::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
@@ -837,6 +840,7 @@ impl App {
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
                 self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec);
                 self.yt.set_cookies(&s.yt_cookies);
+                if let Some(m) = &self._hotkeys { self.hk_keys.apply(m, &s.hotkeys); }
                 if let Err(e) = self.overlay.start(s.overlay.port) { self.toast(format!("Оверлей: {e}"), true); }
             }
             Act::ToggleOverlay => {
@@ -1239,7 +1243,22 @@ impl App {
         }
         if self.audio.is_playing() && self.session_saved.elapsed() > Duration::from_secs(15) { self.save_session(); }
         while let Ok(id) = self.hk_rx.try_recv() {
-            if id == self.hk_ids.0 { self.apply(Act::ToggleOverlay, ctx); } else if id == self.hk_ids.1 { self.apply(Act::ToggleLock, ctx); }
+            let Some(action) = self.hk_keys.ids.get(&id).cloned() else { continue };
+            let vol = self.settings().volume;
+            let act = match action.as_str() {
+                "toggle" => Act::TogglePlay, "next" => Act::Next, "prev" => Act::Prev,
+                "volUp" => { self.apply(Act::Volume((vol + 0.05).min(1.0)), ctx); Act::SaveVolume }
+                "volDown" => { self.apply(Act::Volume((vol - 0.05).max(0.0)), ctx); Act::SaveVolume }
+                "like" => match self.current.as_ref() { Some(t) => { let on = self.store.lock().unwrap().is_liked(&t.id); Act::Like(vec![t.id.clone()], !on) } None => continue },
+                "skip" => {
+                    let pos = self.audio.position();
+                    let to = self.skips.as_ref().and_then(|s| s.1.iter().find(|k| pos >= k.start - 0.5 && pos < k.end - 2.0).map(|k| k.end)).unwrap_or(pos + 85.0);
+                    Act::Seek(to)
+                }
+                "mini" => Act::ToggleMini, "overlay" => Act::ToggleOverlay, "lock" => Act::ToggleLock,
+                _ => continue,
+            };
+            self.apply(act, ctx);
         }
         let mut dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         // wavy-export.json с телефона — это синхронизация, а не музыка
@@ -3027,6 +3046,35 @@ impl App {
                         }
                         let mut mini = s.mini;
                         if ui.checkbox(&mut mini, "Мини-плеер поверх всех окон").changed() { acts.push(Act::ToggleMini); }
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Горячие клавиши везде (и в игре)").family(semi()));
+                        // запись сочетания: следующее нажатие с Ctrl/Alt/Shift
+                        if let Some(action) = self.hk_capture.clone() {
+                            let ev = ui.ctx().input(|i| i.events.iter().find_map(|e| match e { egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)), _ => None }));
+                            if let Some((key, m)) = ev {
+                                let mut map = s.hotkeys.clone();
+                                match key {
+                                    egui::Key::Escape => { self.hk_capture = None; }
+                                    egui::Key::Backspace | egui::Key::Delete if !m.any() => { map.insert(action, String::new()); acts.push(Act::Settings(json!({"hotkeys": map}))); self.hk_capture = None; }
+                                    _ => if let Some(c) = hotkeys::from_egui(key, m) { map.insert(action, c); acts.push(Act::Settings(json!({"hotkeys": map}))); self.hk_capture = None; }
+                                }
+                            }
+                        }
+                        egui::Grid::new("hotkeys").num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+                            for (action, label, _) in hotkeys::ACTIONS {
+                                ui.label(*label);
+                                let c = hotkeys::combo(&s.hotkeys, action);
+                                let busy = self.hk_keys.failed.contains(&c);
+                                let shown = if self.hk_capture.as_deref() == Some(*action) { "нажми сочетание… (Esc — отмена, Backspace — выкл)".to_string() } else if c.is_empty() { "выкл".into() } else { c.clone() };
+                                let r = ui.add(egui::Button::new(RichText::new(shown).color(if busy { BAD } else { TEXT })).min_size(Vec2::new(150.0, 24.0)));
+                                if r.clicked() { self.hk_capture = Some(action.to_string()); }
+                                if busy { r.on_hover_text("Это сочетание занято другой программой"); }
+                                if s.hotkeys.contains_key(*action) && pill(ui, "по умолчанию", false).clicked() {
+                                    let mut map = s.hotkeys.clone(); map.remove(*action); acts.push(Act::Settings(json!({"hotkeys": map})));
+                                } else { ui.label(""); }
+                                ui.end_row();
+                            }
+                        });
                         ui.label(RichText::new("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск").color(MUTED).size(12.0));
                         section(ui, "\u{E036}  Обновления");
                         match update::current_build() {
