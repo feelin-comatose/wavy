@@ -42,6 +42,8 @@ pub struct Video {
     pub texture: Option<TextureHandle>,
     pub error: Option<String>,
     pub subs: Subs,
+    /// показанный кадр (RGBA) — для скриншота; держим тот же буфер, лишней копии нет
+    last: Option<([usize; 2], Vec<u8>)>,
 }
 
 impl Video {
@@ -79,12 +81,15 @@ impl Video {
                 }
             })
             .ok();
-        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None, subs, target: (start, std::time::Instant::now()) }
+        Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None, subs, target: (start, std::time::Instant::now()), last: None }
     }
 
     /// Время показанного кадра (для проверок в examples/).
     #[allow(dead_code)]
     pub fn shown(&self) -> Option<f64> { self.shown_pts }
+
+    /// Текущий кадр: размер и пиксели RGBA.
+    pub fn frame(&self) -> Option<([usize; 2], &[u8])> { self.last.as_ref().map(|(s, p)| (*s, p.as_slice())) }
 
     /// Субтитры, которые должны быть на экране в момент `t`.
     pub fn subs_at(&self, t: f64) -> Vec<Cue> {
@@ -138,6 +143,7 @@ impl Video {
             }
             self.shown_pts = Some(f.pts);
             self.fresh = false;
+            self.last = Some((f.size, f.rgba));
         }
     }
 }

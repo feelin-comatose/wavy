@@ -121,6 +121,10 @@ enum Act {
     Export(Vec<String>, Option<String>),
     /// опенинги и эндинги тайтла → плейлист
     AnimeThemes(String),
+    /// субтитры из любого файла (имя не совпадает с серией)
+    PickSubs,
+    /// сохранить текущий кадр видео в PNG
+    Screenshot,
     /// (ключ: "library" или id плейлиста, способ)
     Sort(String, String),
     PlaylistCover(String), PlaylistCoverReset(String),
@@ -1051,6 +1055,35 @@ impl App {
                 if let Some(aid) = &t.anime { if let Some(a) = self.store.lock().unwrap().anime_mut(aid) { a.audio = Some(i); } self.store.lock().unwrap().save(); }
                 self.push_state();
             }
+            Act::Screenshot => {
+                let Some(v) = self.video.as_ref() else { self.toast("Скриншот — только для видео", true); return };
+                let Some(([w, h], px)) = v.1.frame() else { return };
+                let px = px.to_vec();
+                let pos = self.audio.position() as u64;
+                let title = self.current.as_ref().map(|t| t.title.clone()).unwrap_or_default();
+                let anime = self.current.as_ref().and_then(|t| t.anime.clone()).and_then(|a| self.store.lock().unwrap().anime(&a).map(|a| a.display().to_string()));
+                let name = format!("{} {} {}m{:02}s.png", export::safe_name(&anime.unwrap_or_default()), export::safe_name(&title), pos / 60, pos % 60).trim().to_string();
+                let mut path = wavy_core::pictures_dir().join(&name);
+                let mut n = 2;
+                while path.exists() { path = wavy_core::pictures_dir().join(name.replace(".png", &format!(" ({n}).png"))); n += 1; }
+                let (tx, c) = (self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let r = image::RgbaImage::from_raw(w as u32, h as u32, px).ok_or("кадр повреждён".to_string())
+                        .and_then(|img| img.save(&path).map_err(|e| e.to_string()));
+                    let _ = tx.send(Bg::Status(match r { Ok(()) => format!("Кадр сохранён: {}", path.display()), Err(e) => format!("Скриншот не сохранился: {e}") }));
+                    c.request_repaint();
+                });
+            }
+            Act::PickSubs => {
+                let Some(p) = rfd::FileDialog::new().set_title("Файл субтитров").add_filter("Субтитры", wavy_core::anime::SUB_EXT).pick_file() else { return };
+                let Some((_, info)) = self.media_info.as_mut() else { return };
+                let label = format!("Файл · {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                let i = match info.subs.iter().position(|s| s.src == wavy_core::media::SubSrc::External(p.clone())) {
+                    Some(i) => i,
+                    None => { info.subs.push(wavy_core::media::SubTrack { src: wavy_core::media::SubSrc::External(p), label, lang: String::new(), default: false, forced: false }); info.subs.len() - 1 }
+                };
+                self.apply(Act::Subs(Some(i)), ctx);
+            }
             Act::Subs(sel) => {
                 self.sub_sel = sel;
                 self.video = None; // откроется заново с нужными субтитрами на той же позиции
@@ -1597,6 +1630,7 @@ impl App {
             if i.key_pressed(egui::Key::L) {
                 if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_none()) { let on = self.store.lock().unwrap().is_liked(&t.id); acts.push(Act::Like(vec![t.id.clone()], !on)); }
             }
+            if i.key_pressed(egui::Key::P) && self.show_video { acts.push(Act::Screenshot); }
             if i.key_pressed(egui::Key::Q) { self.show_queue = !self.show_queue; if self.show_queue { self.show_lyrics = false; } }
             if i.key_pressed(egui::Key::T) { self.show_lyrics = !self.show_lyrics; if self.show_lyrics { self.show_queue = false; } }
             if i.key_pressed(egui::Key::S) && !i.modifiers.ctrl { acts.push(Act::Shuffle); }
@@ -2357,7 +2391,7 @@ impl App {
                     }
                 });
             }
-            if !info.subs.is_empty() {
+            {
                 let cur = self.sub_sel.and_then(|i| info.subs.get(i)).map(|s| s.label.clone()).unwrap_or_else(|| "выкл".into());
                 let resp = ui.add(chip(format!("\u{E1A8}  {}", ellipsize(&cur, 180.0, 13.0))));
                 egui::Popup::menu(&resp).show(|ui| {
@@ -2368,9 +2402,12 @@ impl App {
                         let l = if s.forced { format!("{} (надписи)", s.label) } else { s.label.clone() };
                         if ui.add(egui::Button::new(mark(self.sub_sel == Some(i), &l)).frame(false)).clicked() { acts.push(Act::Subs(Some(i))); ui.close(); }
                     }
+                    ui.separator();
+                    if ui.add(egui::Button::new("      Открыть файл субтитров…").frame(false)).on_hover_text(".ass, .srt или .vtt с любым именем").clicked() { acts.push(Act::PickSubs); ui.close(); }
                 });
             }
         }
+        if ui.add(chip("\u{E10E}  Кадр".into())).on_hover_text("Сохранить кадр в «Изображения/Wavy» (клавиша P)").clicked() { acts.push(Act::Screenshot); }
         if ui.add(chip("\u{E802}  Что за песня?".into())).on_hover_text("Shazam: узнать опенинг/эндинг и добавить в библиотеку").clicked() { acts.push(Act::Shazam); }
     }
 

@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 /// Видео, которое можно добавить как серию.
 pub const EPISODE_EXT: &[&str] = &["mkv", "mp4", "m4v", "mov"];
 /// Внешние субтитры рядом с серией.
-pub const SUB_EXT: &[&str] = &["ass", "ssa", "srt"];
+pub const SUB_EXT: &[&str] = &["ass", "ssa", "srt", "vtt"];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]

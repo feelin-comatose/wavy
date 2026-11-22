@@ -226,11 +226,11 @@ fn strip_html(s: &str) -> String {
 }
 
 fn ass_time(s: &str) -> Option<f64> {
-    // H:MM:SS.cc
-    let mut it = s.trim().split(':');
-    let h: f64 = it.next()?.parse().ok()?;
-    let m: f64 = it.next()?.parse().ok()?;
-    let sec: f64 = it.next()?.replace(',', ".").parse().ok()?;
+    // H:MM:SS.cc (ASS), HH:MM:SS,mmm (SRT), MM:SS.mmm (VTT без часов)
+    let parts: Vec<&str> = s.trim().split(':').collect();
+    let (h, m, sec) = match parts.as_slice() { [h, m, s] => (*h, *m, *s), [m, s] => ("0", *m, *s), _ => return None };
+    let (h, m): (f64, f64) = (h.parse().ok()?, m.parse().ok()?);
+    let sec: f64 = sec.replace(',', ".").parse().ok()?;
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
@@ -239,7 +239,7 @@ pub fn load_sub_file(path: &Path) -> Vec<Cue> {
     let bytes = std::fs::read(path).unwrap_or_default();
     let text = decode_text(&bytes);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let mut cues = if ext == "srt" { parse_srt(&text) } else { parse_ass(&text) };
+    let mut cues = if ext == "srt" || ext == "vtt" { parse_srt(&text) } else { parse_ass(&text) };
     cues.sort_by(|a, b| a.start.total_cmp(&b.start));
     cues
 }
@@ -318,6 +318,14 @@ fn parse_srt(text: &str) -> Vec<Cue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vtt() {
+        let c = parse_srt("WEBVTT\n\n00:01.500 --> 00:03.000 align:start\n<i>Привет</i>\n\n01:00:02.000 --> 01:00:04.000\nПока");
+        assert_eq!(c.len(), 2);
+        assert_eq!((c[0].start, c[0].end, c[0].text.as_str()), (1.5, 3.0, "Привет"));
+        assert_eq!(c[1].start, 3602.0);
+    }
 
     #[test]
     fn ass_cleanup() {

@@ -109,6 +109,13 @@ pub fn log(msg: &str) {
     }
 }
 
+/// Куда сохранять скриншоты кадров: «Изображения/Wavy».
+pub fn pictures_dir() -> PathBuf {
+    let d = dirs::picture_dir().unwrap_or_else(data_dir).join("Wavy");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 pub fn data_dir() -> PathBuf {
     let d = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("wavy");
     let _ = std::fs::create_dir_all(&d);
