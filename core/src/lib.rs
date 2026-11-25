@@ -21,6 +21,7 @@ pub mod twitch;
 pub mod wifisync;
 pub mod store;
 pub mod youtube;
+pub mod ytaccount;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 const RELEASE: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/";
 
 pub struct YouTube {
-    bin_dir: PathBuf,
+    pub(crate) bin_dir: PathBuf,
     bin: Mutex<Option<String>>,
     streams: Mutex<HashMap<String, (String, u64)>>, // url -> (stream, expires_ms)
     deno: Arc<Mutex<Deno>>,
     rp: std::sync::OnceLock<Option<rustypipe::client::RustyPipe>>,
     /// куки для видео 18+ (браузер или файл cookies.txt) — только для повторной попытки такого видео
     cookies: Mutex<String>,
+    /// вошедший аккаунт YouTube Music (отдельный клиент rustypipe с куками), см. ytaccount.rs
+    pub(crate) acc: Mutex<Option<rustypipe::client::RustyPipe>>,
 }
 
 /// Браузеры, из которых yt-dlp умеет брать куки.
@@ -31,7 +33,7 @@ pub struct Direct {
 }
 
 /// Общий tokio-рантайм для rustypipe (один рабочий поток — экономим память).
-fn rt() -> &'static tokio::runtime::Runtime {
+pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(1).thread_name("rustypipe").enable_all().build().expect("tokio"))
 }
@@ -53,7 +55,7 @@ pub struct UrlImport {
 
 impl YouTube {
     pub fn new(bin_dir: PathBuf) -> Self {
-        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)), rp: std::sync::OnceLock::new(), cookies: Mutex::new(String::new()) }
+        Self { bin_dir, bin: Mutex::new(None), streams: Mutex::new(HashMap::new()), deno: Arc::new(Mutex::new(Deno::Unknown)), rp: std::sync::OnceLock::new(), cookies: Mutex::new(String::new()), acc: Mutex::new(None) }
     }
 
     pub fn deno_status(&self) -> Deno { self.deno.lock().unwrap().clone() }
@@ -62,7 +64,7 @@ impl YouTube {
     pub fn set_cookies(&self, v: &str) { *self.cookies.lock().unwrap() = v.trim().to_string(); }
     pub fn has_cookies(&self) -> bool { !self.cookies.lock().unwrap().is_empty() }
 
-    fn cookie_args(&self) -> Vec<String> {
+    pub(crate) fn cookie_args(&self) -> Vec<String> {
         let v = self.cookies.lock().unwrap().clone();
         if v.is_empty() { return vec![]; }
         if COOKIE_BROWSERS.iter().any(|b| b.0 == v) { vec!["--cookies-from-browser".into(), v] } else { vec!["--cookies".into(), v] }
@@ -187,7 +189,7 @@ impl YouTube {
         Ok(s)
     }
 
-    fn run(&self, args: &[&str]) -> Result<String, String> {
+    pub(crate) fn run(&self, args: &[&str]) -> Result<String, String> {
         let bin = self.ensure_binary(&|_| {})?;
         self.ensure_deno_background();
         let had_deno = self.deno_path().is_some();
@@ -266,16 +268,7 @@ impl YouTube {
                     .filter_map(|i| if let rustypipe::model::MusicItem::Track(t) = i { Some(t) } else { None }).collect())
             });
             match res {
-                Ok(r) => return Ok(r.into_iter().take(limit).map(|t| {
-                    let cover = t.cover.iter().max_by_key(|c| c.width).map(|c| c.url.clone()).unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", t.id));
-                    Track {
-                        id: format!("yt_{}", t.id), kind: "youtube".into(), path: None,
-                        url: Some(format!("https://music.youtube.com/watch?v={}", t.id)), cover: Some(cover),
-                        title: t.name, artist: t.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
-                        album: t.album.map(|a| a.name).unwrap_or_default(), duration: t.duration.unwrap_or(0) as f64,
-                        video_id: Some(t.id), added_at: now_ms(), video: false, anime: None, episode: None,
-                    }
-                }).collect()),
+                Ok(r) => return Ok(r.into_iter().take(limit).map(ytm_track).collect()),
                 Err(e) => last = e.to_string(),
             }
         }
@@ -474,4 +467,16 @@ fn cmd(bin: &str) -> Command {
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — без мигающей консоли
     }
     c
+}
+
+/// Песня YouTube Music → трек библиотеки.
+pub(crate) fn ytm_track(t: rustypipe::model::TrackItem) -> Track {
+    let cover = t.cover.iter().max_by_key(|c| c.width).map(|c| c.url.clone()).unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", t.id));
+    Track {
+        id: format!("yt_{}", t.id), kind: "youtube".into(), path: None,
+        url: Some(format!("https://music.youtube.com/watch?v={}", t.id)), cover: Some(cover),
+        title: t.name, artist: t.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+        album: t.album.map(|a| a.name).unwrap_or_default(), duration: t.duration.unwrap_or(0) as f64,
+        video_id: Some(t.id), added_at: now_ms(), video: false, anime: None, episode: None,
+    }
 }

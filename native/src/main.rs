@@ -93,6 +93,12 @@ enum Bg {
     NotFound(Option<String>, Vec<wavy_core::spotify::SpTrack>),
     /// результаты поиска для ручного выбора видео
     Picked(Result<Vec<Track>, String>),
+    /// вход через Google: путь к сохранённым кукам
+    GoogleCookies(Result<String, String>),
+    /// аккаунт YouTube Music подключён (или нет)
+    Account(Result<(), String>),
+    /// «Моя волна»: треки, докрутка ли это
+    Wave(Result<Vec<Track>, String>, bool),
     /// Last.fm: страница входа (токен, ссылка) / вход завершён
     LastfmBegin(Result<(String, String), String>),
     LastfmDone(Result<wavy_core::lastfm::Account, String>),
@@ -123,6 +129,10 @@ enum Modal {
     Pick { query: String, results: Vec<Track>, busy: bool, err: Option<String>, target: PickTarget, back: Vec<wavy_core::spotify::SpTrack> },
 }
 
+/// Аккаунт YouTube Music.
+#[derive(Clone, PartialEq)]
+enum AccState { Off, Connecting, On, Err(String) }
+
 /// Для чего выбираем видео.
 #[derive(Clone)]
 enum PickTarget {
@@ -149,6 +159,12 @@ enum Act {
     AnimeThemes(String),
     /// ручной выбор видео: поиск / выбор (видео, для чего, оставшиеся ненайденные)
     PickSearch(String), PickChoose(Track, PickTarget, Vec<wavy_core::spotify::SpTrack>),
+    /// аккаунт YouTube Music: вход через Google / отмена / подключить по кукам / выйти
+    GoogleLogin, GoogleLoginCancel, AccountConnect, AccountLogout,
+    /// импорт из аккаунта: лайки / сохранённые плейлисты
+    YtImportLikes, YtImportPlaylists,
+    /// «Моя волна» (true — докрутить очередь, false — начать заново)
+    Wave(bool),
     /// субтитры из любого файла (имя не совпадает с серией)
     PickSubs,
     /// сохранить текущий кадр видео в PNG
@@ -279,6 +295,13 @@ struct App {
     palette: Option<(String, usize)>,
     /// открыть окошко «Звук» (из палитры команд)
     sound_open: bool,
+    /// аккаунт YouTube Music: подключён ли (и ошибка, если нет)
+    acc: AccState,
+    /// идёт вход через Google: флаг отмены
+    google_login: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// «Моя волна» играет (очередь докручивается сама) / подбирается
+    wave_on: bool,
+    wave_busy: bool,
     /// Last.fm: кому уже отправлено «сейчас слушает», что уже заскробблено, когда начал играть (с), токен входа
     lfm_np: Option<String>,
     lfm_done: Option<String>,
@@ -358,9 +381,10 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
         };
         app.fix_episode_numbers();
+        if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
         app.overlay_open = s.overlay_window.visible;
         app.tray = tray::new(cc);
         // после обновления — показать, что поменялось
@@ -425,6 +449,12 @@ impl App {
     fn settings(&self) -> wavy_core::store::Settings { self.store.lock().unwrap().lib.settings.clone() }
     fn track(&self, id: &str) -> Option<Track> {
         self.store.lock().unwrap().lib.tracks.get(id).cloned().or_else(|| self.results.iter().chain(self.radio.iter()).find(|t| t.id == id).cloned())
+    }
+    /// Подключить аккаунт YouTube Music по кукам из настроек (в фоне).
+    fn connect_account(&mut self, ctx: &egui::Context) {
+        self.acc = AccState::Connecting;
+        let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || { let _ = tx.send(Bg::Account(yt.account_connect())); c.request_repaint(); });
     }
     fn toast(&mut self, m: impl Into<String>, err: bool) {
         let m = m.into();
@@ -693,7 +723,7 @@ impl App {
 
     fn apply(&mut self, a: Act, ctx: &egui::Context) {
         match a {
-            Act::Play(ids, i, sh) => self.play_list(ids, i, sh, ctx),
+            Act::Play(ids, i, sh) => { self.wave_on = false; self.play_list(ids, i, sh, ctx) }
             Act::TogglePlay => {
                 if self.current.is_none() { let ids = self.list_ids(); self.play_list(ids, 0, false, ctx); }
                 else if self.audio.is_playing() { self.audio.pause(); }
@@ -1067,6 +1097,98 @@ impl App {
                 self.show_video = true;
                 self.load_current(ctx);
             }
+            Act::GoogleLogin => {
+                let Some(browser) = wavy_core::ytaccount::find_browser() else {
+                    self.toast(l!("Для входа нужен Chrome, Edge или Brave. Можно и без них: выбери Firefox или cookies.txt в «Куки из»", "Signing in needs Chrome, Edge or Brave. Without them, pick Firefox or cookies.txt in “Cookies from”"), true);
+                    return;
+                };
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.google_login = Some(cancel.clone());
+                let (tx, c, dir) = (self.tx.clone(), ctx.clone(), wavy_core::data_dir());
+                std::thread::spawn(move || {
+                    let r = (|| {
+                        let mut w = wavy_core::ytaccount::GoogleLogin::start(&browser, &dir.join("google-login"))?;
+                        let t0 = Instant::now();
+                        loop {
+                            std::thread::sleep(Duration::from_secs(2));
+                            if cancel.load(std::sync::atomic::Ordering::Relaxed) { w.close(); return Err(l!("вход отменён", "sign-in cancelled").to_string()); }
+                            if w.closed() { return Err(l!("окно закрыли до входа", "the window was closed before signing in").to_string()); }
+                            if t0.elapsed() > Duration::from_secs(900) { w.close(); return Err(l!("вход не завершён за 15 минут", "sign-in wasn't finished within 15 minutes").to_string()); }
+                            if let Ok(Some(txt)) = w.poll() {
+                                let path = dir.join("youtube-cookies.txt");
+                                std::fs::write(&path, txt).map_err(|e| e.to_string())?;
+                                w.close();
+                                return Ok(path.to_string_lossy().to_string());
+                            }
+                        }
+                    })();
+                    let _ = tx.send(Bg::GoogleCookies(r));
+                    c.request_repaint();
+                });
+            }
+            Act::GoogleLoginCancel => { if let Some(c) = self.google_login.take() { c.store(true, std::sync::atomic::Ordering::Relaxed); } }
+            Act::AccountConnect => self.connect_account(ctx),
+            Act::AccountLogout => {
+                let s = self.settings();
+                let ours = wavy_core::data_dir().join("youtube-cookies.txt");
+                let mine = s.yt_cookies == ours.to_string_lossy();
+                self.wave_on = false;
+                self.acc = AccState::Off;
+                let yt = self.yt.clone();
+                std::thread::spawn(move || {
+                    yt.account_disconnect();
+                    if mine { let _ = std::fs::remove_file(&ours); let _ = std::fs::remove_dir_all(wavy_core::data_dir().join("google-login")); }
+                });
+                self.store.lock().unwrap().patch_settings(&if mine { json!({"ytAccount": false, "ytCookies": ""}) } else { json!({"ytAccount": false}) });
+                self.yt.set_cookies(&self.settings().yt_cookies);
+                self.toast(l!("Вышел из аккаунта YouTube", "Signed out of YouTube"), false);
+            }
+            Act::YtImportLikes => {
+                let (store, yt) = (self.store.clone(), self.yt.clone());
+                self.bg(ctx, move |tx| {
+                    let _ = tx.send(Bg::Status(l!("Загружаю лайки YouTube Music…", "Loading YouTube Music likes…").into()));
+                    let tracks = yt.liked_tracks(5000)?;
+                    let n = tracks.len();
+                    let pid = save_ytm_playlist(&store, &format!("ytm:{}", wavy_core::ytaccount::LIKED_ID), l!("Лайки YouTube Music", "YouTube Music likes"), tracks);
+                    let _ = tx.send(Bg::Status(lf!("Лайки YouTube Music: {n} треков", "YouTube Music likes: {n} tracks")));
+                    let _ = tx.send(Bg::OpenPlaylist(pid));
+                    Ok(())
+                });
+            }
+            Act::YtImportPlaylists => {
+                let (store, yt) = (self.store.clone(), self.yt.clone());
+                self.bg(ctx, move |tx| {
+                    let _ = tx.send(Bg::Status(l!("Загружаю плейлисты YouTube Music…", "Loading YouTube Music playlists…").into()));
+                    let list = yt.saved_playlists()?;
+                    let list: Vec<_> = list.into_iter().filter(|p| p.0 != wavy_core::ytaccount::LIKED_ID).collect();
+                    let total = list.len();
+                    let mut done = 0;
+                    for (i, (id, name, _)) in list.into_iter().enumerate() {
+                        let _ = tx.send(Bg::Status(lf!("Плейлисты YouTube Music: {} / {total} — {name}", "YouTube Music playlists: {} / {total} — {name}", i + 1)));
+                        match yt.playlist_tracks(&id, 5000) {
+                            Ok(tracks) => { save_ytm_playlist(&store, &format!("ytm:{id}"), &name, tracks); done += 1; }
+                            Err(e) => wavy_core::log(&format!("плейлист YouTube Music «{name}»: {e}")),
+                        }
+                    }
+                    let _ = tx.send(Bg::Status(lf!("Плейлисты YouTube Music: {done} из {total}", "YouTube Music playlists: {done} of {total}")));
+                    Ok(())
+                });
+            }
+            Act::Wave(more) => {
+                if self.wave_busy { return; }
+                if self.acc != AccState::On { self.toast(l!("Сначала войди в YouTube в настройках", "Sign in to YouTube in Settings first"), true); return; }
+                self.wave_busy = true;
+                if !more { self.toast(l!("Собираю «Мою волну»…", "Building “My wave”…"), false); }
+                // стартовые треки докрутки — последние сыгранные из волны
+                let seeds: Vec<String> = if more {
+                    let from = self.qi.saturating_sub(2);
+                    self.queue.get(from..=self.qi.min(self.queue.len().saturating_sub(1))).unwrap_or(&[]).iter().filter_map(|id| self.track(id).and_then(|t| t.video_id)).collect()
+                } else { Vec::new() };
+                let mut exclude: std::collections::HashSet<String> = self.store.lock().unwrap().lib.tracks.values().filter_map(|t| t.video_id.clone()).collect();
+                exclude.extend(self.queue.iter().filter_map(|id| self.track(id).and_then(|t| t.video_id)));
+                let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || { let _ = tx.send(Bg::Wave(yt.wave(&seeds, &exclude, 40), more)); c.request_repaint(); });
+            }
             Act::PickSearch(q) => {
                 if let Some(Modal::Pick { busy, err, .. }) = &mut self.modal { *busy = true; *err = None; }
                 let (tx, c, yt) = (self.tx.clone(), ctx.clone(), self.yt.clone());
@@ -1397,6 +1519,36 @@ impl App {
                     } else if matches!(self.modal, Some(Modal::ImportUrl { busy: true, .. }) | Some(Modal::Shazam { state: ShazamState::Adding, .. })) { self.modal = None; }
                 }
                 Bg::OpenAnime(id) => self.view = match id { Some(id) => View::AnimeTitle(id), None => View::Anime },
+                Bg::GoogleCookies(r) => {
+                    self.google_login = None;
+                    match r {
+                        Ok(path) => {
+                            self.apply(Act::Settings(json!({"ytCookies": path, "ytAccount": true})), ctx);
+                            self.apply(Act::AccountConnect, ctx);
+                        }
+                        Err(e) => self.toast(lf!("Вход в Google: {e}", "Google sign-in: {e}"), true),
+                    }
+                }
+                Bg::Account(r) => match r {
+                    Ok(()) => { if self.acc == AccState::Connecting { self.toast(l!("YouTube Music: аккаунт подключён", "YouTube Music: account connected"), false); } self.acc = AccState::On; }
+                    Err(e) => { self.acc = AccState::Err(e.clone()); self.toast(lf!("YouTube Music: {e}", "YouTube Music: {e}"), true); }
+                },
+                Bg::Wave(r, more) => {
+                    self.wave_busy = false;
+                    match r {
+                        Ok(list) if !list.is_empty() => {
+                            let ids: Vec<String> = list.iter().map(|t| t.id.clone()).collect();
+                            self.radio.retain(|t| !ids.contains(&t.id));
+                            self.radio.extend(list);
+                            let n = ids.len();
+                            if more { self.queue.extend(ids); } else { self.play_list(ids, 0, false, ctx); self.toast(lf!("Моя волна: {n} треков, дальше подберётся сама", "My wave: {n} tracks, more will come by itself"), false); }
+                            self.wave_on = true;
+                        }
+                        // ошибка — волна останавливается (иначе докрутка просилась бы каждый кадр)
+                        Ok(_) => { self.wave_on = false; self.toast(l!("Волна не нашла новых треков", "The wave found no new tracks"), true); }
+                        Err(e) => { self.wave_on = false; self.toast(lf!("Моя волна: {e}", "My wave: {e}"), true); }
+                    }
+                }
                 Bg::NotFound(pid, items) => if self.modal.is_none() { self.modal = Some(Modal::NotFound { pid, items }); },
                 Bg::Picked(r) => {
                     if let Some(Modal::Pick { results, busy, err, .. }) = &mut self.modal {
@@ -1434,6 +1586,7 @@ impl App {
             if self.audio.is_playing() && self.audio.position() > 30.0 { let id = t.id.clone(); self.store.lock().unwrap().count_play(&id); self.counted = Some(id); }
         }
         self.lastfm_tick();
+        if self.wave_on && !self.wave_busy && self.qi + 3 >= self.queue.len() { self.apply(Act::Wave(true), ctx); }
 
         while let Ok(cmd) = self.media_rx.try_recv() {
             use media::MediaCmd::*;
@@ -1752,6 +1905,10 @@ impl App {
         if nav(ui, l!("\u{E30C}  Поиск на YouTube", "\u{E30C}  Search YouTube"), self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
         let n_anime = self.store.lock().unwrap().lib.anime.len();
         if nav(ui, l!("\u{E754}  Аниме", "\u{E754}  Anime"), matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
+        if self.acc == AccState::On {
+            let label = if self.wave_busy { l!("\u{E802}  Моя волна…", "\u{E802}  My wave…") } else { l!("\u{E802}  Моя волна", "\u{E802}  My wave") };
+            if nav(ui, label, self.wave_on, None).on_hover_text(l!("Бесконечное радио YouTube Music по твоим лайкам и истории", "Endless YouTube Music radio from your likes and history")).clicked() { acts.push(Act::Wave(false)); }
+        }
         // умные плейлисты — собираются сами по истории прослушиваний
         let smart_open = matches!(self.view, View::Smart(_));
         egui::CollapsingHeader::new(RichText::new(l!("\u{E5FE}  Умные плейлисты", "\u{E5FE}  Smart playlists")).color(if smart_open { TEXT } else { MUTED })).id_salt("smart").default_open(smart_open).show(ui, |ui| {
@@ -2637,6 +2794,7 @@ impl App {
         add("\u{EA20}", l!("Добавить файлы", "Add files"), "", "import импорт музыка", Cmd::Act(Act::ImportFiles));
         add("\u{E256}", l!("Добавить папку", "Add a folder"), "", "import импорт folder", Cmd::Act(Act::ImportFolder));
         add("\u{E2E2}", l!("Импорт по ссылке", "Import by link"), "Ctrl+V", "youtube spotify url link плейлист", Cmd::Act(Act::Modal(Modal::ImportUrl { url: String::new(), into: false, busy: false, err: None })));
+        if self.acc == AccState::On { add("\u{E802}", l!("Моя волна", "My wave"), "", "wave волна радио рекомендации", Cmd::Act(Act::Wave(false))); }
         add("\u{E272}", l!("Настройки", "Settings"), "", "settings discord twitch last.fm хоткеи бэкап", Cmd::Settings);
         add("\u{E036}", l!("Проверить обновления", "Check for updates"), "", "update версия", Cmd::Act(Act::CheckUpdate));
         for (rule, name, hint) in wavy_core::store::SMART { add("\u{E5FE}", wavy_core::i18n::tr(name), wavy_core::i18n::tr(hint), "умный smart", Cmd::Act(Act::View(View::Smart(rule.to_string())))); }
@@ -3631,6 +3789,37 @@ impl App {
                         if matches!(s.yt_cookies.as_str(), "chrome" | "edge" | "brave" | "opera" | "vivaldi" | "chromium") {
                             ui.label(RichText::new(l!("Chrome и похожие браузеры на Windows прячут куки, и часто достать их не выходит. Надёжнее Firefox (с входом в YouTube) или файл cookies.txt из расширения «Get cookies.txt LOCALLY».", "Chrome and similar browsers on Windows hide cookies, and often they can't be read. Firefox (signed in to YouTube) or a cookies.txt file from the “Get cookies.txt LOCALLY” extension is more reliable.")).color(MUTED).size(12.0));
                         }
+                        section(ui, l!("\u{E4FC}  Аккаунт YouTube Music", "\u{E4FC}  YouTube Music account"));
+                        ui.label(RichText::new(l!("Вход открывает «Мою волну» (радио YouTube Music по твоим лайкам и истории) и импорт лайков и плейлистов. Wavy откроет отдельное окно Chrome, Edge или Brave: войди в Google как обычно, Wavy сам заберёт вход и закроет окно. Пароль Wavy не видит.", "Signing in unlocks “My wave” (YouTube Music radio from your likes and history) and importing likes and playlists. Wavy opens a separate Chrome, Edge or Brave window: sign in to Google as usual, Wavy takes the sign-in and closes the window. Wavy never sees your password.")).color(MUTED).size(12.0));
+                        ui.add_space(4.0);
+                        if self.google_login.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(l!("Войди в Google в открывшемся окне…", "Sign in to Google in the window that opened…"));
+                                if pill(ui, l!("Отмена", "Cancel"), false).clicked() { acts.push(Act::GoogleLoginCancel); }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                match &self.acc {
+                                    AccState::On => {
+                                        ui.label(RichText::new(l!("\u{E182} Аккаунт подключён", "\u{E182} Account connected")).color(TEXT));
+                                        if pill(ui, l!("Импорт лайков", "Import likes"), false).clicked() { acts.push(Act::YtImportLikes); }
+                                        if pill(ui, l!("Импорт плейлистов", "Import playlists"), false).clicked() { acts.push(Act::YtImportPlaylists); }
+                                        if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::AccountLogout); }
+                                    }
+                                    AccState::Connecting => { ui.spinner(); ui.label(l!("Подключаю аккаунт…", "Connecting the account…")); }
+                                    st => {
+                                        if pill(ui, l!("Войти через Google", "Sign in with Google"), true).clicked() { acts.push(Act::GoogleLogin); }
+                                        if !s.yt_cookies.is_empty() && pill(ui, l!("По кукам выше", "With the cookies above"), false).on_hover_text(l!("Взять вход из браузера или файла, выбранного в «Куки из»", "Use the sign-in from the browser or file chosen in “Cookies from”")).clicked() {
+                                            acts.push(Act::Settings(json!({"ytAccount": true})));
+                                            acts.push(Act::AccountConnect);
+                                        }
+                                        if let AccState::Err(e) = st { ui.label(RichText::new(e.as_str()).color(BAD).size(12.0)); }
+                                    }
+                                }
+                            });
+                        }
+                        ui.label(RichText::new(l!("Wavy — неофициальный клиент: риск блокировки аккаунта маленький, но не нулевой. Надёжнее войти во второй аккаунт.", "Wavy is an unofficial client: the risk of an account ban is small but not zero. A secondary account is safer.")).color(MUTED).size(12.0));
                         section(ui, "\u{E340}  Last.fm");
                         let lf = s.lastfm.clone();
                         if !lf.session.is_empty() {
@@ -4123,6 +4312,17 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
         }
     }
     yt.download_audio(t, cache).map(AudioSrc::File)
+}
+
+/// Плейлист из YouTube Music → библиотека: тот же плейлист (по `source`) обновляется, иначе создаётся.
+fn save_ytm_playlist(store: &Arc<Mutex<Store>>, source: &str, name: &str, tracks: Vec<Track>) -> String {
+    let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+    let mut s = store.lock().unwrap();
+    s.add_tracks(tracks);
+    if let Some(id) = s.lib.playlists.iter().find(|p| p.source.as_deref() == Some(source)).map(|p| p.id.clone()) {
+        s.set_playlist_tracks(&id, ids);
+        id
+    } else { s.create_playlist(name, ids, Some(source.to_string())).id }
 }
 
 /// Ссылка → треки: Spotify (через поиск на YouTube) или всё, что умеет yt-dlp.
