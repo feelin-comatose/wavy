@@ -292,7 +292,11 @@ mod tests {
         let mut tail = Vec::new();
         r.read_to_end(&mut tail).unwrap();
         assert_eq!(&tail[..], &data[9_000_000..]);
-        assert!(dl.wait_for(u64::MAX, Duration::from_secs(10)) && dl.done() && is_complete(&path));
+        assert!(dl.wait_for(u64::MAX, Duration::from_secs(10)));
+        // флаг «готово» и метка .ok ставятся сразу после последнего байта — под нагрузкой чуть позже
+        let t0 = std::time::Instant::now();
+        while !(dl.done() && is_complete(&path)) && t0.elapsed() < Duration::from_secs(10) { std::thread::sleep(Duration::from_millis(20)); }
+        assert!(dl.done() && is_complete(&path));
         assert_eq!(std::fs::read(&path).unwrap(), data);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(marker(&path));
