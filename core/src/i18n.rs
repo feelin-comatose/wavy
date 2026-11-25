@@ -60,6 +60,8 @@ pub fn tr(ru: &str) -> &str {
         "Добавлено за две недели, ещё не слушал" => "Added in the last two weeks, not played yet",
         "Ни разу не слушал" => "Never played",
         "Всё, что ещё ни разу не играло" => "Everything that has never been played",
+        // сохранённое в библиотеке при импорте файлов без тегов
+        "Неизвестный исполнитель" => "Unknown artist",
         _ => ru,
     }
 }

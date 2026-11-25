@@ -961,6 +961,9 @@ impl App {
                 self.store.lock().unwrap().patch_settings(&patch);
                 let s = self.settings();
                 wavy_core::i18n::set(&s.lang);
+                if let Some((t, _)) = &self.tray { t.relabel(); }
+                // сменили, откуда брать куки, — аккаунт переподключается с новыми
+                if patch.get("ytCookies").is_some() && patch.get("ytAccount").is_none() && s.yt_account { if s.yt_cookies.is_empty() { self.acc = AccState::Off; } else { self.connect_account(ctx); } }
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
                 self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
                 self.yt.set_cookies(&s.yt_cookies);
@@ -1546,7 +1549,13 @@ impl App {
                         }
                         // ошибка — волна останавливается (иначе докрутка просилась бы каждый кадр)
                         Ok(_) => { self.wave_on = false; self.toast(l!("Волна не нашла новых треков", "The wave found no new tracks"), true); }
-                        Err(e) => { self.wave_on = false; self.toast(lf!("Моя волна: {e}", "My wave: {e}"), true); }
+                        Err(e) => {
+                            self.wave_on = false;
+                            // вход протух (YouTube меняет куки) — переподключаемся, чтобы следующая попытка прошла
+                            let low = e.to_lowercase();
+                            if ["login", "auth", "401", "403", "cookie"].iter().any(|w| low.contains(w)) { self.connect_account(ctx); }
+                            self.toast(lf!("Моя волна: {e}", "My wave: {e}"), true);
+                        }
                     }
                 }
                 Bg::NotFound(pid, items) => if self.modal.is_none() { self.modal = Some(Modal::NotFound { pid, items }); },
@@ -2163,7 +2172,7 @@ impl App {
                         ui.vertical(|ui| {
                             ui.add_space(6.0);
                             ui.add(egui::Label::new(RichText::new(&t.title).color(if is_cur { ACCENT } else { TEXT }).size(14.0)).truncate());
-                            ui.add(egui::Label::new(RichText::new(&t.artist).color(MUTED).size(12.5)).truncate());
+                            ui.add(egui::Label::new(RichText::new(wavy_core::i18n::tr(&t.artist)).color(MUTED).size(12.5)).truncate());
                         });
                     });
                     row.col(|ui| {
@@ -2411,7 +2420,7 @@ impl App {
                         ui.set_width((ui.available_width() - 330.0).max(120.0));
                         ui.add_space(6.0);
                         ui.add(egui::Label::new(RichText::new(&t.title).color(if cur.as_deref() == Some(&t.id) { ACCENT } else { TEXT })).truncate());
-                        ui.add(egui::Label::new(RichText::new(&t.artist).color(MUTED).size(12.5)).truncate());
+                        ui.add(egui::Label::new(RichText::new(wavy_core::i18n::tr(&t.artist)).color(MUTED).size(12.5)).truncate());
                     });
                     ui.label(RichText::new(fmt_time(t.duration)).color(MUTED));
                     ui.add_space(10.0);
@@ -2451,7 +2460,7 @@ impl App {
                         ui.vertical(|ui| {
                             ui.add_space(8.0);
                             ui.add(egui::Label::new(RichText::new(&t.title).family(semi()).color(TEXT)).truncate());
-                            ui.add(egui::Label::new(RichText::new(if self.loading { l!("загрузка…", "loading…").to_string() } else if self.audio.buffering() { l!("буферизация…", "buffering…").to_string() } else { t.artist.clone() }).color(MUTED).size(12.5)).truncate());
+                            ui.add(egui::Label::new(RichText::new(if self.loading { l!("загрузка…", "loading…").to_string() } else if self.audio.buffering() { l!("буферизация…", "buffering…").to_string() } else { wavy_core::i18n::tr(&t.artist).to_string() }).color(MUTED).size(12.5)).truncate());
                         });
                     }
                     None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new(l!("Ничего не играет", "Nothing is playing")).family(semi())); ui.label(RichText::new(l!("Закинь музыку — и погнали", "Drop some music in — let's go")).color(MUTED).size(12.5)); }); }
@@ -2582,7 +2591,7 @@ impl App {
             }
             let y = cr.bottom() + 16.0;
             p.text(Pos2::new(area.center().x, y), Align2::CENTER_TOP, ellipsize(&t.title, area.width() - 40.0, 20.0), FontId::new(20.0, bold()), TEXT);
-            p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(&t.artist, area.width() - 40.0, 14.0), FontId::proportional(14.0), MUTED);
+            p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(wavy_core::i18n::tr(&t.artist), area.width() - 40.0, 14.0), FontId::proportional(14.0), MUTED);
             let note = if let Some(e) = err.as_ref().filter(|e| e.starts_with(wavy_core::ffmpeg::NEED)) {
                 let what = wavy_core::ffmpeg::human(e);
                 match self.ff.state() {
@@ -3259,7 +3268,7 @@ impl App {
                     ui.vertical(|ui| {
                         let c = if i == self.qi { ACCENT } else if i < self.qi { MUTED.gamma_multiply(0.6) } else { TEXT };
                         ui.add(egui::Label::new(RichText::new(&t.title).color(c)).truncate());
-                        ui.add(egui::Label::new(RichText::new(&t.artist).color(MUTED).size(12.0)).truncate());
+                        ui.add(egui::Label::new(RichText::new(wavy_core::i18n::tr(&t.artist)).color(MUTED).size(12.0)).truncate());
                     });
                 }).response.interact(Sense::click_and_drag());
                 if r.clicked() { acts.push(Act::JumpQueue(i)); }
@@ -4116,7 +4125,7 @@ impl App {
                     let clip = Rect::from_min_max(Pos2::new(tx, rect.top()), Pos2::new(tx + w, rect.bottom()));
                     let pc = p.with_clip_rect(clip);
                     pc.text(Pos2::new(tx, cr.top() + 12.0), Align2::LEFT_CENTER, &t.title, FontId::new(14.0, semi()), TEXT);
-                    pc.text(Pos2::new(tx, cr.top() + 32.0), Align2::LEFT_CENTER, &t.artist, FontId::proportional(12.0), MUTED);
+                    pc.text(Pos2::new(tx, cr.top() + 32.0), Align2::LEFT_CENTER, wavy_core::i18n::tr(&t.artist), FontId::proportional(12.0), MUTED);
                     // прогресс
                     let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
                     let f = if dur > 0.0 { (self.audio.position() / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
@@ -4222,7 +4231,7 @@ impl App {
             yy += 16.0;
             text(Pos2::new(tx, yy), Align2::LEFT_TOP, ellipsize(&t.title, tw, 18.0), FontId::new(18.0, bold()), a(Color32::WHITE));
             yy += 24.0;
-            text(Pos2::new(tx, yy), Align2::LEFT_TOP, ellipsize(&t.artist, tw, 13.5), FontId::proportional(13.5), a(Color32::from_white_alpha(190)));
+            text(Pos2::new(tx, yy), Align2::LEFT_TOP, ellipsize(wavy_core::i18n::tr(&t.artist), tw, 13.5), FontId::proportional(13.5), a(Color32::from_white_alpha(190)));
             yy += 24.0;
             let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
             let pos = self.resume.as_ref().map(|r| r.1).unwrap_or_else(|| self.audio.position());

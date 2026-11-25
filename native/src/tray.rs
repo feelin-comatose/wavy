@@ -18,7 +18,19 @@ mod imp {
 
     static HWND_: AtomicIsize = AtomicIsize::new(0);
 
-    pub struct Tray { _icon: TrayIcon }
+    pub struct Tray { _icon: TrayIcon, items: [MenuItem; 5] }
+
+    impl Tray {
+        /// Подписи на текущем языке (после смены языка в настройках).
+        pub fn relabel(&self) {
+            let [show, toggle, next, prev, quit] = &self.items;
+            show.set_text(l!("Показать Wavy", "Show Wavy"));
+            toggle.set_text(wavy_core::i18n::tr("Пауза / играть"));
+            next.set_text(wavy_core::i18n::tr("Следующий трек"));
+            prev.set_text(wavy_core::i18n::tr("Предыдущий трек"));
+            quit.set_text(l!("Выход", "Quit"));
+        }
+    }
 
     fn hwnd() -> windows_sys::Win32::Foundation::HWND { HWND_.load(Ordering::Relaxed) as _ }
 
@@ -74,7 +86,7 @@ mod imp {
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
             if let TrayIconEvent::Click { button: MouseButton::Left, .. } = e { show_now(); let _ = tx.send(Cmd::Show); ctx.request_repaint(); }
         }));
-        Some((Tray { _icon: tray }, rx))
+        Some((Tray { _icon: tray, items: [show, toggle, next, prev, quit] }, rx))
     }
 }
 
@@ -83,6 +95,7 @@ mod imp {
     use super::Cmd;
     use std::sync::mpsc::Receiver;
     pub struct Tray;
+    impl Tray { pub fn relabel(&self) {} }
     pub fn show_now() {}
     pub fn hide_now() {}
     pub fn new(_cc: &eframe::CreationContext) -> Option<(Tray, Receiver<Cmd>)> { None }
