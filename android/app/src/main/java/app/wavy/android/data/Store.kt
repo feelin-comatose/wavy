@@ -60,7 +60,48 @@ object Store {
     }
 
     fun removeTracks(ids: Set<String>) = edit { l ->
-        l.copy(tracks = l.tracks - ids, playlists = l.playlists.map { p -> p.copy(trackIds = p.trackIds.filterNot { it in ids }) })
+        l.copy(tracks = l.tracks - ids, playlists = l.playlists.map { p -> p.copy(trackIds = p.trackIds.filterNot { it in ids }) }, liked = l.liked.filterNot { it in ids })
+    }
+
+    // ---- лайки и прослушивания ----
+    fun isLiked(id: String, l: Library = _lib.value) = id in l.liked
+    fun setLiked(ids: List<String>, on: Boolean) = edit { l ->
+        val rest = l.liked.filterNot { it in ids }
+        l.copy(liked = if (on) ids + rest else rest)
+    }
+    /** Трек играл дольше 30 секунд. */
+    fun countPlay(id: String, now: Long = System.currentTimeMillis()) = edit { l ->
+        l.copy(plays = l.plays + (id to (l.plays[id] ?: 0) + 1), history = (l.history + Play(id, now)).takeLast(20_000))
+    }
+
+    /** Умные плейлисты: (правило, название, пояснение) — как на ПК. */
+    fun smartRules() = listOf(
+        Triple("week", L("Топ недели", "Top of the week"), L("Чаще всего за 7 дней", "Most played in 7 days")),
+        Triple("month", L("Топ месяца", "Top of the month"), L("Чаще всего за 30 дней", "Most played in 30 days")),
+        Triple("alltime", L("На повторе", "On repeat"), L("Самое слушаемое за всё время", "Most played of all time")),
+        Triple("forgotten", L("Забытое любимое", "Forgotten favorites"), L("Лайкнутое, что не играло больше месяца", "Liked, but not played for over a month")),
+        Triple("fresh", L("Свежее", "Fresh"), L("Добавлено за две недели, ещё не слушал", "Added in the last two weeks, not played yet")),
+        Triple("never", L("Ни разу не слушал", "Never played"), L("Всё, что ещё ни разу не играло", "Everything that has never been played")),
+    )
+
+    /** Треки умного плейлиста (без серий аниме). */
+    fun smart(rule: String, l: Library = _lib.value, now: Long = System.currentTimeMillis()): List<String> {
+        val day = 86_400_000L
+        val music = libraryIds(l)
+        val inLib = music.toHashSet()
+        val last = HashMap<String, Long>()
+        for (p in l.history) last[p.id] = maxOf(last[p.id] ?: 0L, p.at)
+        fun top(since: Long) = l.history.filter { it.at >= since && it.id in inLib }.groupingBy { it.id }.eachCount()
+            .entries.sortedByDescending { it.value }.take(50).map { it.key }
+        return when (rule) {
+            "week" -> top(now - 7 * day)
+            "month" -> top(now - 30 * day)
+            "alltime" -> l.plays.filter { it.value > 0 && it.key in inLib }.entries.sortedByDescending { it.value }.take(50).map { it.key }
+            "forgotten" -> l.liked.filter { it in inLib && (last[it] ?: 0L) < now - 30 * day }
+            "fresh" -> music.filter { (l.tracks[it]?.addedAt ?: 0L) >= now - 14 * day && (l.plays[it] ?: 0) == 0 }
+            "never" -> music.filter { (l.plays[it] ?: 0) == 0 }
+            else -> emptyList()
+        }
     }
 
     fun createPlaylist(name: String, ids: List<String> = emptyList(), source: String? = null): Playlist {

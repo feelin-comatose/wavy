@@ -27,6 +27,8 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Edit
@@ -140,6 +142,15 @@ fun TrackMenu(ids: List<String>, close: () -> Unit, playlistId: String? = null, 
     DropdownMenuItem({ Text(L("Играть далее", "Play next")) }, onClick = { PlayerConn.playNext(ids); AppState.say(L("Сыграет следующим", "Will play next")); close() })
     DropdownMenuItem({ Text(L("Добавить в очередь", "Add to queue")) }, onClick = { PlayerConn.enqueue(ids); AppState.say(L("Добавлено в очередь", "Added to queue")); close() })
     DropdownMenuItem({ Text(L("Добавить в плейлист…", "Add to playlist…")) }, onClick = { close(); onAddToPlaylist(ids) })
+    val liked = ids.all { Store.isLiked(it) }
+    DropdownMenuItem({ Text(if (liked) L("Убрать из «Любимого»", "Remove from “Liked”") else L("В «Любимое»", "Add to “Liked”")) }, onClick = {
+        Store.addTracks(ids.mapNotNull(Store::track).filter { !Store.lib.value.tracks.containsKey(it.id) })
+        Store.setLiked(ids, !liked); close()
+    })
+    if (ids.size == 1 && Store.track(ids[0])?.videoId != null) {
+        DropdownMenuItem({ Text(L("Радио по треку", "Track radio")) }, onClick = { AppState.radio(ids[0]); close() })
+        DropdownMenuItem({ Text(L("Выбрать другое видео…", "Pick another video…")) }, onClick = { AppState.pickForTrack(ids[0]); close() })
+    }
     if (playlistId != null) DropdownMenuItem({ Text(L("Убрать из плейлиста", "Remove from playlist")) }, onClick = { Store.removeFromPlaylist(playlistId, ids.toSet()); close() })
     if (ids.all { Store.lib.value.tracks.containsKey(it) }) DropdownMenuItem({ Text(L("Удалить из библиотеки", "Delete from library"), color = Bad) }, onClick = { Store.removeTracks(ids.toSet()); close() })
     else DropdownMenuItem({ Text(L("В библиотеку", "To library")) }, onClick = { Store.addTracks(ids.mapNotNull(Store::track)); AppState.say(L("Добавлено в библиотеку", "Added to library")); close() })
@@ -194,7 +205,29 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
     var create by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf<String?>(null) }
     val p = lib.playlists.firstOrNull { it.id == openId }
-    if (p == null) {
+    // «Любимое» и умные плейлисты — не настоящие плейлисты, собираются на лету
+    val special: Pair<String, List<String>>? = when {
+        openId == LIKED -> L("Любимое", "Liked") to lib.liked.filter { lib.tracks.containsKey(it) }
+        openId?.startsWith(SMART) == true -> {
+            val rule = openId.removePrefix(SMART)
+            (Store.smartRules().firstOrNull { it.first == rule }?.second ?: "") to remember(lib, rule) { Store.smart(rule, lib) }
+        }
+        else -> null
+    }
+    if (special != null) {
+        val (title, ids) = special
+        TrackList(ids, header = {
+            Header(title, L("${ids.size} трек(ов) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}", "${ids.size} track(s) · ${fmtTime(ids.sumOf { lib.tracks[it]?.duration ?: 0.0 })}"), back = { onOpen(null) })
+            if (ids.isNotEmpty()) Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill(L("Слушать", "Play"), Icons.Rounded.PlayArrow, primary = true) { PlayerConn.play(ids) }
+                Pill(L("Вперемешку", "Shuffle"), Icons.Rounded.Shuffle) { PlayerConn.play(ids, shuffle = true) }
+                if (openId != LIKED) Pill(L("Сохранить копию", "Save a copy"), Icons.Rounded.Add) { onOpen(Store.createPlaylist(title, ids).id) }
+            }
+            if (ids.isEmpty()) Empty(title, if (openId == LIKED) L("Ставь сердечко в плеере или в меню ⋮ трека", "Tap the heart in the player or in a track’s ⋮ menu")
+                else Store.smartRules().firstOrNull { it.first == openId?.removePrefix(SMART) }?.third ?: "")
+            Spacer(Modifier.height(8.dp))
+        }, onAddToPlaylist = onAddToPlaylist)
+    } else if (p == null) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Header(L("Плейлисты", "Playlists"), "${lib.playlists.size}") { IconButton({ create = true }) { Icon(Icons.Rounded.Add, L("Новый плейлист", "New playlist")) } }
@@ -203,6 +236,11 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
                     Pill(L("Из YouTube / Spotify", "From YouTube / Spotify"), Icons.Rounded.Link) { onImport(null) }
                 }
                 if (lib.playlists.isEmpty()) Empty(L("Плейлистов пока нет", "No playlists yet"), L("Создай свой или импортируй по ссылке — YouTube Music, YouTube, Spotify", "Create your own or import one by link — YouTube Music, YouTube, Spotify"))
+                Spacer(Modifier.height(8.dp))
+            }
+            item {
+                SpecialRow(L("Любимое", "Liked"), L("${lib.liked.size} трек(ов)", "${lib.liked.size} track(s)"), Icons.Rounded.Favorite) { onOpen(LIKED) }
+                for ((rule, name, hint) in Store.smartRules()) SpecialRow(name, hint, Icons.Rounded.AutoAwesome) { onOpen(SMART + rule) }
                 Spacer(Modifier.height(8.dp))
             }
             items(lib.playlists, key = { it.id }) { pl ->
@@ -342,5 +380,20 @@ fun Section(title: String, content: @Composable () -> Unit) {
         Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         Spacer(Modifier.height(8.dp))
         content()
+    }
+}
+
+/** Псевдо-плейлисты в разделе «Плейлисты». */
+const val LIKED = "@liked"
+const val SMART = "@smart:"
+
+@Composable
+private fun SpecialRow(title: String, sub: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(56.dp).background(Bg3, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) { Icon(icon, null, tint = TextC) }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }

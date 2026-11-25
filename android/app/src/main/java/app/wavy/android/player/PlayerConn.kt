@@ -103,6 +103,7 @@ object PlayerConn {
         c.addMediaItems(ids.mapNotNull(Store::track).map(Media::item))
     }
 
+    fun pause() { controller?.pause() }
     fun toggle() { controller?.let { if (it.isPlaying) it.pause() else { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } } }
     fun next() { controller?.seekToNextMediaItem() }
     fun prev() { controller?.seekToPrevious() }

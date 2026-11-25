@@ -8,6 +8,7 @@ import app.wavy.android.data.Shazam
 import app.wavy.android.data.Shikimori
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import app.wavy.android.data.Store
+import app.wavy.android.player.PlayerConn
 import app.wavy.android.data.Sync
 import app.wavy.android.data.Track
 import app.wavy.android.update.Updater
@@ -40,6 +41,125 @@ object AppState {
     val update = MutableStateFlow<Upd>(Upd.Idle)
 
     fun say(m: String) { message.value = m }
+
+    // ---- раз в секунду: счёт прослушиваний и таймер сна ----
+    sealed interface Sleep { data class At(val ms: Long) : Sleep; data class EndOf(val id: String) : Sleep }
+    val sleep = MutableStateFlow<Sleep?>(null)
+    private var ticking = false
+    private var lastId: String? = null
+    private var counted: String? = null
+
+    fun startTicker() {
+        if (ticking) return
+        ticking = true
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(1000)
+                val st = PlayerConn.state.value
+                val id = st.currentId
+                if (id != lastId) {
+                    val prev = lastId
+                    lastId = id; counted = null
+                    // «после этого трека»: доиграл — следующий ставим на паузу
+                    if ((sleep.value as? Sleep.EndOf)?.id == prev && prev != null) { PlayerConn.pause(); sleep.value = null; say(L("Таймер сна: трек доиграл, спокойной ночи", "Sleep timer: the track finished, good night")) }
+                }
+                if (st.isPlaying && id != null && counted != id && PlayerConn.position() > 30_000 && Store.lib.value.tracks.containsKey(id)) { Store.countPlay(id); counted = id }
+                val s = sleep.value
+                if (s is Sleep.At && System.currentTimeMillis() >= s.ms) { PlayerConn.pause(); sleep.value = null; say(L("Таймер сна: спокойной ночи", "Sleep timer: good night")) }
+            }
+        }
+    }
+
+    fun setSleep(minutes: Int?) {
+        sleep.value = when {
+            minutes == null -> null
+            minutes == 0 -> PlayerConn.state.value.currentId?.let { Sleep.EndOf(it) }
+            else -> Sleep.At(System.currentTimeMillis() + minutes * 60_000L)
+        }
+    }
+
+    // ---- радио по треку ----
+    fun radio(id: String) {
+        val t = Store.track(id) ?: return
+        val vid = t.videoId ?: return say(L("Радио работает для треков с YouTube", "Radio works for YouTube tracks"))
+        bg(L("Собираю радио по «${t.title}»…", "Building a radio from “${t.title}”…")) {
+            val list = withContext(Dispatchers.IO) { YouTube.radio(vid, 30) }
+            if (list.isEmpty()) return@bg say(L("Похожих треков не нашлось", "No similar tracks found"))
+            Store.remember(list)
+            val ids = list.map { it.id }
+            if (PlayerConn.state.value.currentId == id) PlayerConn.playNext(ids) else PlayerConn.play(listOf(id) + ids)
+            say(L("Радио: ${list.size} похожих треков в очереди", "Radio: ${list.size} similar tracks in the queue"))
+        }
+    }
+
+    // ---- текст песни ----
+    data class LyricsState(val id: String, val text: app.wavy.android.data.Lyrics.Text? = null, val error: String? = null)
+    val lyrics = MutableStateFlow<LyricsState?>(null)
+    fun loadLyrics(id: String) {
+        if (lyrics.value?.id == id && lyrics.value?.error == null) return
+        val t = Store.track(id) ?: return
+        lyrics.value = LyricsState(id)
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { app.wavy.android.data.Lyrics.fetch(t) } }
+            if (lyrics.value?.id == id) lyrics.value = LyricsState(id, r.getOrNull(), r.exceptionOrNull()?.let { it.message ?: L("LRCLIB недоступен", "LRCLIB is unavailable") })
+        }
+    }
+
+    // ---- ручной выбор видео ----
+    /** replace — id трека, у которого меняем видео; иначе добавляем трек Spotify `sp` (в плейлист `pid`); rest — ещё не найденные. */
+    data class Pick(val query: String, val results: List<Track> = emptyList(), val busy: Boolean = true, val error: String? = null,
+                    val replace: String? = null, val sp: Spotify.SpTrack? = null, val pid: String? = null, val rest: List<Spotify.SpTrack> = emptyList())
+    data class NotFound(val pid: String?, val items: List<Spotify.SpTrack>)
+    val pick = MutableStateFlow<Pick?>(null)
+    val notFound = MutableStateFlow<NotFound?>(null)
+
+    fun pickSearch(p: Pick) {
+        pick.value = p.copy(busy = true, error = null)
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { Spotify.candidates(p.query) } }
+            val cur = pick.value ?: return@launch
+            pick.value = cur.copy(busy = false, results = r.getOrDefault(emptyList()),
+                error = r.exceptionOrNull()?.message ?: if (r.getOrNull().isNullOrEmpty()) L("Ничего не нашлось — попробуй написать иначе", "Nothing found — try different wording") else null)
+        }
+    }
+
+    fun pickForTrack(id: String) {
+        val t = Store.track(id) ?: return
+        val q = if (t.artist.isEmpty() || t.artist == "YouTube") t.title else "${t.artist.split(',').first().trim()} ${t.title}"
+        pickSearch(Pick(q, replace = id))
+    }
+
+    fun pickForSpotify(nf: NotFound, i: Int) {
+        val sp = nf.items[i]
+        notFound.value = null
+        pickSearch(Pick("${sp.artists.split(',').first().trim()} ${sp.title}".trim(), sp = sp, pid = nf.pid, rest = nf.items.filterIndexed { j, _ -> j != i }))
+    }
+
+    /** Отмена выбора: вернуться к списку ненайденных, если он был. */
+    fun pickCancel() {
+        val p = pick.value ?: return
+        pick.value = null
+        if (p.sp != null) notFound.value = NotFound(p.pid, listOf(p.sp) + p.rest)
+    }
+
+    fun pickChoose(c: Track) {
+        val p = pick.value ?: return
+        pick.value = null
+        if (p.replace != null) {
+            val old = Store.track(p.replace) ?: return
+            val ytCover = old.cover == null || old.cover.contains("ytimg.com") || old.cover.contains("googleusercontent")
+            Store.addTracks(listOf(old.copy(type = "youtube", videoId = c.videoId, url = c.url, cover = if (ytCover) c.cover else old.cover,
+                duration = if (c.duration > 0) c.duration else old.duration)))
+            c.videoId?.let { YouTube.invalidate(it) }
+            say(L("«${old.title}»: видео заменено — со следующего запуска трека", "“${old.title}”: video replaced — takes effect next time the track plays"))
+        } else if (p.sp != null) {
+            val t = Spotify.fromCandidate(c, p.sp)
+            Store.addTracks(listOf(t))
+            p.pid?.let { Store.addToPlaylist(it, listOf(t.id)) }
+            say(L("Добавлено: ${t.title}", "Added: ${t.title}"))
+            if (p.rest.isNotEmpty()) notFound.value = NotFound(p.pid, p.rest)
+        }
+    }
 
     private fun bg(label: String, block: suspend () -> Unit) = scope.launch {
         busy.value = label
@@ -160,11 +280,13 @@ object AppState {
     fun importUrl(url: String, intoPlaylist: String? = null, onDone: (String?) -> Unit = {}) = bg(L("Импорт…", "Importing…")) {
         val progress: (String) -> Unit = { m -> scope.launch { busy.value = m } }
         val s = Store.lib.value.settings
+        var missing: List<Spotify.SpTrack> = emptyList()
         val (name, source, tracks, note) = withContext(Dispatchers.IO) {
             if (Spotify.isSpotify(url)) {
                 val r = Spotify.import(url, s.spotifyClientId, s.spotifyClientSecret, progress)
                 var note = ""
-                if (r.notFound.isNotEmpty()) note += L(", не нашлось на YouTube: ${r.notFound.size}", ", not found on YouTube: ${r.notFound.size}")
+                if (r.notFound.isNotEmpty()) note += L(", не нашлось на YouTube: ${r.notFound.size} — можно выбрать вручную", ", not found on YouTube: ${r.notFound.size} — you can pick them manually")
+                missing = r.notFound
                 if (r.truncated) note += L(". Без ключа Spotify — только первые 100 треков", ". Without a key Spotify gives only the first 100 tracks")
                 Quad(if (r.kind == "track") null else r.name, r.source, r.tracks, note)
             } else {
@@ -181,6 +303,7 @@ object AppState {
         }
         say(L("Добавлено ${tracks.size} трек(ов)$note", "Added ${tracks.size} track(s)$note"))
         onDone(pid)
+        if (missing.isNotEmpty()) notFound.value = NotFound(pid, missing)
     }
 
     fun syncPlaylist(id: String) {

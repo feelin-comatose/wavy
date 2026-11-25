@@ -24,6 +24,9 @@ pub struct Export {
     pub playlists: Vec<ExportPlaylist>,
     #[serde(default)]
     pub tracks: Vec<Track>,
+    /// лайки (id переносимых треков), новые первыми; при импорте объединяются
+    #[serde(default)]
+    pub liked: Vec<String>,
 }
 
 pub struct Summary {
@@ -41,7 +44,8 @@ pub fn export(store: &Store) -> String {
         source: p.source.clone().filter(|s| s.starts_with("http")),
         tracks: p.track_ids.iter().filter_map(|id| lib.tracks.get(id)).filter(|t| !t.is_local()).cloned().collect(),
     }).filter(|p| !p.tracks.is_empty()).collect();
-    serde_json::to_string_pretty(&Export { wavy_export: 1, app: "desktop".into(), exported_at: now_ms(), playlists, tracks: portable }).unwrap_or_default()
+    let liked = lib.liked.iter().filter(|id| lib.tracks.get(*id).is_some_and(|t| !t.is_local())).cloned().collect();
+    serde_json::to_string_pretty(&Export { wavy_export: 1, app: "desktop".into(), exported_at: now_ms(), playlists, tracks: portable, liked }).unwrap_or_default()
 }
 
 pub fn is_export(text: &str) -> bool {
@@ -67,6 +71,8 @@ pub fn import(store: &mut Store, text: &str) -> Result<Summary, String> {
             None => { store.create_playlist(&p.name, ids, p.source.clone()); created += 1; }
         }
     }
+    let new_likes: Vec<String> = e.liked.iter().filter(|id| store.lib.tracks.contains_key(*id) && !store.is_liked(id)).cloned().collect();
+    if !new_likes.is_empty() { store.set_liked(&new_likes, true); }
     Ok(Summary { tracks: n, new_playlists: created, updated_playlists: updated, skipped_local })
 }
 
@@ -86,11 +92,15 @@ mod tests {
         let text = export(&s);
         assert!(is_export(&text) && !text.contains("C:/m.mp3"));
         // файл с телефона (поля Android-версии, лишние игнорируются)
-        let android = r#"{"wavyExport":1,"app":"android","exportedAt":5,"playlists":[{"name":"Phone","source":"https://open.spotify.com/album/x","tracks":[{"id":"yt_bbbbbbbbbbb","type":"youtube","videoId":"bbbbbbbbbbb","title":"B","artist":"Y","album":"","duration":5.0,"addedAt":1,"video":false}]}],"tracks":[{"id":"and_a_7","type":"local","path":"content://media/7","title":"L"}]}"#;
+        let android = r#"{"wavyExport":1,"app":"android","exportedAt":5,"liked":["yt_bbbbbbbbbbb","yt_gone"],"playlists":[{"name":"Phone","source":"https://open.spotify.com/album/x","tracks":[{"id":"yt_bbbbbbbbbbb","type":"youtube","videoId":"bbbbbbbbbbb","title":"B","artist":"Y","album":"","duration":5.0,"addedAt":1,"video":false}]}],"tracks":[{"id":"and_a_7","type":"local","path":"content://media/7","title":"L"}]}"#;
         let r = import(&mut s, android).unwrap();
         assert_eq!((r.tracks, r.new_playlists, r.skipped_local), (1, 1, 1));
         let r2 = import(&mut s, android).unwrap();
         assert_eq!(r2.new_playlists, 0);
         assert!(s.lib.tracks.contains_key("yt_bbbbbbbbbbb") && !s.lib.tracks.contains_key("and_a_7"));
+        // лайки переносятся, неизвестные треки пропускаются
+        assert!(s.is_liked("yt_bbbbbbbbbbb") && !s.is_liked("yt_gone"));
+        s.set_liked(&["yt_aaaaaaaaaaa".into()], true);
+        assert!(export(&s).contains("\"liked\""));
     }
 }

@@ -26,6 +26,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -112,6 +119,10 @@ fun FullPlayer(onClose: () -> Unit) {
     val t = st.currentId?.let(Store::track)
     var showVideo by remember { mutableStateOf(true) }
     var showQueue by remember { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
+    var sleepMenu by remember { mutableStateOf(false) }
+    val sleep by AppState.sleep.collectAsState()
+    val lib by Store.lib.collectAsState()
     val (pos, dur) = rememberPosition()
     var drag by remember { mutableStateOf<Float?>(null) }
     Column(Modifier.fillMaxSize().background(Bg).statusBarsPadding().navigationBarsPadding()) {
@@ -120,10 +131,21 @@ fun FullPlayer(onClose: () -> Unit) {
             Text(L("Сейчас играет", "Now playing"), Modifier.weight(1f), color = Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             if (t?.hasVideo == true) IconButton({ showVideo = !showVideo }) { Icon(if (showVideo) Icons.Rounded.Image else Icons.Rounded.Videocam, L("Видео / обложка", "Video / cover")) }
             IconButton({ AppState.startShazam() }) { Icon(Icons.Rounded.GraphicEq, L("Что за песня? (Shazam)", "What's this song? (Shazam)"), tint = Muted) }
-            IconButton({ showQueue = !showQueue }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, L("Очередь", "Queue"), tint = if (showQueue) Accent else Muted) }
+            Box {
+                IconButton({ sleepMenu = true }) { Icon(Icons.Rounded.Bedtime, L("Таймер сна", "Sleep timer"), tint = if (sleep != null) Accent else Muted) }
+                DropdownMenu(sleepMenu, onDismissRequest = { sleepMenu = false }) {
+                    for (m in listOf(15, 30, 45, 60, 90)) DropdownMenuItem({ Text(L("через $m мин", "in $m min")) }, onClick = { AppState.setSleep(m); sleepMenu = false })
+                    DropdownMenuItem({ Text(L("после этого трека", "after this track")) }, onClick = { AppState.setSleep(0); sleepMenu = false })
+                    if (sleep != null) DropdownMenuItem({ Text(L("отменить таймер", "cancel the timer"), color = Bad) }, onClick = { AppState.setSleep(null); sleepMenu = false })
+                }
+            }
+            IconButton({ showLyrics = !showLyrics; if (showLyrics) showQueue = false }) { Icon(Icons.Rounded.Lyrics, L("Текст песни", "Lyrics"), tint = if (showLyrics) Accent else Muted) }
+            IconButton({ showQueue = !showQueue; if (showQueue) showLyrics = false }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, L("Очередь", "Queue"), tint = if (showQueue) Accent else Muted) }
         }
         if (t == null) { Empty(L("Ничего не играет", "Nothing is playing"), L("Выбери трек в библиотеке", "Pick a track in the library")); return@Column }
-        if (showQueue) {
+        if (showLyrics) {
+            Box(Modifier.weight(1f).fillMaxWidth()) { LyricsView(t.id, pos) }
+        } else if (showQueue) {
             LazyColumn(Modifier.weight(1f)) {
                 itemsIndexed(st.queue) { i, id ->
                     val q = Store.track(id) ?: return@itemsIndexed
@@ -143,8 +165,16 @@ fun FullPlayer(onClose: () -> Unit) {
             }
         }
         Column(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
-            Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(t.artist, color = Muted, fontSize = 15.sp, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(t.artist, color = Muted, fontSize = 15.sp, maxLines = 1)
+                }
+                val liked = t.id in lib.liked
+                IconButton({ if (!lib.tracks.containsKey(t.id)) Store.addTracks(listOf(t)); Store.setLiked(listOf(t.id), !liked) }) {
+                    Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) L("Убрать из «Любимого»", "Remove from “Liked”") else L("В «Любимое»", "Add to “Liked”"), tint = if (liked) Accent else Muted)
+                }
+            }
             val st2 = st.error
             if (st2 != null) Text(L("Ошибка: $st2", "Error: $st2"), color = Bad, fontSize = 12.sp, maxLines = 2)
             Slider(
@@ -219,6 +249,36 @@ fun VideoArea(t: Track, playing: Boolean) {
                     onRelease = { it.player = null },
                 )
             }
+        }
+    }
+}
+
+/** Текст песни: текущая строка подсвечена и прокручивается к середине, тап по строке — перемотка. */
+@Composable
+fun LyricsView(id: String, posMs: Long) {
+    LaunchedEffect(id) { AppState.loadLyrics(id) }
+    val st by AppState.lyrics.collectAsState()
+    val s = st?.takeIf { it.id == id }
+    val text = s?.text
+    val list = rememberLazyListState()
+    when {
+        s == null || (text == null && s.error == null) -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
+        s.error != null -> Empty(L("Текст не загрузился", "Lyrics didn't load"), s.error)
+        text == null || text.isEmpty -> Empty(L("Текста не нашлось", "No lyrics found"), L("Тексты берутся из открытой базы LRCLIB.", "Lyrics come from the open LRCLIB database."))
+        text.instrumental && text.synced.isEmpty() && text.plain.isBlank() -> Empty(L("♪ Инструментал", "♪ Instrumental"), L("Без слов", "No words"))
+        text.synced.isNotEmpty() -> {
+            val cur = text.lineAt(posMs / 1000.0)
+            LaunchedEffect(cur) { if (cur >= 0) list.animateScrollToItem((cur - 3).coerceAtLeast(0)) }
+            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), state = list) {
+                itemsIndexed(text.synced) { i, (t, line) ->
+                    Text(line.ifEmpty { "♪" }, Modifier.fillMaxWidth().clickable { PlayerConn.seek((t * 1000).toLong()) }.padding(vertical = 8.dp),
+                        fontSize = if (i == cur) 22.sp else 19.sp, fontWeight = if (i == cur) FontWeight.Bold else FontWeight.Medium,
+                        color = if (i == cur) TextC else if (i < cur) Muted.copy(alpha = 0.6f) else Muted)
+                }
+            }
+        }
+        else -> LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+            itemsIndexed(text.plain.lines()) { _, line -> Text(line, Modifier.padding(vertical = 4.dp), fontSize = 18.sp, color = TextC) }
         }
     }
 }

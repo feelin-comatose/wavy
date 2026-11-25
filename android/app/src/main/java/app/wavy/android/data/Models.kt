@@ -62,7 +62,17 @@ data class Library(
     val settings: Settings = Settings(),
     val session: Session = Session(),
     val anime: List<Anime> = emptyList(),
+    /** лайки, новые первыми */
+    val liked: List<String> = emptyList(),
+    /** сколько раз трек проиграл дольше 30 секунд */
+    val plays: Map<String, Int> = emptyMap(),
+    /** когда что играло — для умных плейлистов */
+    val history: List<Play> = emptyList(),
 )
+
+/** Одно прослушивание: трек и время (мс). */
+@Serializable
+data class Play(val id: String, val at: Long)
 
 val json = Json {
     ignoreUnknownKeys = true

@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
 object Spotify {
     data class SpTrack(val title: String, val artists: String, val album: String, val duration: Double)
     class SpList(val name: String, val tracks: List<SpTrack>, val maybeTruncated: Boolean)
-    class Result(val name: String, val source: String, val tracks: List<Track>, val notFound: List<String>, val truncated: Boolean, val kind: String)
+    class Result(val name: String, val source: String, val tracks: List<Track>, val notFound: List<SpTrack>, val truncated: Boolean, val kind: String)
 
     private val js = Json { ignoreUnknownKeys = true }
 
@@ -95,33 +95,68 @@ object Spotify {
         return SpList(name, out, false)
     }
 
-    /** Лучший кандидат с YouTube Music по длительности и совпадению названия/исполнителя. */
-    fun match(t: SpTrack, search: (String) -> List<Track> = { YouTube.search(it, music = true, limit = 5) }): Track? {
+    /** Название без хвостов, которых нет у видео: «(feat. X)», «- Remastered 2011», «[Explicit]» (как на ПК). */
+    fun cleanTitle(s: String): String {
+        var t = s.lowercase()
+        for ((open, close) in listOf('(' to ')', '[' to ']')) {
+            while (true) {
+                val a = t.indexOf(open).takeIf { it >= 0 } ?: break
+                val b = t.indexOf(close, a).takeIf { it >= 0 } ?: break
+                val inner = t.substring(a + 1, b)
+                if (listOf("feat", "ft.", "with ", "remaster", "radio edit", "from ", "bonus", "explicit").any { inner.contains(it) }) t = t.removeRange(a, b + 1) else break
+            }
+        }
+        val dash = t.indexOf(" - ")
+        if (dash >= 0 && listOf("remaster", "radio edit", "feat", "mono", "stereo", "single version", "album version").any { t.substring(dash + 3).contains(it) }) t = t.substring(0, dash)
+        return t.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    }
+
+    /** Кандидаты: песни YouTube Music, а если их мало — ещё и видео YouTube. Сбои сети повторяются. */
+    fun candidates(q: String): List<Track> {
+        fun retry(block: () -> List<Track>): List<Track> {
+            repeat(3) { i -> runCatching { return block() }; Thread.sleep(800L * (i + 1)) }
+            return emptyList()
+        }
+        val out = ArrayList(retry { YouTube.search(q, music = true, limit = 8) })
+        if (out.size < 3) for (c in retry { YouTube.search(q, music = false, limit = 6) }) if (out.none { it.videoId == c.videoId }) out += c
+        return out
+    }
+
+    /** Лучший кандидат: название, исполнитель, длительность, «официальность» (та же оценка, что на ПК). */
+    fun match(t: SpTrack, search: (String) -> List<Track> = ::candidates): Track? {
         val mainArtist = t.artists.split(',').first().trim()
-        val cands = runCatching { search("$mainArtist - ${t.title}") }.getOrDefault(emptyList())
-        val title = t.title.lowercase()
-        val best = cands.map { c ->
+        val cands = search(if (mainArtist.isEmpty()) t.title else "$mainArtist ${t.title}")
+        val title = cleanTitle(t.title)
+        val artist = mainArtist.lowercase()
+        val best = cands.mapIndexed { i, c ->
             var score = 0.0
+            val ct = c.title.lowercase()
+            val ctc = cleanTitle(c.title)
+            val titleOk = ct.contains(title) || ctc == title || (ctc.length > 3 && title.contains(ctc))
+            val artistOk = artist.isNotEmpty() && (c.artist.lowercase().contains(artist) || ct.contains(artist))
+            if (titleOk) score += 8
+            if (artistOk) score += 5
             if (t.duration > 0 && c.duration > 0) {
                 val d = kotlin.math.abs(c.duration - t.duration)
-                score -= d.coerceAtMost(120.0) / 4
-                if (d > 30) score -= 20
+                score -= d.coerceAtMost(120.0) / (if (titleOk && artistOk) 10 else 4)
+                if (d > 30 && !(titleOk && artistOk)) score -= 20
             }
-            val ct = c.title.lowercase()
-            if (ct.contains(title)) score += 6
-            if (mainArtist.isNotEmpty() && (c.artist.lowercase().contains(mainArtist.lowercase()) || ct.contains(mainArtist.lowercase()))) score += 4
-            for (bad in listOf("live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction"))
+            for (bad in listOf("live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"))
                 if (ct.contains(bad) && !title.contains(bad)) score -= 8
+            if (c.url?.contains("music.youtube") == true && c.album.isNotEmpty()) score += 3
+            if (ct.contains("audio")) score += 2
+            score -= i * 0.3
             score to c
         }.maxByOrNull { it.first }
-        return best?.takeIf { it.first > -25 }?.second?.let { c ->
-            c.copy(
-                url = "https://music.youtube.com/watch?v=${c.videoId}", title = t.title,
-                artist = t.artists.ifEmpty { c.artist }, album = t.album,
-                duration = if (t.duration > 0) t.duration else c.duration,
-            )
-        }
+        return best?.takeIf { it.first > -25 }?.second?.let { fromCandidate(it, t) }
     }
+
+    /** Трек библиотеки из найденного видео: название, исполнитель и альбом — из Spotify. */
+    fun fromCandidate(c: Track, t: SpTrack) = c.copy(
+        url = "https://music.youtube.com/watch?v=${c.videoId}", title = t.title.ifEmpty { c.title },
+        artist = t.artists.ifEmpty { c.artist }, album = t.album.ifEmpty { c.album },
+        duration = if (t.duration > 0) t.duration else c.duration,
+    )
 
     fun import(url: String, clientId: String = "", secret: String = "", progress: (String) -> Unit = {}): Result {
         val (kind, id) = parseUrl(url) ?: throw IllegalArgumentException(L("это не ссылка на Spotify", "this isn't a Spotify link"))
@@ -138,11 +173,11 @@ object Spotify {
         }
         val base = System.currentTimeMillis()
         val tracks = ArrayList<Track>()
-        val notFound = ArrayList<String>()
+        val notFound = ArrayList<SpTrack>()
         val seen = HashSet<String>()
         found.forEachIndexed { i, t ->
             when {
-                t == null -> notFound += "${list.tracks[i].artists} — ${list.tracks[i].title}"
+                t == null -> notFound += list.tracks[i]
                 seen.add(t.id) -> tracks += t.copy(addedAt = base + (n - i))
             }
         }

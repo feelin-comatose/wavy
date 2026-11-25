@@ -100,6 +100,15 @@ object YouTube {
         }
     }
 
+    /** Радио по треку: микс YouTube (похожие песни), без самого трека. */
+    fun radio(videoId: String, limit: Int = 30): List<Track> {
+        init()
+        val yt = ServiceList.YouTube
+        val info = PlaylistInfo.getInfo(yt, "https://www.youtube.com/watch?v=$videoId&list=RD$videoId")
+        val base = System.currentTimeMillis()
+        return info.relatedItems.map { toTrack(it, true, base) }.filter { it.videoId != videoId }.distinctBy { it.id }.take(limit)
+    }
+
     // ---- потоки для плеера (кэшируются: ссылки живут ~6 часов) ----
     private class Cached(val url: String, val until: Long)
     private val audioCache = ConcurrentHashMap<String, Cached>()

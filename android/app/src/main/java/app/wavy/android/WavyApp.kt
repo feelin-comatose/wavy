@@ -9,6 +9,7 @@ class WavyApp : Application() {
         super.onCreate()
         Store.init(this)
         app.wavy.android.data.Offline.init(filesDir)
+        app.wavy.android.data.Lyrics.init(filesDir)
         Thread { runCatching { YouTube.init() } }.start()
     }
 }

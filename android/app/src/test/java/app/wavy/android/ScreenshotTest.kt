@@ -12,6 +12,8 @@ import app.wavy.android.data.Store
 import app.wavy.android.data.Track
 import app.wavy.android.player.PlayerConn
 import app.wavy.android.ui.AppState
+import app.wavy.android.ui.LIKED
+import app.wavy.android.ui.LyricsView
 import app.wavy.android.ui.AnimeScreen
 import app.wavy.android.ui.ShazamDialog
 import app.wavy.android.data.Shazam
@@ -91,5 +93,21 @@ class ScreenshotTest {
     @Test fun shazam() {
         AppState.shazam.value = AppState.Shz.Found(Shazam.Found("Yuusha", "YOASOBI", null, null))
         shot("9-shazam") { ShazamDialog {} }
+    }
+
+    @Test fun liked() {
+        Store.setLiked(listOf("yt_vid00000002", "yt_vid00000004"), true)
+        shot("10-liked") { PlaylistsScreen(LIKED, {}, {}, {}) }
+    }
+    @Test fun playerLiked() {
+        Store.setLiked(listOf("yt_vid00000002"), true)
+        AppState.setSleep(30)
+        shot("11-player-liked") { FullPlayer {} }
+        AppState.setSleep(null)
+    }
+    @Test fun lyrics() {
+        val l = app.wavy.android.data.Lyrics.parseLrc("[00:01.00] I'm giving you a nightcall\n[00:05.00] to tell you how I feel\n[00:09.00] I want to drive you through the night\n[00:13.00] down the hills\n[00:17.00] I'm gonna tell you something\n[00:21.00] you don't want to hear")
+        AppState.lyrics.value = AppState.LyricsState("yt_vid00000002", app.wavy.android.data.Lyrics.Text(l))
+        shot("12-lyrics") { LyricsView("yt_vid00000002", 10_000) }
     }
 }

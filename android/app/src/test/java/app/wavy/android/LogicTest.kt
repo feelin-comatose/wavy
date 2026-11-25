@@ -144,4 +144,42 @@ class LogicTest {
             assertArrayEquals(data, f.readBytes())
         } finally { srv.close(); th.join(1000) }
     }
+
+    @Test fun likesSyncAndSmartLists() {
+        Store.initForTest(Files.createTempDirectory("likes").toFile())
+        Store.addTracks(listOf(yt("aaaaaaaaaaa", "A", "X", 100.0), yt("bbbbbbbbbbb", "B", "X", 100.0), yt("ccccccccccc", "C", "X", 100.0)))
+        Store.setLiked(listOf("yt_aaaaaaaaaaa"), true)
+        Store.setLiked(listOf("yt_bbbbbbbbbbb"), true)
+        assertEquals(listOf("yt_bbbbbbbbbbb", "yt_aaaaaaaaaaa"), Store.lib.value.liked)
+        val now = 100L * 86_400_000L
+        Store.countPlay("yt_aaaaaaaaaaa", now - 1000); Store.countPlay("yt_aaaaaaaaaaa", now - 2000); Store.countPlay("yt_ccccccccccc", now - 40L * 86_400_000L)
+        assertEquals(listOf("yt_aaaaaaaaaaa"), Store.smart("week", now = now))
+        assertEquals(listOf("yt_aaaaaaaaaaa", "yt_ccccccccccc"), Store.smart("alltime", now = now))
+        assertEquals(listOf("yt_bbbbbbbbbbb"), Store.smart("forgotten", now = now))
+        assertEquals(listOf("yt_bbbbbbbbbbb"), Store.smart("never", now = now))
+        val text = Sync.export()
+        Store.initForTest(Files.createTempDirectory("likes2").toFile())
+        Sync.import(text)
+        assertEquals(listOf("yt_bbbbbbbbbbb", "yt_aaaaaaaaaaa"), Store.lib.value.liked)
+        // лайки с ПК: неизвестный трек пропускается
+        Sync.import("""{"wavyExport":1,"app":"desktop","liked":["yt_ccccccccccc","yt_gone"],"tracks":[]}""")
+        assertTrue(Store.isLiked("yt_ccccccccccc") && !Store.isLiked("yt_gone"))
+        Store.removeTracks(setOf("yt_ccccccccccc"))
+        assertTrue(!Store.isLiked("yt_ccccccccccc"))
+    }
+
+    @Test fun lyricsParseAndClean() {
+        val l = app.wavy.android.data.Lyrics.parseLrc("[00:01.50] one\n[00:10.00][01:00.00] chorus\nplain")
+        assertEquals(listOf(1.5 to "one", 10.0 to "chorus", 60.0 to "chorus"), l)
+        val t = app.wavy.android.data.Lyrics.Text(l)
+        assertEquals(-1, t.lineAt(0.5)); assertEquals(1, t.lineAt(30.0))
+        assertEquals("YOASOBI" to "アイドル", app.wavy.android.data.Lyrics.clean(yt("x", "YOASOBI「アイドル」Official Music Video", "Ayase", 200.0)))
+        assertEquals("LiSA" to "Gurenge", app.wavy.android.data.Lyrics.clean(yt("y", "LiSA - Gurenge (Official Video)", "LiSA Official", 200.0)))
+    }
+
+    @Test fun spotifyCleanTitle() {
+        assertEquals("come together", Spotify.cleanTitle("Come Together - Remastered 2009"))
+        assertEquals("stay", Spotify.cleanTitle("Stay (feat. Justin Bieber)"))
+        assertEquals("song (live)", Spotify.cleanTitle("Song (Live)"))
+    }
 }

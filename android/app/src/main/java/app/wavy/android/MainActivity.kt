@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(this)
         PlayerConn.connect(this)
+        AppState.startTicker()
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         if (Store.lib.value.settings.autoUpdate) AppState.checkUpdate(manual = false)
         handleIntent(intent)
@@ -215,6 +216,7 @@ class MainActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize().statusBarsPadding()) { app.wavy.android.ui.RemoteScreen(st.settings.syncAddr, st.settings.syncPin, back = { AppState.remoteOpen.value = false }) }
             }
         }
+        app.wavy.android.ui.PickDialogs()
         importFor?.let { (url, pl) -> ImportDialog(url, pl, dismiss = { importFor = null }) { pid -> if (pid != null) { tab = 1; openPlaylist = pid } } }
         addTo?.let { ids -> AddToPlaylistDialog(ids) { addTo = null } }
         if (shazamOpen) ShazamDialog { AppState.shazamOpen.value = false; AppState.shazam.value = AppState.Shz.Idle }
