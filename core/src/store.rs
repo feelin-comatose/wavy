@@ -126,13 +126,15 @@ pub struct Settings {
     pub listenbrainz: crate::listenbrainz::Account,
     /// AniList: mark watched episodes there too.
     pub anilist: crate::anilist::Account,
+    /// Own music server (Subsonic API: Navidrome, Jellyfin…): address, user and the salted token.
+    pub subsonic: crate::subsonic::Server,
     /// Daily library auto-backup: folder (empty — data_dir/backups) and when the last one ran (ms).
     pub backup_dir: String,
     pub last_backup: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, lang: "ru".into(), theme: "dark".into(), accent: String::new(), addons: Vec::new(), audio_device: String::new(), watch_folders: Vec::new(), visualizer: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), yt_account: false, hotkeys: HashMap::new(), lastfm: Default::default(), listenbrainz: Default::default(), anilist: Default::default(), backup_dir: String::new(), last_backup: 0 }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, lang: "ru".into(), theme: "dark".into(), accent: String::new(), addons: Vec::new(), audio_device: String::new(), watch_folders: Vec::new(), visualizer: true, spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), yt_account: false, hotkeys: HashMap::new(), lastfm: Default::default(), listenbrainz: Default::default(), anilist: Default::default(), subsonic: Default::default(), backup_dir: String::new(), last_backup: 0 }
     }
 }
 

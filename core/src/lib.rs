@@ -24,6 +24,7 @@ pub mod sync;
 pub mod twitch;
 pub mod wifisync;
 pub mod store;
+pub mod subsonic;
 pub mod youtube;
 pub mod ytaccount;
 

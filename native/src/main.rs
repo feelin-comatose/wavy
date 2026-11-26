@@ -54,6 +54,9 @@ enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
+    /// own music server: signed in (or not); its playlists and albums for the import dialog
+    Subsonic(Result<wavy_core::subsonic::Server, String>),
+    SubsonicLists(Result<(Vec<wavy_core::subsonic::Item>, Vec<wavy_core::subsonic::Item>), String>),
     /// AniList token checked: (token, user name) or an error
     AniList(Result<(String, String), String>),
     /// ListenBrainz token checked: (token, user name) or an error
@@ -111,6 +114,8 @@ enum Bg {
 }
 
 enum Modal {
+    /// own music server: its playlists and newest albums (None — loading), and what's being imported
+    Subsonic { lists: Option<Result<(Vec<wavy_core::subsonic::Item>, Vec<wavy_core::subsonic::Item>), String>>, busy: Option<String> },
     ImportUrl { url: String, into: bool, busy: bool, err: Option<String> },
     NewPlaylist { name: String, ids: Vec<String> },
     Rename { id: String, name: String },
@@ -152,6 +157,8 @@ enum Act {
     Undo,
     /// watched music folders: add (dialog), remove, scan now
     WatchAdd, WatchRemove(String), WatchScan,
+    /// own music server: open the import dialog; import a playlist (false) or album (true) by id
+    SubsonicOpen, SubsonicImport(String, bool),
     View(View), ImportFiles, ImportFolder, ImportPaths(Vec<PathBuf>, Option<String>), ImportUrl(String, Option<String>),
     Search(String), AddTracks(Vec<Track>), PlayNext(Vec<String>), Enqueue(Vec<String>),
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
@@ -356,6 +363,8 @@ struct App {
     /// AniList: the token being pasted, and whether it's being checked
     al_input: String,
     al_busy: bool,
+    /// own music server sign-in form: address, user, password (the password isn't kept), busy
+    sub_form: (String, String, String, bool),
 }
 
 impl App {
@@ -364,6 +373,7 @@ impl App {
         let dir = wavy_core::data_dir();
         let store = Store::open(&dir);
         theme::set(&store.lib.settings.theme, &store.lib.settings.accent);
+        wavy_core::subsonic::set_current(Some(store.lib.settings.subsonic.clone()));
         style(&ctx);
         let yt_cookies = store.lib.settings.yt_cookies.clone();
         let (tx, rx) = channel();
@@ -418,7 +428,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(),
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -1049,6 +1059,35 @@ impl App {
                 self.store.lock().unwrap().patch_settings(&json!({"watchFolders": list}));
             }
             Act::WatchScan => self.scan_watched(ctx),
+            Act::SubsonicOpen => {
+                self.modal = Some(Modal::Subsonic { lists: None, busy: None });
+                let (srv, tx, c) = (self.settings().subsonic, self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let r = wavy_core::subsonic::playlists(&srv).and_then(|p| wavy_core::subsonic::albums(&srv).map(|a| (p, a)));
+                    let _ = tx.send(Bg::SubsonicLists(r));
+                    c.request_repaint();
+                });
+            }
+            Act::SubsonicImport(id, album) => {
+                if let Some(Modal::Subsonic { busy, .. }) = &mut self.modal { *busy = Some(id.clone()); }
+                let (srv, store) = (self.settings().subsonic, self.store.clone());
+                self.bg(ctx, move |tx| {
+                    let (name, tracks) = wavy_core::subsonic::songs(&srv, &id, album)?;
+                    let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+                    let n = ids.len();
+                    let source = format!("subsonic:{}:{id}", if album { "album" } else { "playlist" });
+                    let mut s = store.lock().unwrap();
+                    s.add_tracks(tracks);
+                    // importing the same playlist again refreshes it instead of making a copy
+                    let pid = match s.lib.playlists.iter_mut().find(|p| p.source.as_deref() == Some(source.as_str())) {
+                        Some(p) => { p.track_ids = ids; let id = p.id.clone(); s.save(); id }
+                        None => s.create_playlist(&name, ids, Some(source)).id,
+                    };
+                    let _ = tx.send(Bg::Status(lf!("С сервера: «{name}», треков: {n}", "From the server: “{name}”, {n} track(s)")));
+                    let _ = tx.send(Bg::OpenPlaylist(pid));
+                    Ok(())
+                });
+            }
             Act::Undo => if let Some((r, _, _)) = self.undo.take() {
                 self.store.lock().unwrap().undo(&r);
                 self.toast(l!("Возвращено", "Restored"), false);
@@ -1060,6 +1099,7 @@ impl App {
                 let s = self.settings();
                 wavy_core::i18n::set(&s.lang);
                 if theme::set(&s.theme, &s.accent) { apply_theme(ctx); }
+                if patch.get("subsonic").is_some() { wavy_core::subsonic::set_current(Some(s.subsonic.clone())); }
                 // another output device: reopen the current track there, at the same place
                 if patch.get("audioDevice").is_some() {
                     let (pos, playing) = (self.audio.position(), self.audio.is_playing());
@@ -1597,6 +1637,7 @@ impl App {
                     }
                 }
                 Bg::OpenPlaylist(id) => {
+                    if matches!(self.modal, Some(Modal::Subsonic { .. })) { self.modal = None; }
                     self.view = View::Playlist(id);
                     if matches!(self.modal, Some(Modal::ImportUrl { .. })) { self.modal = None; }
                 }
@@ -1679,6 +1720,14 @@ impl App {
                         Err(e) => self.toast(e, true),
                     }
                 }
+                Bg::Subsonic(r) => {
+                    self.sub_form.3 = false;
+                    match r {
+                        Ok(srv) => { self.sub_form.2.clear(); let who = format!("{} @ {}", srv.user, srv.url); self.apply(Act::Settings(json!({"subsonic": srv})), ctx); self.toast(lf!("Сервер подключён: {who}", "Server connected: {who}"), false); }
+                        Err(e) => self.toast(e, true),
+                    }
+                }
+                Bg::SubsonicLists(r) => if let Some(Modal::Subsonic { lists, .. }) = &mut self.modal { *lists = Some(r); },
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
                         match &mut self.modal {
@@ -2613,7 +2662,8 @@ impl App {
                 ui.painter().text(r.center(), Align2::CENTER_CENTER, "\u{E33C}", FontId::proportional(size * 0.4), th().muted);
             }
         }
-        if !t.is_local() && t.kind != "radio" { ui.painter().rect_filled(Rect::from_min_size(r.right_bottom() - Vec2::splat(10.0), Vec2::splat(10.0)), 3, Color32::from_rgb(0xff, 0, 0x33)); }
+        // the red mark is for YouTube and other web videos, not your own server or radio
+        if t.kind == "youtube" || t.kind == "stream" { ui.painter().rect_filled(Rect::from_min_size(r.right_bottom() - Vec2::splat(10.0), Vec2::splat(10.0)), 3, Color32::from_rgb(0xff, 0, 0x33)); }
     }
 
     fn player_bar(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -3655,6 +3705,38 @@ impl App {
         let resp = egui::Modal::new(Id::unique("modal").with(std::mem::discriminant(&m)).with(if let Modal::NotFound { items, .. } = &m { items.len() } else { 0 })).frame(egui::Frame::popup(&ctx.global_style()).fill(th().bg2).inner_margin(22).corner_radius(16)).show(ctx, |ui| {
             ui.set_width(500.0);
             match &mut m {
+                Modal::Subsonic { lists, busy } => {
+                    ui.label(RichText::new(l!("С сервера", "From your server")).size(20.0).family(bold()));
+                    ui.label(RichText::new(l!("Плейлист или альбом станет плейлистом в Wavy; повторный импорт обновит его.", "A playlist or album becomes a playlist in Wavy; importing it again updates it.")).color(th().muted));
+                    ui.add_space(8.0);
+                    match lists {
+                        None => { ui.horizontal(|ui| { ui.spinner(); ui.label(l!("Загружаю…", "Loading…")); }); }
+                        Some(Err(e)) => { ui.label(RichText::new(e.as_str()).color(BAD)); }
+                        Some(Ok((pls, albums))) => {
+                            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                                for (title, items, album) in [(l!("Плейлисты", "Playlists"), &*pls, false), (l!("Новые альбомы", "New albums"), &*albums, true)] {
+                                    if items.is_empty() { continue; }
+                                    ui.label(RichText::new(title).family(semi()).color(th().muted));
+                                    for it in items {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.set_width(330.0);
+                                                ui.add(egui::Label::new(RichText::new(&it.name).color(th().text)).truncate());
+                                                ui.label(RichText::new(if it.sub.is_empty() { lf!("{} трек(ов)", "{} track(s)", it.count) } else { format!("{} · {}", it.sub, lf!("{} трек(ов)", "{} track(s)", it.count)) }).color(th().muted).size(12.0));
+                                            });
+                                            let me = busy.as_deref() == Some(it.id.as_str());
+                                            if ui.add_enabled(busy.is_none(), pill_btn(if me { l!("Импорт…", "Importing…") } else { l!("Импорт", "Import") }, !me)).clicked() { acts.push(Act::SubsonicImport(it.id.clone(), album)); }
+                                        });
+                                    }
+                                    ui.add_space(6.0);
+                                }
+                                if pls.is_empty() && albums.is_empty() { ui.label(RichText::new(l!("На сервере нет плейлистов и альбомов", "The server has no playlists or albums")).color(th().muted)); }
+                            });
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if pill(ui, l!("Закрыть", "Close"), false).clicked() { close = true; } });
+                }
                 Modal::ImportUrl { url, into, busy, err } => {
                     ui.label(RichText::new(l!("Импорт по ссылке", "Import by link")).size(20.0).family(bold()));
                     ui.label(RichText::new(l!("Spotify (плейлист, альбом, трек), YouTube Music, YouTube, SoundCloud, Bandcamp — всё, что умеет yt-dlp.", "Spotify (playlist, album, track), YouTube Music, YouTube, SoundCloud, Bandcamp — anything yt-dlp supports.")).color(th().muted));
@@ -4402,6 +4484,29 @@ impl App {
                             }
                         });
                         ui.label(RichText::new(l!("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды", "Keys in the window: Space — pause · ←/→ — ±5 s · Ctrl+←/→ — track · ↑/↓ — volume · M — mute · L — like · Q — queue · S — shuffle · R — repeat · Ctrl+F — search · Ctrl+K — commands")).color(th().muted).size(12.0));
+                        section(ui, l!("Свой сервер с музыкой", "Own music server"));
+                        let srv = s.subsonic.clone();
+                        if srv.connected() {
+                            ui.label(RichText::new(lf!("Подключён: {} @ {}", "Connected: {} @ {}", srv.user, srv.url)).color(th().text));
+                            ui.horizontal(|ui| {
+                                if pill(ui, l!("Импорт с сервера…", "Import from the server…"), true).clicked() { acts.push(Act::SubsonicOpen); }
+                                if pill(ui, l!("Отключить", "Disconnect"), false).clicked() { acts.push(Act::Settings(json!({"subsonic": wavy_core::subsonic::Server::default()}))); }
+                            });
+                        } else {
+                            ui.label(RichText::new(l!("Navidrome, Jellyfin (с плагином Subsonic), Airsonic, Gonic — всё, что понимает Subsonic API. Пароль не сохраняется, только ключ из него.", "Navidrome, Jellyfin (with its Subsonic plugin), Airsonic, Gonic — anything that speaks the Subsonic API. The password isn't stored, only a key derived from it.")).color(th().muted).size(12.5));
+                            let f = &mut self.sub_form;
+                            ui.horizontal(|ui| { ui.label(l!("Адрес:", "Address:")); ui.add(egui::TextEdit::singleline(&mut f.0).hint_text("https://music.example.com").desired_width(300.0)); });
+                            ui.horizontal(|ui| {
+                                ui.label(l!("Логин:", "User:")); ui.add(egui::TextEdit::singleline(&mut f.1).desired_width(120.0));
+                                ui.label(l!("Пароль:", "Password:")); ui.add(egui::TextEdit::singleline(&mut f.2).password(true).desired_width(120.0));
+                            });
+                            let ok = !f.0.trim().is_empty() && !f.1.trim().is_empty() && !f.2.is_empty() && !f.3;
+                            if ui.add_enabled(ok, pill_btn(if f.3 { l!("Подключаюсь…", "Connecting…") } else { l!("Подключить", "Connect") }, true)).clicked() {
+                                f.3 = true;
+                                let (tx, c, url, user, pass) = (self.tx.clone(), ui.ctx().clone(), f.0.clone(), f.1.clone(), f.2.clone());
+                                std::thread::spawn(move || { let _ = tx.send(Bg::Subsonic(wavy_core::subsonic::connect(&url, &user, &pass))); c.request_repaint(); });
+                            }
+                        }
                         section(ui, l!("Папки с музыкой", "Music folders"));
                         ui.label(RichText::new(l!("Новые файлы в этих папках сами появляются в библиотеке (проверка раз в 5 минут). Удалённые из библиотеки треки обратно не добавляются.", "New files in these folders show up in the library on their own (checked every 5 minutes). Tracks you delete from the library aren't added back.")).color(th().muted).size(12.5));
                         for w in &s.watch_folders {
@@ -4771,6 +4876,18 @@ fn gone_from_youtube(err: &str) -> bool {
 /// Audio for a YouTube track: finished file from the cache → stream through rustypipe (plays from the first KB) → yt-dlp.
 fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
     let _ = std::fs::create_dir_all(cache);
+    // own music server: the original file, streamed into the cache (replays come from the cache)
+    if t.kind == "subsonic" {
+        let srv = wavy_core::subsonic::current().ok_or(l!("сервер с музыкой не подключён (Настройки → Свой сервер)", "the music server isn't connected (Settings → Own server)"))?;
+        let (song, suffix) = wavy_core::subsonic::parse_ref(t.url.as_deref().unwrap_or("")).ok_or("bad server track")?;
+        let path = cache.join(format!("{}.sub.{suffix}", wavy_core::sha16(t.id.as_bytes())));
+        if wavy_core::stream::is_complete(&path) { return Ok(AudioSrc::File(path)); }
+        let dl = wavy_core::stream::Download::start(wavy_core::subsonic::stream_url(&srv, song), path, None);
+        if dl.wait_for(200 * 1024, Duration::from_secs(30)) { return Ok(AudioSrc::Stream(dl)); }
+        let e = dl.error().unwrap_or_else(|| l!("сервер долго не отдаёт файл", "the server is slow to send the file").into());
+        dl.cancel();
+        return Err(e);
+    }
     let key = t.url.clone().unwrap_or_default();
     let path = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
     if wavy_core::stream::is_complete(&path) { return Ok(AudioSrc::File(path)); }

@@ -38,13 +38,13 @@ pub struct Summary {
 
 pub fn export(store: &Store) -> String {
     let lib = &store.lib;
-    let portable: Vec<Track> = lib.tracks.values().filter(|t| !t.is_local()).cloned().collect();
+    let portable: Vec<Track> = lib.tracks.values().filter(|t| !t.is_local() && t.kind != "subsonic").cloned().collect();
     let playlists = lib.playlists.iter().map(|p| ExportPlaylist {
         name: p.name.clone(),
         source: p.source.clone().filter(|s| s.starts_with("http")),
-        tracks: p.track_ids.iter().filter_map(|id| lib.tracks.get(id)).filter(|t| !t.is_local()).cloned().collect(),
+        tracks: p.track_ids.iter().filter_map(|id| lib.tracks.get(id)).filter(|t| !t.is_local() && t.kind != "subsonic").cloned().collect(),
     }).filter(|p| !p.tracks.is_empty()).collect();
-    let liked = lib.liked.iter().filter(|id| lib.tracks.get(*id).is_some_and(|t| !t.is_local())).cloned().collect();
+    let liked = lib.liked.iter().filter(|id| lib.tracks.get(*id).is_some_and(|t| !t.is_local() && t.kind != "subsonic")).cloned().collect();
     serde_json::to_string_pretty(&Export { wavy_export: 1, app: "desktop".into(), exported_at: now_ms(), playlists, tracks: portable, liked }).unwrap_or_default()
 }
 
@@ -57,12 +57,12 @@ pub fn import(store: &mut Store, text: &str) -> Result<Summary, String> {
     let all: Vec<Track> = e.tracks.iter().chain(e.playlists.iter().flat_map(|p| p.tracks.iter())).cloned().collect();
     let skipped_local = all.iter().filter(|t| t.is_local()).count();
     let mut seen = std::collections::HashSet::new();
-    let portable: Vec<Track> = all.into_iter().filter(|t| !t.is_local() && seen.insert(t.id.clone())).collect();
+    let portable: Vec<Track> = all.into_iter().filter(|t| !t.is_local() && t.kind != "subsonic" && seen.insert(t.id.clone())).collect();
     let n = portable.len();
     store.add_tracks(portable);
     let (mut created, mut updated) = (0, 0);
     for p in &e.playlists {
-        let ids: Vec<String> = p.tracks.iter().filter(|t| !t.is_local()).map(|t| t.id.clone()).collect();
+        let ids: Vec<String> = p.tracks.iter().filter(|t| !t.is_local() && t.kind != "subsonic").map(|t| t.id.clone()).collect();
         let existing = store.lib.playlists.iter()
             .find(|x| (p.source.is_some() && x.source == p.source) || x.name == p.name)
             .map(|x| x.id.clone());

@@ -50,6 +50,8 @@ Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` t
   - `shazam.rs`: audio fingerprint.
   - Integrations: Twitch, Discord, Last.fm, Shikimori, AniSkip, LRCLIB, AnimeThemes.
   - Embedded HTTP servers: `overlay.rs` (OBS overlay, port 3737, SSE; also the addon API under `/api/v1`, token required) and `wifisync.rs` (phone sync and remote, port 3738, PIN).
+  - `radio.rs`: internet radio (Icecast/SHOUTcast, `.pls`/`.m3u`): a thread buffers the stream and strips ICY titles. `subsonic.rs`: own music server (Navidrome, Jellyfin…) through the Subsonic API; only a salted token is stored, never the password.
+  - Track kinds: `local`, `youtube`, `stream` (other yt-dlp sites), `radio` (url = station link, duration 0), `subsonic` (url = `subsonic:<song id>.<suffix>`; not exported to the phone, which has no server credentials).
   - `addons.rs`: addons are separate processes started from `data_dir/addons/<id>/addon.json`; they get `WAVY_API`/`WAVY_TOKEN` and die with Wavy (job object / `PR_SET_PDEATHSIG`). The API is documented in `docs/addons.md`; keep it backward compatible (addons are written by other people), and add new commands to `API_COMMANDS` and to `api_tick` in `main.rs`.
 - **`native`** is the executable:
   - `main.rs` is very large and holds the whole egui app.

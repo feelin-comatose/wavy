@@ -26,6 +26,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 - Playlists, queue, shuffle, repeat (off / all / one), "play next", context menu. The queue can be saved as a playlist in one click.
 - **Undo**: deleting a playlist, tracks or an anime title shows an "Undo" button for a few seconds (or press `Ctrl+Z`).
 - **Internet radio**: paste a station link (Icecast/SHOUTcast stream, or a `.pls`/`.m3u` file) into "By link". Stations go into a "Radio" playlist; the current song shows in the player, and a dropped connection reconnects by itself. Stations sync to the phone too.
+- **Your own music server**: Navidrome, Jellyfin (Subsonic plugin), Airsonic, Gonic and other Subsonic-API servers. Settings → Own music server: sign in, then import its playlists and albums; songs stream in their original quality and are cached for replays. Only a key derived from your password is stored.
 - **Music folders**: Settings → Music folders. New files in these folders show up in the library on their own (checked every 5 minutes); tracks you delete aren't added back.
 - **Video**: click the track block at the bottom to show the video instead of the list; click again to close it. Double-click or the corner button for full screen (`Esc` to exit).
   - YouTube tracks: the music video (H.264 up to 720p) downloads the first time you open it and plays in sync with the audio.

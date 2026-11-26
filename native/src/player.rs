@@ -88,7 +88,9 @@ impl Audio {
         self.loaded = false;
         self.volume = volume;
         let reader = dl.reader().map_err(|e| e.to_string())?;
-        let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint("m4a")
+        // format hint from the cache file name: YouTube streams are m4a, server songs keep their own format (flac, mp3…)
+        let hint = dl.path.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
+        let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint(&hint)
             .build().map_err(|e| lf!("не удалось декодировать поток: {e}", "couldn't decode the stream: {e}"))?;
         self.duration = 0.0; // the stream's duration is unknown — take it from the track
         p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
