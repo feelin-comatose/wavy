@@ -12,6 +12,8 @@ data class Anime(
     val shikiId: Long? = null,
     val name: String = "",
     val russian: String = "",
+    /** English title from Shikimori (shown when the interface is in English) */
+    val english: String = "",
     val kind: String = "",
     val episodesTotal: Int = 0,
     val score: Double = 0.0,
@@ -25,7 +27,8 @@ data class Anime(
     val matched: Boolean = false,
     val addedAt: Long = 0,
 ) {
-    val display get() = russian.ifEmpty { name.ifEmpty { title } }
+    /** In the interface language: Russian (or English) from Shikimori → original → from the files (as on the PC). */
+    val display get() = (if (Lang.en) english else russian).ifEmpty { name.ifEmpty { title } }
     val meta get() = listOfNotNull(
         kindRu(kind).takeIf { it.isNotEmpty() }, year.takeIf { it > 0 }?.toString(),
         episodesTotal.takeIf { it > 0 }?.let { L("$it эп.", "$it ep.") }, score.takeIf { it > 0 }?.let { "★ %.2f".format(it) },

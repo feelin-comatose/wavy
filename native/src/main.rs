@@ -54,6 +54,8 @@ enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
+    /// AniList token checked: (token, user name) or an error
+    AniList(Result<(String, String), String>),
     /// ListenBrainz token checked: (token, user name) or an error
     ListenBrainz(Result<(String, String), String>),
     /// internet radio connected (or not): (load token, track id, station + buffer)
@@ -351,6 +353,9 @@ struct App {
     lb_busy: bool,
     /// visualizer bars (computed only while they're on screen)
     spectrum: viz::Spectrum,
+    /// AniList: the token being pasted, and whether it's being checked
+    al_input: String,
+    al_busy: bool,
 }
 
 impl App {
@@ -413,7 +418,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -426,6 +431,7 @@ impl App {
         }
         app.restore_session(&ctx);
         app.start_addons();
+        app.backfill_english();
         // "Open with Wavy"
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
         if !args.is_empty() { app.apply(Act::ImportPaths(args, None), &ctx); }
@@ -1666,6 +1672,13 @@ impl App {
                         Err(e) => self.toast(e, true),
                     }
                 }
+                Bg::AniList(r) => {
+                    self.al_busy = false;
+                    match r {
+                        Ok((token, user)) => { self.al_input.clear(); self.apply(Act::Settings(json!({"anilist": {"token": token, "user": user, "enabled": true}})), ctx); self.toast(lf!("AniList: вход как {user}", "AniList: signed in as {user}"), false); }
+                        Err(e) => self.toast(e, true),
+                    }
+                }
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
                         match &mut self.modal {
@@ -2436,7 +2449,7 @@ impl App {
             return;
         }
         let q = self.filter.trim().to_lowercase();
-        let list: Vec<anime::Anime> = list.into_iter().filter(|a| q.is_empty() || format!("{} {} {}", a.russian, a.name, a.title).to_lowercase().contains(&q)).collect();
+        let list: Vec<anime::Anime> = list.into_iter().filter(|a| q.is_empty() || format!("{} {} {} {}", a.russian, a.english, a.name, a.title).to_lowercase().contains(&q)).collect();
         let (cw, ch) = (156.0, 234.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -3214,13 +3227,21 @@ impl App {
     }
 
     /// Mark on Shikimori how many episodes of the title were watched.
+    /// Watched episodes → Shikimori and/or AniList lists (whichever is signed in).
     fn shiki_sync(&mut self, anime_id: String, ctx: &egui::Context) {
-        let mut acc = self.settings().shiki;
-        if !acc.logged_in() { return; }
+        let st = self.settings();
+        let (mut acc, al) = (st.shiki, st.anilist);
+        if !acc.logged_in() && !al.ready() { return; }
         let Some(a) = self.store.lock().unwrap().anime(&anime_id).cloned() else { return };
         let Some(sid) = a.shiki_id else { return };
         let eps = { let s = self.store.lock().unwrap(); a.watched.iter().filter_map(|w| s.lib.tracks.get(w).and_then(|t| t.episode)).fold(0f32, f32::max) as u32 };
         if eps == 0 { return; }
+        // AniList finds titles by MyAnimeList id — the same number as the Shikimori id
+        if al.ready() {
+            let total = a.episodes_total;
+            std::thread::spawn(move || { if let Err(e) = wavy_core::anilist::set_progress(&al, sid, eps, total) { wavy_core::log(&format!("anilist: {e}")); } });
+        }
+        if !acc.logged_in() { return; }
         let (tx, c) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let r = wavy_core::shikimori::set_progress(&mut acc, sid, eps, a.episodes_total).map(|_| acc);
@@ -3428,6 +3449,22 @@ impl App {
         let mut seen = HashSet::new();
         let ids: Vec<String> = self.queue.iter().filter(|id| seen.insert(id.as_str())).cloned().collect();
         Act::Modal(Modal::NewPlaylist { name: lf!("Очередь {}", "Queue {}", fmt_date(wavy_core::now_ms())), ids })
+    }
+
+    /// Titles matched on Shikimori before English titles were stored: fetch them once, in one request.
+    fn backfill_english(&self) {
+        let ids: Vec<u64> = self.store.lock().unwrap().lib.anime.iter().filter(|a| a.matched && !a.en_checked).filter_map(|a| a.shiki_id).take(50).collect();
+        if ids.is_empty() { return; }
+        let store = self.store.clone();
+        std::thread::spawn(move || {
+            let Ok(list) = wavy_core::shikimori::by_ids(&ids) else { return };
+            let mut s = store.lock().unwrap();
+            for a in s.lib.anime.iter_mut().filter(|a| a.shiki_id.is_some_and(|i| ids.contains(&i))) {
+                if let Some(x) = list.iter().find(|x| Some(x.id) == a.shiki_id) { a.english = x.english.clone(); }
+                a.en_checked = true;
+            }
+            s.save();
+        });
     }
 
     /// Scan the addons folder and start the enabled ones that aren't running.
@@ -4253,6 +4290,32 @@ impl App {
                                 if ui.add_enabled(!self.shiki_code.trim().is_empty() && !acc.client_secret.is_empty(), pill_btn(l!("Подтвердить", "Confirm"), true)).clicked() {
                                     let (mut acc, code, tx, c) = (acc.clone(), self.shiki_code.clone(), self.tx.clone(), ui.ctx().clone());
                                     std::thread::spawn(move || { let r = wavy_core::shikimori::login(&mut acc, &code).map(|_| acc); let _ = tx.send(Bg::Shiki(r, true)); c.request_repaint(); });
+                                }
+                            });
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(l!("AniList: отмечать просмотренные серии и там", "AniList: mark watched episodes there too")).family(semi()));
+                        let al = s.anilist.clone();
+                        if !al.token.is_empty() {
+                            ui.horizontal(|ui| {
+                                let mut on = al.enabled;
+                                if ui.checkbox(&mut on, lf!("Отмечать в AniList ({})", "Mark on AniList ({})", al.user)).changed() { acts.push(Act::Settings(json!({"anilist": {"enabled": on}}))); }
+                                if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::Settings(json!({"anilist": {"token": "", "user": "", "enabled": false}}))); }
+                            });
+                        } else {
+                            ui.label(RichText::new(l!("1) На anilist.co/settings/developer создай клиент: название Wavy, Redirect URL — https://anilist.co/api/v2/oauth/pin. 2) Вставь сюда его Client ID. 3) Нажми «Войти», разреши доступ и вставь токен со страницы.", "1) At anilist.co/settings/developer create a client: name Wavy, Redirect URL — https://anilist.co/api/v2/oauth/pin. 2) Paste its Client ID here. 3) Click “Sign in”, allow access and paste the token from the page.")).color(th().muted).size(12.0));
+                            ui.horizontal(|ui| {
+                                ui.label("Client ID:");
+                                let mut id = al.client_id.clone();
+                                if ui.add(egui::TextEdit::singleline(&mut id).desired_width(120.0)).changed() { acts.push(Act::Settings(json!({"anilist": {"clientId": id.trim()}}))); }
+                                if ui.add_enabled(!al.client_id.is_empty(), pill_btn(l!("Войти", "Sign in"), false)).clicked() { open_url(&wavy_core::anilist::auth_url(&al.client_id)); }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut self.al_input).hint_text(l!("токен со страницы AniList", "token from the AniList page")).password(true).desired_width(260.0));
+                                if ui.add_enabled(self.al_input.trim().len() > 20 && !self.al_busy, pill_btn(if self.al_busy { l!("Проверяю…", "Checking…") } else { l!("Подключить", "Connect") }, true)).clicked() {
+                                    self.al_busy = true;
+                                    let (tx, c, token) = (self.tx.clone(), ui.ctx().clone(), self.al_input.trim().to_string());
+                                    std::thread::spawn(move || { let r = wavy_core::anilist::viewer(&token).map(|u| (token, u)); let _ = tx.send(Bg::AniList(r)); c.request_repaint(); });
                                 }
                             });
                         }

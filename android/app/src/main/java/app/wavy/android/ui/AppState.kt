@@ -185,8 +185,8 @@ object AppState {
                 if (a.episodes.size < 2) Store.deleteAnime(a.id) else Store.editAnime(a.id) { it.copy(matched = true) }
                 continue
             }
-            Store.editAnime(a.id) { it.copy(shikiId = hit.id, name = hit.name, russian = hit.russian, kind = hit.kind, episodesTotal = hit.episodes, score = hit.score, year = hit.year, poster = hit.poster, url = hit.url, matched = true) }
-            val title = hit.russian.ifEmpty { hit.name }
+            Store.editAnime(a.id) { it.copy(shikiId = hit.id, name = hit.name, russian = hit.russian, english = hit.english, kind = hit.kind, episodesTotal = hit.episodes, score = hit.score, year = hit.year, poster = hit.poster, url = hit.url, matched = true) }
+            val title = (if (app.wavy.android.data.Lang.en) hit.english else hit.russian).ifEmpty { hit.name }
             Store.addTracks(a.episodes.mapNotNull { Store.track(it) }.map { it.copy(artist = title, cover = hit.poster ?: it.cover) })
         }
     }

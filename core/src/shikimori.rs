@@ -36,10 +36,21 @@ fn query(q: &str, limit: u32) -> Value {
 }
 
 /// Search titles by name (any language).
-pub fn search(q: &str, limit: u32) -> Result<Vec<ShikiAnime>, String> {
+pub fn search(q: &str, limit: u32) -> Result<Vec<ShikiAnime>, String> { run(query(q, limit)) }
+
+/// Titles by Shikimori id (to fill in data added later, like English titles).
+pub fn by_ids(ids: &[u64]) -> Result<Vec<ShikiAnime>, String> {
+    let ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    run(json!({
+        "query": "query($ids: String, $limit: PositiveInt) { animes(ids: $ids, limit: $limit) { id name russian english japanese synonyms kind episodes score airedOn { year } poster { mainUrl originalUrl } url } }",
+        "variables": { "ids": ids, "limit": 50 }
+    }))
+}
+
+fn run(body: Value) -> Result<Vec<ShikiAnime>, String> {
     let mut last = String::new();
     for host in HOSTS {
-        let r = crate::http().post(&format!("{host}/api/graphql")).header("User-Agent", UA).header("Content-Type", "application/json").send(query(q, limit).to_string());
+        let r = crate::http().post(&format!("{host}/api/graphql")).header("User-Agent", UA).header("Content-Type", "application/json").send(body.to_string());
         match r {
             Ok(mut resp) => {
                 let v: Value = resp.body_mut().read_to_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(l!("Шикимори: непонятный ответ", "Shikimori: unexpected response"))?;
@@ -135,6 +146,8 @@ pub fn apply(a: &mut Anime, s: &ShikiAnime, covers: &Path) {
     a.shiki_id = Some(s.id);
     a.name = s.name.clone();
     a.russian = s.russian.clone();
+    a.english = s.english.clone();
+    a.en_checked = true;
     a.kind = s.kind.clone();
     a.episodes_total = s.episodes;
     a.score = s.score;

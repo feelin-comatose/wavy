@@ -43,12 +43,17 @@ pub struct Anime {
     pub added_at: u64,
     /// Shikimori has already been asked (even if nothing was found).
     pub matched: bool,
+    /// English title from Shikimori (shown when the interface is in English).
+    pub english: String,
+    /// The English title has been fetched (titles matched before it existed get it once).
+    pub en_checked: bool,
 }
 
 impl Anime {
-    /// Display name: Russian from Shikimori → original → from the files.
+    /// Display name in the interface language: Russian (or English) from Shikimori → original → from the files.
     pub fn display(&self) -> &str {
-        if !self.russian.is_empty() { &self.russian } else if !self.name.is_empty() { &self.name } else { &self.title }
+        let local = if crate::i18n::en() { &self.english } else { &self.russian };
+        if !local.is_empty() { local } else if !self.name.is_empty() { &self.name } else { &self.title }
     }
     /// A string like "ТВ · 2023 · 28 эп. · ★ 9.25".
     pub fn meta(&self) -> String {
