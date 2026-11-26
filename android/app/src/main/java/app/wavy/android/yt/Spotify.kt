@@ -142,7 +142,7 @@ object Spotify {
                 if (d > 30 && !(titleOk && artistOk)) score -= 20
             }
             for (bad in listOf("live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"))
-                if (ct.contains(bad) && !title.contains(bad)) score -= 8
+                if (ct.contains(bad) != title.contains(bad)) score -= 8 // и наоборот: в Spotify «(Live)», а у видео нет
             if (c.url?.contains("music.youtube") == true && c.album.isNotEmpty()) score += 3
             if (ct.contains("audio")) score += 2
             score -= i * 0.3

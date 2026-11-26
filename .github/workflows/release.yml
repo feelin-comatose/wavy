@@ -20,6 +20,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # без сети, меньше секунды; включает общие с Android примеры (testdata/parity)
+      - name: Tests
+        run: cargo test --release -p wavy-core
+
       - name: Build
         run: cargo build --release -p wavy-native
         env:

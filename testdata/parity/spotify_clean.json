@@ -1,0 +1,17 @@
+{
+  "about": "Название трека Spotify без хвостов: core/src/spotify.rs clean_title и yt/Spotify.kt cleanTitle.",
+  "cases": [
+    {"in": "Come Together - Remastered 2009", "out": "come together"},
+    {"in": "Stay (feat. Justin Bieber)", "out": "stay"},
+    {"in": "Song (Live)", "out": "song (live)"},
+    {"in": "Blinding Lights - Radio Edit", "out": "blinding lights"},
+    {"in": "Bad Guy [Explicit]", "out": "bad guy"},
+    {"in": "Yesterday - Mono", "out": "yesterday"},
+    {"in": "Shape of You (with Ed) [Bonus Track]", "out": "shape of you"},
+    {"in": "Numb - Live in Texas", "out": "numb - live in texas"},
+    {"in": "Hello (From the Movie)", "out": "hello"},
+    {"in": "  Many   Spaces  ", "out": "many spaces"},
+    {"in": "Love Story (Taylor's Version)", "out": "love story (taylor's version)"},
+    {"in": "Sicko Mode - Single Version", "out": "sicko mode"}
+  ]
+}
