@@ -3,6 +3,8 @@ package app.wavy.android.ui
 import app.wavy.android.data.L
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import app.wavy.android.data.Store
 import app.wavy.android.update.Updater
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     onFloating: (Boolean) -> Unit,
@@ -54,6 +57,14 @@ fun SettingsScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("ru" to "Русский", "en" to "English").forEach { (code, name) ->
                     Pill(name, primary = s.lang == code) { Store.settings { it.copy(lang = code) } }
+                }
+            }
+        }
+
+        Section(L("Тема", "Theme")) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Themes.list.forEach { (id, names, _) ->
+                    Pill(L(names.first, names.second), primary = s.theme == id) { Store.settings { it.copy(theme = id) } }
                 }
             }
         }

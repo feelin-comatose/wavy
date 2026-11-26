@@ -49,7 +49,7 @@ Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` t
   - Embedded HTTP servers: `overlay.rs` (OBS overlay, port 3737, SSE) and `wifisync.rs` (phone sync and remote, port 3738, PIN).
 - **`native`** is the executable:
   - `main.rs` is very large and holds the whole egui app.
-  - Also: `player.rs`/`fx.rs` (rodio audio and effects), `video.rs` (OpenH264, falls back to the downloaded ffmpeg), `tray.rs`, `hotkeys.rs`, `instance.rs`, `update.rs`, `export.rs`, `recap.rs`.
+  - Also: `theme.rs` (color themes, `th()`), `player.rs`/`fx.rs` (rodio audio and effects), `video.rs` (OpenH264, falls back to the downloaded ffmpeg), `tray.rs`, `hotkeys.rs`, `instance.rs`, `update.rs`, `export.rs`, `recap.rs`.
 - **UI/event pattern in `main.rs`** (immediate-mode egui):
   - UI code pushes `Act` values into `acts`.
   - `App::apply(Act, ctx)` executes them.
@@ -96,7 +96,7 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 
 ## Product constraints
 
-- Low memory is a core goal: the target is a weak PC, ~45 MB of its own memory while playing, and no browser engine. Heavy pieces (yt-dlp, deno, ffmpeg) download on first use.
-- UI is strictly black and white: no purple or colored accents, no gradients.
+- Keep memory modest, but it no longer has to be minimal: the app should stay comfortable on a weak PC. It used ~45 MB of its own memory while playing; up to roughly 100 MB is fine when a feature needs it. Still no browser engine, and heavy pieces (yt-dlp, deno, ffmpeg) download on first use.
+- Color themes are allowed. The default theme ("dark") is the original black-and-white look. Themes live in `native/src/theme.rs` and `android/.../ui/Theme.kt`; keep their ids and colors in sync. UI code must take colors from the palette (`th().accent`, `th().text`, … on desktop; `Accent`, `TextC`, … on Android) instead of hard-coding them, so every theme, including the light one, stays readable. Video, the in-game overlay and the recap image keep their own fixed colors.
 - License is GPL-3.0, required by rustypipe and NewPipeExtractor.
 - `CONTEXT.md` is a gitignored local notes file (history, what's verified, what's pending). Read it if it exists, but never commit it.

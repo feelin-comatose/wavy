@@ -11,6 +11,14 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import android.app.Activity
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,21 +29,55 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.SubcomposeAsyncImage
 
-// the same monochrome palette as on the PC
-val Bg = Color(0xFF0A0A0C)
-val Bg2 = Color(0xFF101013)
-val Bg3 = Color(0xFF18181C)
-val Line = Color(0xFF232329)
-val TextC = Color(0xFFE4E4E8)
-val Muted = Color(0xFF7A7A86)
-val Accent = Color(0xFFF4F4F5)
+/** Interface theme palette (same themes and colors as the PC version, native/src/theme.rs). */
+data class Pal(val dark: Boolean, val bg: Color, val bg2: Color, val bg3: Color, val line: Color, val text: Color, val muted: Color, val accent: Color)
+
+object Themes {
+    private fun pal(dark: Boolean, bg: Long, bg2: Long, bg3: Long, line: Long, text: Long, muted: Long, accent: Long) =
+        Pal(dark, Color(0xFF000000 or bg), Color(0xFF000000 or bg2), Color(0xFF000000 or bg3), Color(0xFF000000 or line), Color(0xFF000000 or text), Color(0xFF000000 or muted), Color(0xFF000000 or accent))
+
+    /** (id, Russian name, English name, palette); "dark" is the original black-and-white look */
+    val list = listOf(
+        Triple("dark", "Тёмная" to "Dark", pal(true, 0x0a0a0c, 0x101013, 0x18181c, 0x232329, 0xe4e4e8, 0x7a7a86, 0xf4f4f5)),
+        Triple("amoled", "Чёрная (AMOLED)" to "Black (AMOLED)", pal(true, 0x000000, 0x07070a, 0x101014, 0x1c1c22, 0xe8e8ec, 0x74747e, 0xffffff)),
+        Triple("light", "Светлая" to "Light", pal(false, 0xf7f7f8, 0xffffff, 0xececef, 0xdcdce1, 0x16161a, 0x6b6b76, 0x111114)),
+        Triple("ocean", "Океан" to "Ocean", pal(true, 0x0a0f1a, 0x0f1624, 0x162033, 0x22304a, 0xe2e8f0, 0x7487a3, 0x60a5fa)),
+        Triple("sakura", "Сакура" to "Sakura", pal(true, 0x140b10, 0x1b1016, 0x25161e, 0x37212d, 0xf5e6ee, 0xa07f90, 0xf472b6)),
+        Triple("forest", "Лес" to "Forest", pal(true, 0x0a110d, 0x0f1812, 0x15221a, 0x213426, 0xe3efe6, 0x7d9785, 0x4ade80)),
+        Triple("amber", "Янтарь" to "Amber", pal(true, 0x120e08, 0x18130b, 0x211a10, 0x33281a, 0xf3ece0, 0x9c8c74, 0xfbbf24)),
+    )
+
+    /** Current palette — a Compose state, so the UI recolors when it changes. */
+    var current by mutableStateOf(list[0].third)
+        private set
+
+    fun set(id: String) { current = (list.firstOrNull { it.first == id } ?: list[0]).third }
+}
+
+// Palette colors used across the UI; they follow the current theme.
+val Bg: Color get() = Themes.current.bg
+val Bg2: Color get() = Themes.current.bg2
+val Bg3: Color get() = Themes.current.bg3
+val Line: Color get() = Themes.current.line
+val TextC: Color get() = Themes.current.text
+val Muted: Color get() = Themes.current.muted
+val Accent: Color get() = Themes.current.accent
 val Bad = Color(0xFFF87171)
 val YtRed = Color(0xFFFF0033)
 
 @Composable
 fun WavyTheme(content: @Composable () -> Unit) {
+    val dark = Themes.current.dark
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    // status/navigation bar icons follow the app theme, not the system's dark mode
+    val view = LocalView.current
+    if (!view.isInEditMode) SideEffect {
+        (view.context as? Activity)?.window?.let { w ->
+            WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = !dark; isAppearanceLightNavigationBars = !dark }
+        }
+    }
     MaterialTheme(
-        colorScheme = darkColorScheme(
+        colorScheme = base.copy(
             primary = Accent, onPrimary = Bg, secondary = Muted, onSecondary = Bg,
             background = Bg, onBackground = TextC, surface = Bg2, onSurface = TextC,
             surfaceVariant = Bg3, onSurfaceVariant = Muted, outline = Line, outlineVariant = Line,

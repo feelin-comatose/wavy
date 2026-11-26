@@ -49,6 +49,8 @@ data class Settings(
     val syncPin: String = "",
     /** interface language: "ru" or "en" */
     val lang: String = "ru",
+    /** interface theme id (ui/Theme.kt): dark, amoled, light, ocean, sakura, forest, amber */
+    val theme: String = "dark",
 )
 
 /** Saved queue — to pick up where you left off after a restart. */

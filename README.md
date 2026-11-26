@@ -17,6 +17,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 ## Features
 
 - **Russian or English interface**: switch it at the very top of Settings; it applies instantly, without a restart (the tray menu updates after a restart). The phone app has the same setting: Settings → "Язык · Language".
+- **Themes**: dark (the default black and white), black (AMOLED), light, ocean, sakura, forest and amber, plus a custom accent color. Pick one in Settings → Theme; it applies instantly. The phone app has the same themes.
 - **Local music**: drag files, folders and `.m3u` playlists into the window or add them with the buttons. Tags and covers are read from the files. Supports mp3, flac, wav, ogg, m4a/aac, alac.
 - **Spotify**: paste a link to a playlist, album or track. The list comes from Spotify and each track is found on YouTube (6 at a time, matched by duration; title and artist are taken from Spotify). Without any setup you get up to 100 tracks per playlist; for bigger playlists add a Spotify API key (Client ID + Secret) in Settings.
 - **YouTube Music / YouTube / SoundCloud / Bandcamp**: import a playlist, album or video by link (or just press `Ctrl+V` in the window), search YouTube, keep a playlist in sync with its source. Under the hood it's **yt-dlp**: if it isn't installed, Wavy downloads it once by itself. Tracks are downloaded into a cache (up to ~1.5 GB) and the next one is fetched in advance.
@@ -68,6 +69,8 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
   - for OBS: Browser Source `http://127.0.0.1:3737/overlay`, size 500×160;
   - themes: **card**, **minimal** (just text with a shadow), **vinyl** (a spinning record). The theme is chosen in Settings and applies both to the window and to OBS. For OBS it can be overridden: `?theme=card|minimal|vinyl`. The overlay follows the app's language; `?lang=en` or `?lang=ru` overrides it.
 
+![Themes: light, ocean, sakura, forest](screenshots/themes.png)
+
 ![Overlay themes: card, minimal, vinyl](screenshots/overlay.png)
 
 ![Settings](screenshots/settings.png)
@@ -76,6 +79,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 
 A native app (Kotlin, Jetpack Compose, Media3) in the `android/` folder. Download `Wavy.apk` from [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
 
+- **Themes**: the same seven themes as on the PC (Settings → Theme).
 - **Background playback**: notification with buttons, lock screen, headphones, watches.
 - **Music and video on the phone**: the "From phone" button finds everything in storage.
 - **YouTube Music / YouTube / Spotify / SoundCloud**: search, import by link or through "Share" straight from their apps, music videos in sync with the audio. Under the hood it's NewPipeExtractor.

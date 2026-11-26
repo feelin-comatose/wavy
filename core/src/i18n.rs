@@ -32,6 +32,14 @@ pub fn tr(ru: &str) -> &str {
     if !en() { return ru; }
     match ru {
         "Ровно" => "Flat",
+        // interface themes (native/src/theme.rs)
+        "Тёмная" => "Dark",
+        "Чёрная (AMOLED)" => "Black (AMOLED)",
+        "Светлая" => "Light",
+        "Океан" => "Ocean",
+        "Сакура" => "Sakura",
+        "Лес" => "Forest",
+        "Янтарь" => "Amber",
         "Бас" => "Bass",
         "Вокал" => "Vocal",
         "Электроника" => "Electronic",

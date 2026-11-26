@@ -25,6 +25,7 @@ object Store {
         file = File(ctx.filesDir, "library.json")
         runCatching { _lib.value = json.decodeFromString(Library.serializer(), file.readText()) }
         Lang.set(_lib.value.settings.lang)
+        app.wavy.android.ui.Themes.set(_lib.value.settings.theme)
     }
 
     /** For tests: storage in a temporary folder. */
@@ -118,7 +119,7 @@ object Store {
     fun removeFromPlaylist(id: String, ids: Set<String>) = editPlaylist(id) { p -> p.copy(trackIds = p.trackIds.filterNot { it in ids }) }
     fun deletePlaylist(id: String) = edit { l -> l.copy(playlists = l.playlists.filterNot { it.id == id }) }
 
-    fun settings(f: (Settings) -> Settings) { edit { it.copy(settings = f(it.settings)) }; Lang.set(_lib.value.settings.lang) }
+    fun settings(f: (Settings) -> Settings) { edit { it.copy(settings = f(it.settings)) }; Lang.set(_lib.value.settings.lang); app.wavy.android.ui.Themes.set(_lib.value.settings.theme) }
     fun session(s: Session) = edit { it.copy(session = s) }
 
     /** Library tracks, newest first (anime episodes live in their own section). */
