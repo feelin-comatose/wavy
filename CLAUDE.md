@@ -11,7 +11,7 @@ Desktop (Cargo workspace: `core` + `native`):
 ```bash
 cargo build --release -p wavy-native          # binary: target/release/wavy-native(.exe)
 cargo test --release -p wavy-core             # core unit tests
-cargo test --release -p wavy-native           # native unit tests (also builds native/examples)
+cargo test --release -p wavy-native           # native unit tests (also builds native/examples, which include src/player.rs, fx.rs, viz.rs, video.rs via #[path]: a new module those files use must be added there too)
 cargo test --release -p wavy-core sync        # tests whose name contains "sync"
 cargo test --release -p wavy-core --test parity  # Rust side of testdata/parity (shared with Android)
 cargo check --release --target x86_64-pc-windows-gnu -p wavy-native   # compile-check Windows-only code (tray, hotkeys) from Linux
@@ -56,17 +56,18 @@ Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` t
   - `addons.rs`: addons are separate processes started from `data_dir/addons/<id>/addon.json`; they get `WAVY_API`/`WAVY_TOKEN` and die with Wavy (job object / `PR_SET_PDEATHSIG`). The API is documented in `docs/addons.md`; keep it backward compatible (addons are written by other people), and add new commands to `API_COMMANDS` and to `api_tick` in `main.rs`.
 - **`native`** is the executable:
   - `main.rs` is very large and holds the whole egui app.
-  - Also: `theme.rs` (color themes, `th()`), `player.rs`/`fx.rs` (rodio audio and effects), `video.rs` (OpenH264, falls back to the downloaded ffmpeg), `tray.rs`, `hotkeys.rs`, `instance.rs`, `update.rs`, `export.rs`, `recap.rs`.
+  - Also: `theme.rs` (color themes, `th()`), `player.rs`/`fx.rs` (rodio audio and effects; `fx` also feeds `viz.rs`, the spectrum visualizer), `video.rs` (OpenH264, falls back to the downloaded ffmpeg), `tray.rs`, `hotkeys.rs`, `instance.rs`, `update.rs`, `export.rs`, `recap.rs`.
 - **UI/event pattern in `main.rs`** (immediate-mode egui):
   - UI code pushes `Act` values into `acts`.
   - `App::apply(Act, ctx)` executes them.
   - Slow work runs on `std::thread` and reports back through the `Bg` enum over an mpsc channel. Messages are drained at the start of each frame in `tick`.
-  - Dialogs are the `Modal` enum, rendered in `modal_ui`.
+  - Dialogs are the `Modal` enum, rendered in `modal_ui`. egui keeps one popup open at a time: a ComboBox inside a popup closes it, so use inline lists there.
+  - An idle window doesn't redraw, so `tick` doesn't run: anything time-based (timers, periodic scans, waiting for API commands) must call `ctx.request_repaint_after(…)` or be woken by its thread.
   - To add a feature, usually add an `Act` variant, its `apply` arm, a `Bg` variant if async, and the UI.
 - **Settings** change via `Act::Settings(json!({...}))`. `Store::patch_settings` deep-merges camelCase JSON into `Settings` (serde `rename_all = "camelCase"`). Two consequences:
   - Merging never removes a key, so "reset" or "logout" must write explicit empty or default values.
   - New `Settings` fields need a default in `impl Default` (`#[serde(default)]`), so old `library.json` files still load.
-- **YouTube playback** (`fetch_audio` in `main.rs`) is a cascade: complete cache file → rustypipe direct URL → yt-dlp streaming into the cache → full download. Playback starts once ~200 KB are available. If a video is gone or 18+, `spotify::find_replacements` substitutes another video under the same track id, so playlists and likes survive. Browser cookies are optional.
+- **Playback** (`load_current` → `fetch_audio` in `main.rs`): radio connects separately (`Bg::RadioReady`), server (`subsonic`) tracks stream straight into the cache. YouTube is a cascade: complete cache file → rustypipe direct URL → yt-dlp streaming into the cache → full download. Playback starts once ~200 KB are available. If a video is gone or 18+, `spotify::find_replacements` substitutes another video under the same track id, so playlists and likes survive. Browser cookies are optional.
 - **rustypipe** runs on a single-worker shared tokio runtime (`youtube::rt()`). The YouTube Music account uses a separate rustypipe client with cookies (`YouTube.acc`), so the account never touches playback requests.
 - **Single instance:** the app binds `127.0.0.1:37391`. A second launch asks the first to show its window. A launch with `--restarted` (after an update) tells the old process to quit.
 
@@ -94,7 +95,7 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 | `data/Sync.kt` | `sync.rs` | `wavy-export.json` format |
 
 - **Shared test cases.** `testdata/parity/*.json` holds input → expected output for these algorithms. Both `core/tests/parity.rs` and `ParityLogicTest.kt` read them, so a change on one side that the other lacks fails a test. When you change one of these algorithms, update the JSON and both implementations.
-- **Formats.** `Track` JSON fields match between platforms (camelCase, `type` = local | youtube | stream).
+- **Formats.** `Track` JSON fields match between platforms (camelCase; `type` is one of the track kinds above). Android plays `radio` through a `wavyradio://` address resolved in `player/Media.kt` (never cached); `subsonic` tracks aren't synced to it.
 - **Exchange format.** `wavy-export.json` is the PC↔phone format, used both as a file and over Wi-Fi. Keep it backward compatible: unknown fields are ignored on both sides, and new fields need defaults.
 - **Layout:**
   - `ui/AppState.kt` holds background operations and cross-screen state.
@@ -104,6 +105,6 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 ## Product constraints
 
 - Keep memory modest, but it no longer has to be minimal: the app should stay comfortable on a weak PC. It used ~45 MB of its own memory while playing; up to roughly 100 MB is fine when a feature needs it. Measure with `scripts/mem-check.py` (private memory, like Task Manager; on a machine without a GPU the in-process software renderer adds ~8 MB). Baseline, 500 tracks with covers: ~58 MB playing music, ~118 MB playing 720p video, ~76 MB back on music afterwards (allocator retention, not a leak: it stays flat over `--cycles`). Still no browser engine, and heavy pieces (yt-dlp, deno, ffmpeg) download on first use.
-- Color themes are allowed. The default theme ("dark") is the original black-and-white look. Themes live in `native/src/theme.rs` and `android/.../ui/Theme.kt`; keep their ids and colors in sync. UI code must take colors from the palette (`th().accent`, `th().text`, … on desktop; `Accent`, `TextC`, … on Android) instead of hard-coding them, so every theme, including the light one, stays readable. Video, the in-game overlay and the recap image keep their own fixed colors.
+- Color themes are allowed. The default theme ("dark") is the original black-and-white look. Themes live in `native/src/theme.rs` and `android/.../ui/Theme.kt`; keep their ids and colors in sync. UI code must take colors from the palette (`th().accent`, `th().text`, … on desktop; `Accent`, `TextC`, … on Android) instead of hard-coding them, so every theme, including the light one, stays readable. Text or icons on an accent fill use `th().on_accent` / `OnAccent` (users can pick any accent color). Video, the in-game overlay and the recap image keep their own fixed colors.
 - License is GPL-3.0, required by rustypipe and NewPipeExtractor.
 - `CONTEXT.md` is a gitignored local notes file (history, what's verified, what's pending). Read it if it exists, but never commit it.
