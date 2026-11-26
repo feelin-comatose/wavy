@@ -200,6 +200,13 @@ fn ranked(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Vec<Track>
     let q = if main_artist.is_empty() { t.title.clone() } else { format!("{main_artist} {}", t.title) };
     let mut cands = candidates(yt, &q)?;
     cands.retain(|c| c.video_id.is_some() && c.video_id.as_deref() != exclude);
+    Ok(rank(t, cands))
+}
+
+/// Оценка кандидатов без сети: лучшие первыми, явный мусор отброшен.
+/// Та же формула, что `Spotify.match` на телефоне — проверяется общими примерами в testdata/parity.
+pub fn rank(t: &SpTrack, cands: Vec<Track>) -> Vec<Track> {
+    let main_artist = t.artists.split(',').next().unwrap_or("").trim().to_string();
     let title_l = clean_title(&t.title);
     let artist_l = main_artist.to_lowercase();
     let mut best = cands.into_iter().enumerate().map(|(i, c)| {
@@ -216,7 +223,8 @@ fn ranked(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Vec<Track>
             if d > 30.0 && !(title_ok && artist_ok) { score -= 20.0; }
         }
         for bad in ["live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"] {
-            if ct.contains(bad) && !title_l.contains(bad) { score -= 8.0; }
+            // и наоборот: в Spotify «(Live)»/«Remix», а у видео нет — это студийная версия
+            if ct.contains(bad) != title_l.contains(bad) { score -= 8.0; }
         }
         if c.url.as_deref().is_some_and(|u| u.contains("music.youtube")) && !c.album.is_empty() { score += 3.0; } // песня из каталога YT Music
         if ct.contains("official audio") || ct.contains("audio") { score += 2.0; }
@@ -224,7 +232,7 @@ fn ranked(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Vec<Track>
         (score, c)
     }).filter(|(s, _)| *s > -25.0).collect::<Vec<_>>();
     best.sort_by(|a, b| b.0.total_cmp(&a.0));
-    Ok(best.into_iter().map(|(_, c)| from_candidate(&c, t)).collect())
+    best.into_iter().map(|(_, c)| from_candidate(&c, t)).collect()
 }
 
 /// Трек библиотеки из найденного видео: название, исполнитель и альбом — из Spotify.

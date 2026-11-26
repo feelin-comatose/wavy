@@ -1,0 +1,14 @@
+{
+  "about": "Исполнитель и название для поиска текста: core/src/lyrics.rs clean и data/Lyrics.kt clean.",
+  "cases": [
+    {"artist": "LiSA Official YouTube", "clean": ["LiSA", "Gurenge"], "title": "LiSA - Gurenge (Official Music Video)", "type": "youtube"},
+    {"artist": "Ayase", "clean": ["YOASOBI", "アイドル"], "title": "YOASOBI「アイドル」Official Music Video", "type": "youtube"},
+    {"artist": "LiSA Official", "clean": ["LiSA", "Gurenge"], "title": "LiSA - Gurenge (Official Video)", "type": "youtube"},
+    {"artist": "LiSA - Topic", "clean": ["LiSA", "Gurenge"], "title": "Gurenge", "type": "youtube"},
+    {"artist": "Artist", "clean": ["Artist", "Song Name"], "title": "Song Name feat. Someone", "type": "youtube"},
+    {"artist": "米津玄師", "clean": ["Kenshi Yonezu", "Lemon"], "title": "Kenshi Yonezu – Lemon [MV]", "type": "youtube"},
+    {"artist": "Local Band", "clean": ["Local Band", "Intro - Outro"], "title": "Intro - Outro", "type": "local"},
+    {"artist": "X", "clean": ["X", "Quoted"], "title": "\"Quoted\" Official Video", "type": "youtube"},
+    {"artist": "Ado", "clean": ["Ado", "Usseewa"], "title": "Ado — Usseewa 【Official】", "type": "youtube"}
+  ]
+}

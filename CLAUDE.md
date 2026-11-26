@@ -13,6 +13,7 @@ cargo build --release -p wavy-native          # binary: target/release/wavy-nati
 cargo test --release -p wavy-core             # core unit tests
 cargo test --release -p wavy-native           # native unit tests (also builds native/examples)
 cargo test --release -p wavy-core sync        # tests whose name contains "sync"
+cargo test --release -p wavy-core --test parity  # Rust side of testdata/parity (shared with Android)
 cargo check --release --target x86_64-pc-windows-gnu -p wavy-native   # compile-check Windows-only code (tray, hotkeys) from Linux
 cargo run --release -p wavy-core --example stream_check -- <url>       # manual checks: core/examples/*, native/examples/*
 ```
@@ -30,7 +31,7 @@ Android (from `android/`):
 
 ## Release and auto-update
 
-Every push to `main` runs `.github/workflows/release.yml`. It builds `Wavy.exe` on Windows and `ffmpeg.exe` (from `scripts/build-ffmpeg.sh`). On Linux it runs `LogicTest` and builds a signed `Wavy.apk`. It then publishes GitHub release `build-<run_number>`. The build number is baked in: `WAVY_BUILD` env for Rust (`native/src/update.rs`) and `-PwavyBuild` for Android (`versionCode`). Both apps compare it with the latest release and update themselves, so a local build (no `WAVY_BUILD`) never auto-updates. Pushing to `main` therefore ships to users.
+Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` tests, then builds `Wavy.exe` on Windows and `ffmpeg.exe` (from `scripts/build-ffmpeg.sh`). On Linux it runs `LogicTest` and builds a signed `Wavy.apk`. It then publishes GitHub release `build-<run_number>`. The build number is baked in: `WAVY_BUILD` env for Rust (`native/src/update.rs`) and `-PwavyBuild` for Android (`versionCode`). Both apps compare it with the latest release and update themselves, so a local build (no `WAVY_BUILD`) never auto-updates. Pushing to `main` therefore ships to users.
 
 ## Desktop architecture
 
@@ -83,6 +84,7 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 | `data/Store.kt` `smart()` | `store.rs` | smart playlists |
 | `data/Sync.kt` | `sync.rs` | `wavy-export.json` format |
 
+- **Shared test cases.** `testdata/parity/*.json` holds input → expected output for these algorithms. Both `core/tests/parity.rs` and `ParityLogicTest.kt` read them, so a change on one side that the other lacks fails a test. When you change one of these algorithms, update the JSON and both implementations.
 - **Formats.** `Track` JSON fields match between platforms (camelCase, `type` = local | youtube | stream).
 - **Exchange format.** `wavy-export.json` is the PC↔phone format, used both as a file and over Wi-Fi. Keep it backward compatible: unknown fields are ignored on both sides, and new fields need defaults.
 - **Layout:**
