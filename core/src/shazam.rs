@@ -166,17 +166,17 @@ fn crc32(data: &[u8]) -> u32 {
     !c
 }
 
-/// Complex FFT (radix-2) for size 2^n.
-struct Fft { n: usize, cos: Vec<f32>, sin: Vec<f32>, rev: Vec<usize> }
+/// Complex FFT (radix-2) for size 2^n (also used by the player's visualizer).
+pub struct Fft { n: usize, cos: Vec<f32>, sin: Vec<f32>, rev: Vec<usize> }
 
 impl Fft {
-    fn new(n: usize) -> Self {
+    pub fn new(n: usize) -> Self {
         let bits = n.trailing_zeros();
         let rev = (0..n).map(|i| i.reverse_bits() >> (usize::BITS - bits)).collect();
         let (cos, sin) = (0..n / 2).map(|k| { let a = -2.0 * std::f64::consts::PI * k as f64 / n as f64; (a.cos() as f32, a.sin() as f32) }).unzip();
         Self { n, cos, sin, rev }
     }
-    fn run(&self, re: &mut [f32], im: &mut [f32]) {
+    pub fn run(&self, re: &mut [f32], im: &mut [f32]) {
         for i in 0..self.n { let j = self.rev[i]; if j > i { re.swap(i, j); im.swap(i, j); } }
         let mut len = 2;
         while len <= self.n {

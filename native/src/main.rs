@@ -16,6 +16,7 @@ mod hotkeys;
 mod recap;
 mod fx;
 mod theme;
+mod viz;
 use theme::p as th;
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -348,6 +349,8 @@ struct App {
     /// ListenBrainz: the token being typed, and whether it's being checked
     lb_input: String,
     lb_busy: bool,
+    /// visualizer bars (computed only while they're on screen)
+    spectrum: viz::Spectrum,
 }
 
 impl App {
@@ -410,7 +413,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32),
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -2611,11 +2614,22 @@ impl App {
                     Some(t) => {
                         self.cover(ui, &t, 56.0);
                         ui.add_space(8.0);
+                        let viz = s.visualizer && self.audio.loaded && !self.show_video;
                         ui.vertical(|ui| {
+                            if viz { ui.set_max_width((ui.available_width() - 60.0).max(40.0)); }
                             ui.add_space(8.0);
                             ui.add(egui::Label::new(RichText::new(&t.title).family(semi()).color(th().text)).truncate());
                             ui.add(egui::Label::new(RichText::new(if self.loading { l!("загрузка…", "loading…").to_string() } else if self.audio.buffering() { l!("буферизация…", "buffering…").to_string() } else { wavy_core::i18n::tr(&t.artist).to_string() }).color(th().muted).size(12.5)).truncate());
                         });
+                        if viz {
+                            ui.add_space(6.0);
+                            let (r, _) = ui.allocate_exact_size(Vec2::new(48.0, 56.0), Sense::hover());
+                            self.spectrum.update(&self.audio.fx.tap, self.audio.is_playing());
+                            // 16 bars from the 32 bands (pairs averaged)
+                            let small: Vec<f32> = self.spectrum.bars.chunks(2).map(|c| (c[0] + c[1]) / 2.0).collect();
+                            draw_bars(ui.painter(), Rect::from_min_size(r.left_center() - Vec2::new(0.0, 12.0), Vec2::new(48.0, 24.0)), &small, th().accent);
+                            if self.audio.is_playing() || self.spectrum.active() { ui.ctx().request_repaint_after(Duration::from_millis(33)); }
+                        }
                     }
                     None => { ui.vertical(|ui| { ui.add_space(10.0); ui.label(RichText::new(l!("Ничего не играет", "Nothing is playing")).family(semi())); ui.label(RichText::new(l!("Закинь музыку — и погнали", "Drop some music in — let's go")).color(th().muted).size(12.5)); }); }
                 }
@@ -2752,7 +2766,13 @@ impl App {
                 Some(tx) => { egui::Image::new(&tx).corner_radius(14).paint_at(ui, cr); }
                 None => { p.rect_filled(cr, 14, th().bg3); p.text(cr.center(), Align2::CENTER_CENTER, "\u{E340}", FontId::proportional(side * 0.35), th().muted); }
             }
-            let y = cr.bottom() + 16.0;
+            let mut y = cr.bottom() + 16.0;
+            if self.settings().visualizer && self.audio.loaded {
+                self.spectrum.update(&self.audio.fx.tap, self.audio.is_playing());
+                draw_bars(&p, Rect::from_min_size(Pos2::new(cr.left(), y), Vec2::new(side, 36.0)), &self.spectrum.bars, th().accent);
+                if self.audio.is_playing() || self.spectrum.active() { ui.ctx().request_repaint_after(Duration::from_millis(33)); }
+                y += 48.0;
+            }
             p.text(Pos2::new(area.center().x, y), Align2::CENTER_TOP, ellipsize(&t.title, area.width() - 40.0, 20.0), FontId::new(20.0, bold()), th().text);
             p.text(Pos2::new(area.center().x, y + 28.0), Align2::CENTER_TOP, ellipsize(wavy_core::i18n::tr(&t.artist), area.width() - 40.0, 14.0), FontId::proportional(14.0), th().muted);
             let note = if let Some(e) = err.as_ref().filter(|e| e.starts_with(wavy_core::ffmpeg::NEED)) {
@@ -4443,6 +4463,8 @@ impl App {
                 if ui.selectable_label(&s.audio_device == d, label).clicked() && &s.audio_device != d { acts.push(Act::Settings(json!({"audioDevice": d}))); }
             }
         });
+        let mut v = s.visualizer;
+        if ui.checkbox(&mut v, l!("Визуализатор (полоски спектра в плеере)", "Visualizer (spectrum bars in the player)")).changed() { acts.push(Act::Settings(json!({"visualizer": v}))); }
         ui.add_space(6.0);
         ui.label(RichText::new(l!("Скорость", "Speed")).family(semi()));
         ui.horizontal(|ui| {
@@ -5089,6 +5111,18 @@ fn main() -> eframe::Result {
         app.instance = Some(instance::listen(listener, move || c.request_repaint()));
         Ok(Box::new(app))
     }))
+}
+
+/// Spectrum bars (0..1) bottom-aligned in `r`, with a 1 px minimum so silence still shows a baseline.
+fn draw_bars(p: &egui::Painter, r: Rect, bars: &[f32], color: Color32) {
+    if bars.is_empty() { return; }
+    let gap = 2.0;
+    let w = ((r.width() - gap * (bars.len() as f32 - 1.0)) / bars.len() as f32).max(1.0);
+    for (i, b) in bars.iter().enumerate() {
+        let h = (r.height() * b).max(1.0);
+        let x = r.left() + i as f32 * (w + gap);
+        p.rect_filled(Rect::from_min_max(Pos2::new(x, r.bottom() - h), Pos2::new(x + w, r.bottom())), 1, color);
+    }
 }
 
 /// Duration column: "3:24", or "live" for a radio station.

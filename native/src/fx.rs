@@ -28,6 +28,8 @@ impl Default for Settings {
 #[derive(Clone, Default)]
 pub struct Shared {
     settings: Arc<Mutex<(Settings, u64)>>,
+    /// the last played samples, for the visualizer
+    pub tap: crate::viz::Tap,
 }
 
 impl Shared {
@@ -86,6 +88,8 @@ pub struct Fx<S: Source> {
     frame: [f32; MAX_CH],
     /// ReplayGain from the file's tags (volume factor): with normalization on it replaces the adaptive gain
     replaygain: Option<f32>,
+    /// mono samples collected for the visualizer, handed over in batches (one lock per batch, not per sample)
+    tap_buf: Vec<f32>,
 }
 
 impl<S: Source> Fx<S> {
@@ -93,7 +97,7 @@ impl<S: Source> Fx<S> {
         let (settings, version) = shared.snapshot();
         let mut fx = Self {
             inner, shared, pos, version: u64::MAX, settings, ch: 2, rate: 44100, left: 0, frame_i: 0,
-            filters: Vec::new(), state: Vec::new(), ms: 0.0, gain: 1.0, heard: 0.0, secs: 0.0, frame: [0.0; MAX_CH], replaygain: None,
+            filters: Vec::new(), state: Vec::new(), ms: 0.0, gain: 1.0, heard: 0.0, secs: 0.0, frame: [0.0; MAX_CH], replaygain: None, tap_buf: Vec::with_capacity(crate::viz::BATCH),
         };
         fx.version = version.wrapping_sub(1);
         fx.pos.set(0.0);
@@ -175,6 +179,8 @@ impl<S: Source> Fx<S> {
         }
         self.secs += dt as f64;
         if self.frame_i % 256 == 0 { self.pos.set(self.secs); }
+        self.tap_buf.push(self.frame[..ch].iter().sum::<f32>() / ch as f32);
+        if self.tap_buf.len() >= crate::viz::BATCH { self.shared.tap.push(&self.tap_buf, self.rate); self.tap_buf.clear(); }
         true
     }
 }
