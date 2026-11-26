@@ -326,6 +326,8 @@ struct App {
     addon_run: wavy_core::addons::Runner,
     api_token: String,
     api_pushed: Instant,
+    /// output devices for the Sound window (when they were listed, names)
+    devices: Option<(Instant, Vec<String>)>,
 }
 
 impl App {
@@ -368,7 +370,7 @@ impl App {
         let (media_tx, media_rx) = channel();
         let media = media::Media::new(cc, media_tx);
         let ff = wavy_core::ffmpeg::Ffmpeg::new(dir.join("bin"));
-        let mut audio = player::Audio::new();
+        let mut audio = player::Audio::new(&store.lib.settings.audio_device);
         audio.ffmpeg = ff.path();
         if let Some(e) = &audio.error { wavy_core::log(e); toast = Some((e.clone(), true, Instant::now())); }
         let mut app = Self {
@@ -388,7 +390,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -979,6 +981,12 @@ impl App {
                 let s = self.settings();
                 wavy_core::i18n::set(&s.lang);
                 if theme::set(&s.theme, &s.accent) { apply_theme(ctx); }
+                // another output device: reopen the current track there, at the same place
+                if patch.get("audioDevice").is_some() {
+                    let (pos, playing) = (self.audio.position(), self.audio.is_playing());
+                    self.audio.set_device(&s.audio_device);
+                    if let Some(t) = self.current.clone() { self.resume = Some((t.id, pos, playing)); self.load_current(ctx); }
+                }
                 if let Some((t, _)) = &self.tray { t.relabel(); }
                 // the cookie source changed — the account reconnects with the new ones
                 if patch.get("ytCookies").is_some() && patch.get("ytAccount").is_none() && s.yt_account { if s.yt_cookies.is_empty() { self.acc = AccState::Off; } else { self.connect_account(ctx); } }
@@ -4173,6 +4181,21 @@ impl App {
     /// In-game overlay: a separate transparent window on top of everything.
     fn sound_ui(&mut self, ui: &mut egui::Ui, s: &wavy_core::store::Settings, acts: &mut Vec<Act>) {
         ui.set_width(330.0);
+        ui.label(RichText::new(l!("Вывод", "Output")).family(semi()));
+        // an inline list, not a ComboBox: egui keeps one popup open at a time, and a dropdown would close this window.
+        // Listing devices is slow on some systems, so it's refreshed every few seconds (headphones plugged in show up)
+        if self.devices.as_ref().is_none_or(|d| d.0.elapsed() > Duration::from_secs(3)) { self.devices = Some((Instant::now(), player::output_devices())); }
+        let devices = self.devices.as_ref().map(|d| d.1.clone()).unwrap_or_default();
+        let missing = !s.audio_device.is_empty() && !devices.contains(&s.audio_device);
+        // scrollable: Linux (ALSA) lists every plugin as a device, Windows only the real outputs
+        egui::ScrollArea::vertical().id_salt("devices").max_height(130.0).show(ui, |ui| {
+            if ui.selectable_label(s.audio_device.is_empty(), l!("Как в системе", "System default")).clicked() && !s.audio_device.is_empty() { acts.push(Act::Settings(json!({"audioDevice": ""}))); }
+            for d in devices.iter().chain(missing.then_some(&s.audio_device)) {
+                let label = if missing && d == &s.audio_device { lf!("{d} (не подключено — играет по умолчанию)", "{d} (not connected — using the default)") } else { d.clone() };
+                if ui.selectable_label(&s.audio_device == d, label).clicked() && &s.audio_device != d { acts.push(Act::Settings(json!({"audioDevice": d}))); }
+            }
+        });
+        ui.add_space(6.0);
         ui.label(RichText::new(l!("Скорость", "Speed")).family(semi()));
         ui.horizontal(|ui| {
             for (name, v) in [("Slowed", 0.85f32), (l!("Обычно", "Normal"), 1.0), ("Nightcore", 1.25)] {

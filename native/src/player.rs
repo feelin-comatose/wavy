@@ -21,18 +21,28 @@ pub struct Audio {
     /// crossfade: outgoing tracks (player, its volume, start, duration, their download) and the new one fading in
     fading: Vec<(rodio::Player, f32, std::time::Instant, f32, Option<wavy_core::stream::Download>)>,
     fade_in: Option<(std::time::Instant, f32)>,
+    /// chosen output device name (empty — the system default)
+    device: String,
+}
+
+/// Names of the output devices the system offers right now (for the picker in the Sound window).
+pub fn output_devices() -> Vec<String> {
+    use rodio::cpal::traits::HostTrait;
+    let mut v: Vec<String> = rodio::cpal::default_host().output_devices().map(|d| d.map(|d| d.to_string()).collect()).unwrap_or_default();
+    v.dedup();
+    v
 }
 
 impl Audio {
-    pub fn new() -> Self {
-        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, play_after: false, ffmpeg: None, fx: Default::default(), pos: Default::default(), fading: Vec::new(), fade_in: None };
+    pub fn new(device: &str) -> Self {
+        let mut a = Self { _sink: None, player: None, duration: 0.0, loaded: false, error: None, stream: None, volume: 1.0, play_after: false, ffmpeg: None, fx: Default::default(), pos: Default::default(), fading: Vec::new(), fade_in: None, device: device.to_string() };
         a.open();
         a
     }
 
     /// Open the output device (again, if there wasn't one at startup).
     fn open(&mut self) {
-        match rodio::DeviceSinkBuilder::open_default_sink() {
+        match self.open_chosen().unwrap_or_else(rodio::DeviceSinkBuilder::open_default_sink) {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
                 self.player = Some(rodio::Player::connect_new(sink.mixer()));
@@ -41,6 +51,29 @@ impl Audio {
             }
             Err(e) => self.error = Some(lf!("Нет устройства вывода звука: {e}", "No audio output device: {e}")),
         }
+    }
+
+    /// The chosen device, if it's set and connected; None → use the default (e.g. headphones unplugged).
+    fn open_chosen(&self) -> Option<Result<rodio::MixerDeviceSink, rodio::stream::DeviceSinkError>> {
+        use rodio::cpal::traits::HostTrait;
+        if self.device.is_empty() { return None; }
+        let dev = rodio::cpal::default_host().output_devices().ok()?.find(|d| d.to_string() == self.device);
+        if dev.is_none() { wavy_core::log(&format!("устройство «{}» не найдено — играю в устройство по умолчанию", self.device)); }
+        let r = rodio::DeviceSinkBuilder::from_device(dev?).and_then(|b| b.open_sink_or_fallback());
+        if let Err(e) = &r { wavy_core::log(&format!("устройство «{}» не открылось: {e}", self.device)); }
+        r.ok().map(Ok)
+    }
+
+    /// Switch the output device ("" — system default). Playback stops; the app reloads the track
+    /// at the same position, and the device is opened on that load.
+    pub fn set_device(&mut self, name: &str) {
+        if self.device == name { return; }
+        self.device = name.to_string();
+        self.stop();
+        for (p, ..) in self.fading.drain(..) { p.stop(); }
+        self.fade_in = None;
+        self.player = None;
+        self._sink = None;
     }
 
     /// Whether there's somewhere to output audio.
