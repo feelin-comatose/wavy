@@ -33,6 +33,8 @@ Android (from `android/`):
 
 Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` tests, then builds `Wavy.exe` on Windows and `ffmpeg.exe` (from `scripts/build-ffmpeg.sh`). On Linux it runs `LogicTest` and builds a signed `Wavy.apk`. It then publishes GitHub release `build-<run_number>`. The build number is baked in: `WAVY_BUILD` env for Rust (`native/src/update.rs`) and `-PwavyBuild` for Android (`versionCode`). Both apps compare it with the latest release and update themselves, so a local build (no `WAVY_BUILD`) never auto-updates. Pushing to `main` therefore ships to users.
 
+**Git workflow:** commit and push straight to `main`. Don't create feature branches or pull requests, even if the session setup assigns a development branch; the owner wants every change on `main`. Since each push ships a release, run the relevant tests before pushing.
+
 ## Desktop architecture
 
 - **`core`** is a GUI-free library holding all logic:
