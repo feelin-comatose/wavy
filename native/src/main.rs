@@ -19,7 +19,7 @@ mod theme;
 mod viz;
 use theme::p as th;
 
-use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align, Align2, Color32, ColorImage, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use egui_extras::{Column, TableBuilder};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use serde_json::json;
@@ -54,6 +54,8 @@ enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
+    /// background picture decoded (None — no picture or it failed to load)
+    Background(Option<ColorImage>),
     /// own music server: signed in (or not); its playlists and albums for the import dialog
     Subsonic(Result<wavy_core::subsonic::Server, String>),
     SubsonicLists(Result<(Vec<wavy_core::subsonic::Item>, Vec<wavy_core::subsonic::Item>), String>),
@@ -149,6 +151,8 @@ enum PickTarget {
 }
 
 enum Act {
+    /// own background picture: choose one (dialog), remove it
+    BackgroundPick, BackgroundClear,
     Play(Vec<String>, usize, bool),
     TogglePlay, Next, Prev, Seek(f64), Volume(f32), SaveVolume, Shuffle, Repeat,
     /// addons: enable/disable, restart, rescan the folder
@@ -367,6 +371,8 @@ struct App {
     sub_form: (String, String, String, bool),
     /// romaji for the shown lyrics: (track id, one per synced line, for plain lyrics the whole text)
     romaji: Option<(String, Vec<Option<String>>, String)>,
+    /// own background picture behind the panels (None — plain theme colors)
+    bg_tex: Option<TextureHandle>,
 }
 
 impl App {
@@ -430,7 +436,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(), romaji: None,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(), romaji: None, bg_tex: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -442,12 +448,24 @@ impl App {
             if s.last_build != Some(cur) { app.store.lock().unwrap().patch_settings(&json!({"lastBuild": cur})); }
         }
         app.restore_session(&ctx);
+        app.load_background(&ctx);
         app.start_addons();
         app.backfill_english();
         // "Open with Wavy"
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
         if !args.is_empty() { app.apply(Act::ImportPaths(args, None), &ctx); }
         app
+    }
+
+    /// Decode the background picture from settings on a thread (blurred if asked); `Bg::Background` brings it back.
+    fn load_background(&mut self, ctx: &egui::Context) {
+        let s = self.settings();
+        if s.background.is_empty() { self.bg_tex = None; return; }
+        let (tx, c, path, blur) = (self.tx.clone(), ctx.clone(), PathBuf::from(&s.background), s.background_blur);
+        std::thread::Builder::new().name("background".into()).spawn(move || {
+            let _ = tx.send(Bg::Background(background_image(&path, blur)));
+            c.request_repaint();
+        }).ok();
     }
 
     /// Episodes whose number wasn't recognized before (e.g. "Title_[01]_[AniLibria_TV]") — parse them again.
@@ -956,6 +974,28 @@ impl App {
                     c.request_repaint();
                 });
             }
+            Act::BackgroundPick => {
+                let Some(src) = rfd::FileDialog::new().set_title(l!("Картинка для фона", "Background picture")).add_filter(l!("Картинки", "Images"), &["jpg", "jpeg", "png", "webp"]).pick_file() else { return };
+                let (store, tx, c, old) = (self.store.clone(), self.tx.clone(), ctx.clone(), self.settings().background);
+                std::thread::spawn(move || {
+                    match background_prepare(&src, &wavy_core::data_dir()) {
+                        Ok(path) => {
+                            if !old.is_empty() && Path::new(&old) != path { let _ = std::fs::remove_file(&old); }
+                            let blur = { let mut s = store.lock().unwrap(); s.patch_settings(&json!({"background": path.to_string_lossy()})); s.lib.settings.background_blur };
+                            let _ = tx.send(Bg::Background(background_image(&path, blur)));
+                        }
+                        Err(e) => { let _ = tx.send(Bg::Status(lf!("Не вышло поставить фон: {e}", "Couldn't set the background: {e}"))); }
+                    }
+                    c.request_repaint();
+                });
+            }
+            Act::BackgroundClear => {
+                let old = self.settings().background;
+                if !old.is_empty() { let _ = std::fs::remove_file(&old); }
+                // settings merge, so "no picture" is an explicit empty value
+                self.store.lock().unwrap().patch_settings(&json!({"background": ""}));
+                self.bg_tex = None;
+            }
             Act::PlaylistCoverReset(id) => {
                 let mut s = self.store.lock().unwrap();
                 if let Some(old) = s.lib.playlists.iter_mut().find(|p| p.id == id).and_then(|p| p.cover.take()) { let _ = std::fs::remove_file(old); }
@@ -1101,6 +1141,7 @@ impl App {
                 let s = self.settings();
                 wavy_core::i18n::set(&s.lang);
                 if theme::set(&s.theme, &s.accent) { apply_theme(ctx); }
+                if patch.get("backgroundBlur").is_some() { self.load_background(ctx); }
                 if patch.get("subsonic").is_some() { wavy_core::subsonic::set_current(Some(s.subsonic.clone())); }
                 // another output device: reopen the current track there, at the same place
                 if patch.get("audioDevice").is_some() {
@@ -1550,6 +1591,10 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Bg::Status(s) => self.toast(s, false),
+                Bg::Background(img) => {
+                    // the picture may have been removed while it was decoding
+                    self.bg_tex = img.filter(|_| !self.settings().background.is_empty()).map(|i| ctx.load_texture("background", i, TextureOptions::LINEAR));
+                }
                 Bg::Lyrics(id, r) => if let Some((cur, slot)) = &mut self.lyrics { if *cur == id {
                     let synced = r.as_ref().ok().filter(|l| !l.synced.is_empty()).map(|l| json!(l.synced));
                     *slot = Some(r);
@@ -2066,18 +2111,29 @@ impl eframe::App for App {
             for a in acts { self.apply(a, &ctx); }
             return;
         }
-        egui::Panel::bottom("player").exact_size(84.0).frame(egui::Frame::new().fill(th().bg2).stroke(Stroke::new(1.0, th().line)).inner_margin(egui::Margin::symmetric(18, 10)))
+        // own background picture: drawn first, the panels on top of it are see-through
+        let (glass, glass_side) = match &self.bg_tex {
+            Some(tex) => {
+                let screen = ui.ctx().content_rect();
+                ui.painter().image(tex.id(), screen, cover_uv(tex.size_vec2(), screen.size()), Color32::WHITE);
+                let dim = self.settings().background_dim.clamp(0.3, 0.95);
+                (dim, (dim + 0.12).min(1.0))
+            }
+            None => (1.0, 1.0),
+        };
+        let see = |c: Color32, a: f32| if a >= 1.0 { c } else { Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (a * 255.0) as u8) };
+        egui::Panel::bottom("player").exact_size(84.0).frame(egui::Frame::new().fill(see(th().bg2, glass_side)).stroke(Stroke::new(1.0, th().line)).inner_margin(egui::Margin::symmetric(18, 10)))
             .show(ui, |ui| self.player_bar(ui, &mut acts));
-        egui::Panel::left("side").exact_size(232.0).resizable(false).frame(egui::Frame::new().fill(th().bg2).inner_margin(egui::Margin::symmetric(12, 16)))
+        egui::Panel::left("side").exact_size(232.0).resizable(false).frame(egui::Frame::new().fill(see(th().bg2, glass_side)).inner_margin(egui::Margin::symmetric(12, 16)))
             .show(ui, |ui| self.sidebar(ui, &mut acts));
         if self.show_lyrics {
-            egui::Panel::right("lyrics").exact_size(340.0).resizable(false).frame(egui::Frame::new().fill(th().bg2).inner_margin(14))
+            egui::Panel::right("lyrics").exact_size(340.0).resizable(false).frame(egui::Frame::new().fill(see(th().bg2, glass_side)).inner_margin(14))
                 .show(ui, |ui| self.lyrics_ui(ui, &mut acts));
         } else if self.show_queue {
-            egui::Panel::right("queue").exact_size(290.0).resizable(false).frame(egui::Frame::new().fill(th().bg2).inner_margin(12))
+            egui::Panel::right("queue").exact_size(290.0).resizable(false).frame(egui::Frame::new().fill(see(th().bg2, glass_side)).inner_margin(12))
                 .show(ui, |ui| self.queue_ui(ui, &mut acts));
         }
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(th().bg).inner_margin(egui::Margin { left: 28, right: 20, top: 24, bottom: 0 }))
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(see(th().bg, if self.show_video { 1.0 } else { glass })).inner_margin(egui::Margin { left: 28, right: 20, top: 24, bottom: 0 }))
             .show(ui, |ui| if self.show_video { self.video_view(ui, &mut acts) } else { self.main_view(ui, &mut acts) });
 
         self.modal_ui(&ctx, &mut acts);
@@ -4078,6 +4134,20 @@ impl App {
                             // settings merge, so "back to the theme's color" writes an explicit empty value
                             if !s.accent.is_empty() && ui.link(l!("сбросить", "reset")).clicked() { acts.push(Act::Settings(json!({"accent": ""}))); }
                         });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(l!("Фон", "Background")).color(th().text));
+                            if pill(ui, if s.background.is_empty() { l!("Выбрать картинку…", "Choose a picture…") } else { l!("Другая картинка…", "Another picture…") }, false).clicked() { acts.push(Act::BackgroundPick); }
+                            if !s.background.is_empty() && ui.link(l!("убрать", "remove")).clicked() { acts.push(Act::BackgroundClear); }
+                        });
+                        if !s.background.is_empty() {
+                            let mut dim = s.background_dim.clamp(0.3, 0.95);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(l!("Плотность панелей", "Panel opacity")).color(th().muted));
+                                if ui.add(egui::Slider::new(&mut dim, 0.3..=0.95).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0))).changed() { acts.push(Act::Settings(json!({"backgroundDim": dim}))); }
+                            });
+                            let mut blur = s.background_blur;
+                            if ui.checkbox(&mut blur, l!("Размыть картинку (текст читается легче)", "Blur the picture (text is easier to read)")).changed() { acts.push(Act::Settings(json!({"backgroundBlur": blur}))); }
+                        }
                         section(ui, "\u{E61A}  Discord Rich Presence");
                         let mut en = s.discord.enabled;
                         if ui.checkbox(&mut en, l!("Показывать, что я слушаю, в профиле Discord", "Show what I'm listening to in my Discord profile")).changed() { acts.push(Act::Settings(json!({"discord": {"enabled": en}}))); }
@@ -5275,6 +5345,36 @@ fn playlist_cover(src: &Path, covers: &Path, id: &str) -> Result<PathBuf, String
     Ok(path)
 }
 
+/// Background picture → a copy in `dir`, scaled down so it just covers a 1920×1080 screen (keeps memory small).
+fn background_prepare(src: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let img = image::open(src).map_err(|e| lf!("не открылась картинка: {e}", "couldn't open the image: {e}"))?;
+    let (w, h) = (img.width().max(1) as f32, img.height().max(1) as f32);
+    let k = (1920.0 / w).max(1080.0 / h);
+    let img = if k < 1.0 { img.resize_exact((w * k).round() as u32, (h * k).round() as u32, image::imageops::FilterType::Triangle) } else { img };
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("background_{}.jpg", wavy_core::now_ms()));
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode_image(&img.to_rgb8()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Decode the prepared background. Blurred, it's kept at a quarter size: the blur hides the lower resolution and it takes less memory.
+fn background_image(path: &Path, blur: bool) -> Option<ColorImage> {
+    let img = image::open(path).ok()?;
+    let img = if blur { img.resize(img.width() / 4 + 1, img.height() / 4 + 1, image::imageops::FilterType::Triangle).fast_blur(6.0) } else { img };
+    let img = img.to_rgba8();
+    Some(ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()))
+}
+
+/// Texture coordinates that fill `area` with an image of size `img`, cropping the overflow evenly (like CSS `cover`).
+fn cover_uv(img: Vec2, area: Vec2) -> Rect {
+    if img.x <= 0.0 || img.y <= 0.0 || area.x <= 0.0 || area.y <= 0.0 { return Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)); }
+    let (ia, aa) = (img.x / img.y, area.x / area.y);
+    if ia > aa { let w = aa / ia; Rect::from_min_max(Pos2::new((1.0 - w) / 2.0, 0.0), Pos2::new((1.0 + w) / 2.0, 1.0)) }
+    else { let h = ia / aa; Rect::from_min_max(Pos2::new(0.0, (1.0 - h) / 2.0), Pos2::new(1.0, (1.0 + h) / 2.0)) }
+}
+
 fn open_folder(dir: &Path) {
     #[cfg(windows)] { let _ = std::process::Command::new("explorer").arg(dir).spawn(); }
     #[cfg(target_os = "macos")] { let _ = std::process::Command::new("open").arg(dir).spawn(); }
@@ -5354,6 +5454,29 @@ fn fmt_bytes(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_cover_and_prepare() {
+        // wide picture on a 16:9 window: cropped left and right, centered
+        let uv = cover_uv(Vec2::new(3200.0, 1000.0), Vec2::new(1600.0, 900.0));
+        assert!((uv.min.y, uv.max.y) == (0.0, 1.0) && (uv.min.x - (1.0 - uv.max.x)).abs() < 1e-5 && uv.min.x > 0.2);
+        // tall picture: cropped top and bottom
+        let uv = cover_uv(Vec2::new(1000.0, 3000.0), Vec2::new(1600.0, 900.0));
+        assert!((uv.min.x, uv.max.x) == (0.0, 1.0) && uv.min.y > 0.3);
+        assert_eq!(cover_uv(Vec2::ZERO, Vec2::new(10.0, 10.0)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)));
+        // a big picture is scaled down to just cover 1920×1080; blurred it's decoded at a quarter size
+        let dir = std::env::temp_dir().join(format!("wavy-bg-{}", wavy_core::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("big.png");
+        image::RgbImage::from_pixel(4000, 1500, image::Rgb([200, 40, 90])).save(&src).unwrap();
+        let out = background_prepare(&src, &dir).unwrap();
+        let (w, h) = image::image_dimensions(&out).unwrap();
+        assert_eq!((w, h), (2880, 1080));
+        assert_eq!(background_image(&out, false).unwrap().size, [2880, 1080]);
+        assert_eq!(background_image(&out, true).unwrap().size, [721, 270]);
+        assert!(background_prepare(&dir.join("missing.png"), &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn age_errors() {

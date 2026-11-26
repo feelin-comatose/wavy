@@ -43,6 +43,17 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.wavy.android.data.Store
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.platform.LocalContext
+import android.os.Handler
+import android.os.Looper
+import java.io.File
 import app.wavy.android.update.Updater
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -86,6 +97,39 @@ fun SettingsScreen(
             var hex by remember(s.accent) { mutableStateOf(s.accent) }
             OutlinedTextField(hex, { v -> hex = v.take(7); if (Themes.parseHex(hex) != null) Store.settings { it.copy(accent = "#" + hex.trim().removePrefix("#").lowercase()) } },
                 label = { Text(L("Свой цвет: #rrggbb", "Custom color: #rrggbb")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(12.dp))
+            Text(L("Фон", "Background"), color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            val ctx = LocalContext.current
+            val pickBg = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                val old = s.background
+                Thread {
+                    // keep our own copy: the picked picture may be gone later, and the permission to read it expires
+                    val f = File(ctx.filesDir, "background_${System.currentTimeMillis()}.img")
+                    val ok = runCatching { ctx.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } } }.isSuccess
+                    Handler(Looper.getMainLooper()).post {
+                        if (ok) { if (old.isNotEmpty()) File(old).delete(); Store.settings { it.copy(background = f.path) } }
+                        else { f.delete(); AppState.say(L("Не вышло поставить фон", "Couldn't set the background")) }
+                    }
+                }.start()
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill(if (s.background.isEmpty()) L("Выбрать картинку", "Choose a picture") else L("Другая картинка", "Another picture"), primary = false) {
+                    pickBg.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }
+                if (s.background.isNotEmpty()) Pill(L("Убрать", "Remove"), primary = false) { File(s.background).delete(); Store.settings { it.copy(background = "") } }
+            }
+            if (s.background.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(L("Плотность экрана: ${(s.backgroundDim * 100).toInt()}%", "Screen opacity: ${(s.backgroundDim * 100).toInt()}%"), color = Muted, fontSize = 13.sp)
+                Slider(s.backgroundDim, { v -> Store.settings { it.copy(backgroundDim = v) } }, valueRange = 0.3f..0.95f,
+                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(s.backgroundBlur, { v -> Store.settings { it.copy(backgroundBlur = v) } }, colors = CheckboxDefaults.colors(checkedColor = Accent, checkmarkColor = OnAccent))
+                    Text(L("Размыть картинку", "Blur the picture"), color = TextC)
+                }
+            }
         }
 
         Section(L("Мини-плеер поверх приложений", "Mini player over apps")) {

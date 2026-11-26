@@ -34,6 +34,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.ui.draw.blur
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -181,9 +182,17 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(upd) { if (upd is AppState.Upd.Available) AppState.say(L("Вышла новая версия Wavy — Настройки → Обновления", "A new version of Wavy is out — Settings → Updates")) }
         BackHandler(full || openPlaylist != null || openAnime != null) { if (full) full = false else if (openAnime != null) openAnime = null else openPlaylist = null }
 
+        val bgPic by Store.lib.collectAsState()
+        val bgSet = bgPic.settings
         Box(Modifier.fillMaxSize().background(Bg)) {
+            // own background picture: the screen color goes over it, see-through
+            if (bgSet.background.isNotEmpty()) {
+                coil3.compose.AsyncImage(java.io.File(bgSet.background), null, contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().then(if (bgSet.backgroundBlur) Modifier.blur(24.dp) else Modifier))
+                Box(Modifier.fillMaxSize().background(Bg.copy(alpha = bgSet.backgroundDim.coerceIn(0.3f, 0.95f))))
+            }
             Scaffold(
-                containerColor = Bg,
+                containerColor = if (bgSet.background.isNotEmpty()) androidx.compose.ui.graphics.Color.Transparent else Bg,
                 snackbarHost = { SnackbarHost(snack) },
                 bottomBar = {
                     Column {

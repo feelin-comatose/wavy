@@ -43,6 +43,12 @@ pub const THEMES: &[(&str, &str, Pal)] = &[
     ("sakura", "Сакура", pal(true, 0x140b10, 0x1b1016, 0x25161e, 0x37212d, 0xf5e6ee, 0xa07f90, 0xf472b6, 0xf9a8d4, 0x2c1a24, 0x36202c, 0x422836, 0x3a2430)),
     ("forest", "Лес", pal(true, 0x0a110d, 0x0f1812, 0x15221a, 0x213426, 0xe3efe6, 0x7d9785, 0x4ade80, 0x86efac, 0x1a2b20, 0x213527, 0x294230, 0x22362a)),
     ("amber", "Янтарь", pal(true, 0x120e08, 0x18130b, 0x211a10, 0x33281a, 0xf3ece0, 0x9c8c74, 0xfbbf24, 0xfcd34d, 0x2a2114, 0x342918, 0x3f321d, 0x382c1b)),
+    // anime-inspired: sunset sky, neon city, shrine vermilion, mecha purple and lime, pastel
+    ("twilight", "Сумерки", pal(true, 0x0f0c1a, 0x15112a, 0x1e1838, 0x2d2550, 0xece6f7, 0x8f84ad, 0xfb923c, 0xfdba74, 0x241d42, 0x2b234e, 0x342a5c, 0x2c2450)),
+    ("neon", "Неон", pal(true, 0x0b0a14, 0x110f1d, 0x181528, 0x262140, 0xe8eaf7, 0x8682a8, 0x22d3ee, 0x67e8f9, 0x1f1b34, 0x27223f, 0x302a4c, 0x29243f)),
+    ("shrine", "Храм", pal(true, 0x120a09, 0x190e0c, 0x231412, 0x361f1b, 0xf5e7e3, 0xa08680, 0xf2553c, 0xf89a86, 0x2b1915, 0x351f1a, 0x402520, 0x38211c)),
+    ("mecha", "Меха", pal(true, 0x0e0a14, 0x140f1d, 0x1c1529, 0x2b203f, 0xece6f5, 0x8b7fa3, 0xa3e635, 0xbef264, 0x231a34, 0x2b203f, 0x34274b, 0x2d2240)),
+    ("pastel", "Пастель", pal(false, 0xfbf6fb, 0xffffff, 0xf3e9f4, 0xe6d6e8, 0x241a2b, 0x7c6a86, 0x9333ea, 0xa855f7, 0xeedff0, 0xe6d3e9, 0xdcc6e0, 0xe0cde4)),
 ];
 
 static CURRENT: RwLock<Pal> = RwLock::new(THEMES[0].2);
@@ -103,7 +109,7 @@ mod tests {
     #[test]
     fn presets_and_custom_accent() {
         assert_eq!(THEMES[0].0, "dark");
-        assert!(THEMES.iter().all(|t| t.2.dark != (t.0 == "light")));
+        assert!(THEMES.iter().all(|t| t.2.dark != matches!(t.0, "light" | "pastel")));
         // unknown theme falls back to dark
         assert_eq!(resolve("nope", "").bg, THEMES[0].2.bg);
         // custom accent: bright → dark text on it, dark → white text

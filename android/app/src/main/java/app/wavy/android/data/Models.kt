@@ -49,10 +49,16 @@ data class Settings(
     val syncPin: String = "",
     /** interface language: "ru" or "en" */
     val lang: String = "ru",
-    /** interface theme id (ui/Theme.kt): dark, amoled, light, ocean, sakura, forest, amber */
+    /** interface theme id (ui/Theme.kt): dark, amoled, light, ocean, sakura, forest, amber, twilight, neon, shrine, mecha, pastel */
     val theme: String = "dark",
     /** custom accent "#rrggbb" on top of the theme; "" — the theme's own */
     val accent: String = "",
+    /** own background picture behind the interface: a copy in filesDir; "" — none */
+    val background: String = "",
+    /** how solid the screen is over the background (0.3 — the picture shows through a lot, 0.95 — barely) */
+    val backgroundDim: Float = 0.75f,
+    /** blur the background picture (Android 12+) so text over it stays easy to read */
+    val backgroundBlur: Boolean = false,
 )
 
 /** Saved queue — to pick up where you left off after a restart. */
