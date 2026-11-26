@@ -85,7 +85,7 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 | Kotlin | Rust (`core/src/`) | What |
 | --- | --- | --- |
 | `yt/Spotify.kt` | `spotify.rs` | matching score, `cleanTitle` |
-| `data/Lyrics.kt` | `lyrics.rs` | lyrics fetch and parsing |
+| `data/Lyrics.kt` | `lyrics.rs` | lyrics fetch and parsing (desktop also reads a local `.lrc`/tag lyrics first; Android can't reach files next to a content:// song) |
 | `data/Anime.kt` | `anime.rs` | episode name parsing (tests mirror each other) |
 | `data/Store.kt` `smart()` | `store.rs` | smart playlists |
 | `data/Sync.kt` | `sync.rs` | `wavy-export.json` format |
