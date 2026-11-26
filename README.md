@@ -1,153 +1,164 @@
 # Wavy
 
-Лёгкий нативный музыкальный плеер на Rust (egui + rodio). Без браузерного движка: это один процесс, ~45 МБ своей памяти во время игры трека, exe около 13 МБ.
+A lightweight native music and anime player written in Rust (egui + rodio). No browser engine: it's a single process using about 45 MB of its own memory while a track plays, and the exe is around 13 MB.
 
 ![Wavy](screenshots/native.png)
 
-## Скачать
+| | |
+|---|---|
+| ![Playlist](screenshots/playlist.png) | ![Anime](screenshots/anime.png) |
+| ![Anime title](screenshots/anime-title.png) | ![Recap](screenshots/recap.png) |
 
-**[Wavy.exe — последняя сборка](https://github.com/feelin-comatose/wavy/releases/latest/download/Wavy.exe)** (Windows 10/11 x64, установка не нужна).
-Все сборки — во вкладке [Releases](https://github.com/feelin-comatose/wavy/releases). Exe собирается автоматически (GitHub Actions) при каждом обновлении кода.
+## Download
 
-## Возможности
+**[Wavy.exe — latest build](https://github.com/feelin-comatose/wavy/releases/latest/download/Wavy.exe)** (Windows 10/11 x64, no installation needed).
+All builds are on the [Releases](https://github.com/feelin-comatose/wavy/releases) page. The exe is built automatically (GitHub Actions) on every code update.
 
-- **Язык интерфейса — русский или английский** (English UI): переключается в самом верху настроек, сразу, без перезапуска (меню в трее — после перезапуска). На телефоне так же: Настройки → «Язык · Language».
-- **Локальная музыка**: файлы, папки и `.m3u` можно перетащить в окно или добавить кнопками. Теги и обложки читаются из файлов. Поддерживаются mp3, flac, wav, ogg, m4a/aac, alac.
-- **Spotify**: вставь ссылку на плейлист, альбом или трек. Список берётся из Spotify, каждый трек находится на YouTube (в 6 потоков, с подбором по длительности; название и исполнитель — из Spotify). Без настроек — до 100 треков из плейлиста; для больших плейлистов можно добавить ключ Spotify API (Client ID + Secret) в настройках.
-- **YouTube Music / YouTube / SoundCloud / Bandcamp**: импорт плейлиста, альбома или видео по ссылке (можно просто нажать `Ctrl+V` в окне), поиск по YouTube, синхронизация плейлиста с источником. Под капотом **yt-dlp**: если его нет в системе, он один раз скачивается сам. Трек скачивается в кэш (до ~1.5 ГБ), следующий подгружается заранее.
-  - Если видео удалили или оно стало 18+ (YouTube не отдаёт такие без входа), Wavy ищет этот же трек в другом видео (до трёх попыток) и запоминает замену. Чтобы играли и сами видео 18+, в настройках («YouTube 18+») можно указать куки: из Firefox (с входом в YouTube) или файл `cookies.txt`. Куки берутся только для таких видео. Chrome и Edge на Windows прячут куки, и достать их часто не выходит.
-- Плейлисты, очередь, shuffle, repeat (выкл / всё / один), «играть далее», контекстное меню.
-- **Видео**: клик по блоку с треком внизу открывает просмотр вместо списка, повторный клик закрывает его. Двойной клик или кнопка в углу — на весь экран (`Esc` — выйти).
-  - YouTube-треки: клип (H.264 до 720p) скачивается при первом открытии и идёт синхронно со звуком.
-  - Локальные видео: mp4/m4v/mov/mkv/webm добавляются в библиотеку как треки. H.264 показывает встроенный декодер. Для **H.265 (HEVC), 10-битного видео, VP9, AV1** и звука **Opus, AC3/E-AC3, DTS, TrueHD** Wavy один раз сам скачивает свой маленький ffmpeg (≈6 МБ, собирается в CI из `scripts/build-ffmpeg.sh`). Если видеокарта умеет формат (D3D11VA/DXVA2), декодирует она, иначе процессор. AV1 без поддержки видеокартой пока не показывается.
-  - Если у трека нет видео, показывается большая обложка. Декодер (OpenH264) встроен в exe, ничего не докачивается, а пока просмотр закрыт, видео не занимает память.
-- **Аниме**: отдельный раздел для серий с компьютера. Перетащи папку (или нажми «Папка»), и Wavy сам:
-  - поймёт из имён файлов (или папок) название и номер серии: `[SubsPlease] Sousou no Frieren - 01 (1080p).mkv`, `Title.S02E05.mkv`, `Тетрадь смерти/Серия 05.mkv` и т.п.;
-  - найдёт тайтл на **Шикимори** и возьмёт оттуда постер, русское название, год, тип и число серий. Если угадал не тот сезон, выбери нужный вручную («Другой тайтл»);
-  - запомнит, какие серии просмотрены и где ты остановился («Продолжить»), а следующая серия включится сама;
-  - покажет **субтитры**: встроенные в MKV (ASS/SSA/SRT) или внешние `.ass`/`.srt` рядом с серией или в подпапке (`Subs/`, `RUS Sub/`…). Оформление ASS упрощается до белого текста с обводкой, надписи `\an8` идут сверху;
-  - даст выбрать **озвучку** (звуковую дорожку) и субтитры прямо поверх видео. Выбор запоминается для всего тайтла.
-- **Экспорт в MP3**: кнопка «Скачать MP3» у плейлиста сохраняет его целиком в одну папку (`01. Исполнитель - Название.mp3`…), а пункт «Сохранить как MP3…» в меню трека сохраняет выделенные песни. В файлы записываются название, исполнитель, альбом и обложка (ID3v2.3). Песни с YouTube берутся из кэша или скачиваются, кодирует тот же маленький ffmpeg (в него встроен LAME). MP3-файлы копируются без перекодирования.
-- **Shazam**: кнопка «Что за песня?» над видео (или волна в плеере) узнаёт, что сейчас играет, например опенинг или эндинг, и добавляет трек в библиотеку и плейлист «Опенинги» (сам трек находится на YouTube). Работает с любыми файлами на компьютере. Распознавание тем же способом, что в SongRec: из 12 секунд звука строится отпечаток и уходит на сервер Shazam.
-- **Лайки и «Любимое»**: сердечко у трека и в плеере (`L`). Треки в плейлистах, «Любимом» и очереди переставляются мышкой.
-- **Сортировка**: как в плейлисте, «Часто слушаю», новые/старые, по названию, исполнителю, альбому. Своя картинка на обложку плейлиста, папки для плейлистов.
-- **Звук**: скорость (slowed / nightcore), эквалайзер на 10 полос с пресетами, выравнивание громкости, кроссфейд 1–12 с, таймер сна.
-- **Тексты песен** (`T`): синхронные из LRCLIB, текущая строка подсвечивается, клик по строке перематывает.
-- **Итоги**: прослушивания, минуты, топ треков и артистов за месяц, год или всё время. Плюс поиск дублей и правка названия, исполнителя, альбома и обложки трека.
-- **Радио по треку**: похожие песни из микса YouTube встают в очередь.
-- **Мини-плеер** поверх всех окон и **иконка в трее** (Windows). Крестик по желанию сворачивает в трей.
-- **Аниме, дополнительно**: кнопка «Пропустить опенинг» (время из AniSkip), по желанию пропуск сам; на эндинге «Следующая серия через 10 с»; просмотренные серии отмечаются в списке на Шикимори (нужно своё OAuth-приложение, инструкция в настройках). Кнопка «Опенинги и эндинги» собирает все OP/ED тайтла в плейлист (список с AnimeThemes или MyAnimeList, песни с YouTube). Скриншот кадра — кнопка «Кадр» или `P` (в «Изображения/Wavy»). Субтитры можно открыть из любого файла (`.ass`, `.srt`, `.vtt`).
-- **Для стрима**:
-  - чат Twitch: `!sr ссылка или название` — заказ, `!skip` — голосование за пропуск (модер и стример пропускают сразу), `!song` — что играет, `!queue` — что дальше. Заказ можно привязать к награде за баллы канала (награда «с текстом»). Чат читается анонимно; чтобы Wavy отвечал в чат, нужен вход по коду twitch.tv/activate (своё приложение на dev.twitch.tv, тип Public, инструкция в настройках);
-  - оверлей показывает, что дальше в очереди (с ником заказавшего), и строку текста песни в такт (`?queue=1&lyrics=1`);
-  - **пульт с телефона**: пауза, треки, перемотка, громкость и очередь по Wi-Fi (Android → Настройки → «Пульт ПК»);
-  - стили оверлея «компакт», «вертикальный», «только текст»; текущий трек в файл `now_playing.txt` для OBS.
-- **Глобальные горячие клавиши** (работают и в игре): пауза, треки, громкость, лайк, пропуск опенинга, мини-плеер, оверлей. По умолчанию `Ctrl+Alt+P/←/→/↑/↓/L/S/M`, переназначаются в настройках.
-- **Аккаунт YouTube Music** (Настройки → «Аккаунт YouTube Music»): кнопка «Войти через Google» открывает отдельное окно Chrome, Edge или Brave с чистым профилем; входишь как обычно, Wavy сам забирает куки и закрывает окно (пароль Wavy не видит). Можно и по кукам из Firefox или файла `cookies.txt`. После входа:
-  - **«Моя волна»** в боковой панели: бесконечное радио YouTube Music по твоим лайкам и истории, без того, что уже есть в библиотеке; очередь докручивается сама;
-  - **импорт лайков** (плейлист «Лайки YouTube Music») и **сохранённых плейлистов**, повторный импорт обновляет их.
-  Wavy — неофициальный клиент: риск блокировки аккаунта маленький, но не нулевой, надёжнее второй аккаунт.
-- **Умные плейлисты**: топ недели и месяца, «На повторе», «Забытое любимое» (лайки, которые не играли месяц), «Свежее», «Ни разу не слушал». Собираются сами; любой можно сохранить копией.
-- **Last.fm**: скробблинг и «сейчас слушает» (свой ключ API Last.fm, вход через страницу Last.fm).
-- **Итоги картинкой**: PNG 1080×1350 для соцсетей с часами музыки, топом треков и артистов.
-- **Резервные копии**: раз в день библиотека сохраняется в папку (14 последних копий), папку можно выбрать — на другом диске или в облаке. Восстановление — из настроек.
-- **Ctrl+K — команды**: вбиваешь «эквалайзер», «мини», название трека, плейлиста или аниме и жмёшь Enter.
-- **Кэш**: видно, сколько занимает; можно очистить или задать лимит.
-- **Что нового**: после автообновления показывается список изменений.
-- **Автообновление**: при запуске и раз в 6 часов плеер проверяет GitHub Releases, сам скачивает новую версию и предлагает перезапуститься. Выключается в Настройки → Обновления.
-- **Медиаклавиши** и системная плашка плеера: в Windows она появляется рядом с громкостью и показывает обложку; на Linux работает через MPRIS.
-- **Продолжение с того же места**: после перезапуска открывается тот же трек, та же очередь и та же позиция.
-- **Discord Rich Presence**: показывает «Слушает …», трек, исполнителя, обложку, полосу прогресса и кнопку «Открыть в YouTube Music».
-- **Оверлей**:
-  - окно поверх игр: `Ctrl+Shift+O` показать или скрыть, `Ctrl+Shift+L` закрепить (клики проходят насквозь) или двигать и менять размер. Работает в играх в режиме «оконный без рамки»;
-  - для OBS: Browser Source `http://127.0.0.1:3737/overlay`, размер 500×160;
-  - темы: **карточка**, **минимал** (только текст с тенью), **винил** (крутящаяся пластинка). Тема выбирается в настройках и действует и в окне, и в OBS. Для OBS её можно переопределить: `?theme=card|minimal|vinyl`.
+## Features
 
-![Оверлей «винил»](screenshots/overlay-vinyl.png)
+- **Russian or English interface**: switch it at the very top of Settings; it applies instantly, without a restart (the tray menu updates after a restart). The phone app has the same setting: Settings → "Язык · Language".
+- **Local music**: drag files, folders and `.m3u` playlists into the window or add them with the buttons. Tags and covers are read from the files. Supports mp3, flac, wav, ogg, m4a/aac, alac.
+- **Spotify**: paste a link to a playlist, album or track. The list comes from Spotify and each track is found on YouTube (6 at a time, matched by duration; title and artist are taken from Spotify). Without any setup you get up to 100 tracks per playlist; for bigger playlists add a Spotify API key (Client ID + Secret) in Settings.
+- **YouTube Music / YouTube / SoundCloud / Bandcamp**: import a playlist, album or video by link (or just press `Ctrl+V` in the window), search YouTube, keep a playlist in sync with its source. Under the hood it's **yt-dlp**: if it isn't installed, Wavy downloads it once by itself. Tracks are downloaded into a cache (up to ~1.5 GB) and the next one is fetched in advance.
+  - If a video is deleted or becomes 18+ (YouTube won't serve those without signing in), Wavy looks for the same track in another video (up to three attempts) and remembers the replacement. To play 18+ videos themselves, set cookies in Settings ("YouTube 18+"): from Firefox (signed in to YouTube) or a `cookies.txt` file. Cookies are used only for those videos. Chrome and Edge on Windows hide their cookies, so getting them often fails.
+- Playlists, queue, shuffle, repeat (off / all / one), "play next", context menu.
+- **Video**: click the track block at the bottom to show the video instead of the list; click again to close it. Double-click or the corner button for full screen (`Esc` to exit).
+  - YouTube tracks: the music video (H.264 up to 720p) downloads the first time you open it and plays in sync with the audio.
+  - Local videos: mp4/m4v/mov/mkv/webm are added to the library as tracks. H.264 is shown by the built-in decoder. For **H.265 (HEVC), 10-bit video, VP9, AV1** and **Opus, AC3/E-AC3, DTS, TrueHD** audio, Wavy downloads its own small ffmpeg once (≈6 MB, built in CI from `scripts/build-ffmpeg.sh`). If the graphics card supports the format (D3D11VA/DXVA2), it decodes; otherwise the CPU does. AV1 without GPU support isn't shown yet.
+  - Tracks without video show a large cover. The decoder (OpenH264) is built into the exe, nothing is downloaded, and while the view is closed the video takes no memory.
+- **Anime**: a separate section for episodes on your computer. Drop a folder in (or press "Folder") and Wavy will:
+  - work out the title and episode number from file (or folder) names: `[SubsPlease] Sousou no Frieren - 01 (1080p).mkv`, `Title.S02E05.mkv`, `Death Note/Episode 05.mkv` and so on;
+  - find the title on **Shikimori** and take the poster, Russian title, year, type and episode count from there. If it picked the wrong season, choose the right one by hand ("Another title");
+  - remember which episodes you've watched and where you stopped ("Continue"), and start the next episode on its own;
+  - show **subtitles**: embedded in MKV (ASS/SSA/SRT) or external `.ass`/`.srt` next to the episode or in a subfolder (`Subs/`, `RUS Sub/`…). ASS styling is simplified to white text with an outline; `\an8` lines go at the top;
+  - let you pick the **dub** (audio track) and subtitles right over the video. The choice is remembered for the whole title.
+- **Export to MP3**: the "Download MP3" button on a playlist saves all of it to one folder (`01. Artist - Title.mp3`…), and "Save as MP3…" in the track menu saves the selected songs. Title, artist, album and cover are written into the files (ID3v2.3). YouTube songs come from the cache or are downloaded, and the same small ffmpeg (with LAME built in) encodes them. MP3 files are copied without re-encoding.
+- **Shazam**: the "What's this song?" button above the video (or the wave in the player) recognises what's playing right now, an opening or ending for example, and adds the track to the library and the "Openings" playlist (the track itself is found on YouTube). Works with any file on your computer. Recognition works the same way as SongRec: a fingerprint is built from 12 seconds of audio and sent to the Shazam server.
+- **Likes and "Liked"**: the heart on a track and in the player (`L`). Tracks in playlists, "Liked" and the queue can be reordered with the mouse.
+- **Sorting**: playlist order, "Most played", newest/oldest, by title, artist, album. Your own picture as a playlist cover, folders for playlists.
+- **Sound**: speed (slowed / nightcore), 10-band equalizer with presets, volume normalisation, crossfade 1–12 s, sleep timer.
+- **Lyrics** (`T`): synced lyrics from LRCLIB; the current line is highlighted and clicking a line seeks to it.
+- **Recap**: plays, minutes, top tracks and artists for the month, year or all time. Plus a duplicate finder and editing of a track's title, artist, album and cover.
+- **Track radio**: similar songs from a YouTube mix are added to the queue.
+- **Mini player** on top of all windows and a **tray icon** (Windows). The close button can minimise to the tray if you want.
+- **Anime extras**: a "Skip opening" button (timings from AniSkip), optionally skipping automatically; "Next episode in 10 s" during the ending; watched episodes are marked in your Shikimori list (needs your own OAuth app; instructions are in Settings). The "Openings and endings" button collects every OP/ED of a title into a playlist (list from AnimeThemes or MyAnimeList, songs from YouTube). Frame screenshot: the "Frame" button or `P` (saved to "Pictures/Wavy"). Subtitles can be loaded from any file (`.ass`, `.srt`, `.vtt`).
+- **For streamers**:
+  - Twitch chat: `!sr link or title` to request a song, `!skip` to vote to skip (mods and the streamer skip instantly), `!song` for what's playing, `!queue` for what's next. Requests can be tied to a channel points reward (a reward "with text"). Chat is read anonymously; for Wavy to reply in chat, sign in with a code at twitch.tv/activate (your own app on dev.twitch.tv, Public type; instructions are in Settings);
+  - the overlay shows what's next in the queue (with the requester's name) and the current lyrics line in time (`?queue=1&lyrics=1`);
+  - **phone remote**: pause, tracks, seeking, volume and the queue over Wi-Fi (Android → Settings → "PC remote");
+  - overlay styles "compact", "vertical", "text only"; the current track goes to a `now_playing.txt` file for OBS.
+- **Global hotkeys** (they work in games too): pause, tracks, volume, like, skip opening, mini player, overlay. Defaults are `Ctrl+Alt+P/←/→/↑/↓/L/S/M`, and they can be reassigned in Settings.
+- **YouTube Music account** (Settings → "YouTube Music account"): "Sign in with Google" opens a separate Chrome, Edge or Brave window with a clean profile; you sign in as usual, and Wavy takes the cookies and closes the window (Wavy never sees your password). Cookies from Firefox or a `cookies.txt` file also work. Once signed in you get:
+  - **"My wave"** in the sidebar: endless YouTube Music radio based on your likes and history, without what's already in your library; the queue keeps filling itself;
+  - **import of likes** (the "YouTube Music likes" playlist) and **saved playlists**; importing again updates them.
+  Wavy is an unofficial client: the risk of an account ban is small but not zero, so a secondary account is safer.
+- **Smart playlists**: top of the week and month, "On repeat", "Forgotten favorites" (likes you haven't played for a month), "Fresh", "Never played". They build themselves; any of them can be saved as a copy.
+- **Last.fm**: scrobbling and "now playing" (your own Last.fm API key, sign-in through the Last.fm page).
+- **Recap image**: a 1080×1350 PNG for social media with hours of music and your top tracks and artists.
+- **Backups**: once a day the library is saved to a folder (the last 14 copies are kept); you can choose the folder, e.g. on another drive or in the cloud. Restore from Settings.
+- **Ctrl+K command palette**: type "equalizer", "mini", or the name of a track, playlist or anime and press Enter.
+- **Cache**: see how much space it takes, clear it or set a limit.
+- **What's new**: the list of changes is shown after an auto-update.
+- **Auto-update**: on launch and every 6 hours the player checks GitHub Releases, downloads the new version by itself and offers to restart. Turn it off in Settings → Updates.
+- **Media keys** and the system media panel: on Windows it appears next to the volume flyout and shows the cover; on Linux it works through MPRIS.
+- **Picks up where you left off**: after a restart you get the same track, the same queue and the same position.
+- **Discord Rich Presence**: shows "Listening to …", the track, artist, cover, a progress bar and an "Open in YouTube Music" button.
+- **Overlay**:
+  - a window on top of games: `Ctrl+Shift+O` to show or hide, `Ctrl+Shift+L` to lock it (clicks pass through) or to move and resize it. Works in games running in "borderless windowed" mode;
+  - for OBS: Browser Source `http://127.0.0.1:3737/overlay`, size 500×160;
+  - themes: **card**, **minimal** (just text with a shadow), **vinyl** (a spinning record). The theme is chosen in Settings and applies both to the window and to OBS. For OBS it can be overridden: `?theme=card|minimal|vinyl`. The overlay follows the app's language; `?lang=en` or `?lang=ru` overrides it.
+
+![Overlay themes: card, minimal, vinyl](screenshots/overlay.png)
+
+![Settings](screenshots/settings.png)
 
 ## Android
 
-Нативное приложение (Kotlin, Jetpack Compose, Media3) в папке `android/`. Скачать: `Wavy.apk` в [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
+A native app (Kotlin, Jetpack Compose, Media3) in the `android/` folder. Download `Wavy.apk` from [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
 
-- **Фоновое воспроизведение**: уведомление с кнопками, экран блокировки, наушники, часы.
-- **Музыка и видео с телефона**: кнопка «С телефона» находит всё в памяти.
-- **YouTube Music / YouTube / Spotify / SoundCloud**: поиск, импорт по ссылке или через «Поделиться» прямо из их приложений, клипы синхронно со звуком. Под капотом NewPipeExtractor.
-- **Плавающий мини-плеер** поверх игр и приложений, когда Wavy свёрнут. Включается в настройках, нужно разрешение «Поверх других приложений».
-- **Синхронизация с ПК**: по Wi-Fi (адрес и PIN из настроек Wavy на ПК) или файлом `wavy-export.json` в обе стороны. На ПК файл можно просто перетащить в окно.
-- **Аниме**: серии из памяти телефона собираются в тайтлы, постеры и названия берутся с Шикимори, просмотренное отмечается само.
-- **Shazam**: слушает микрофон 12 секунд, найденный трек добавляется в «Опенинги».
-- **Лайки и «Любимое»**: сердечко в плеере и меню трека; лайки переносятся между ПК и телефоном вместе с плейлистами.
-- **Тексты песен** (LRCLIB): текущая строка подсвечена, тап по строке — перемотка.
-- **Таймер сна** (15–90 минут или «после этого трека») и **радио по треку**.
-- **Умные плейлисты**: топ недели и месяца, «На повторе», «Забытое любимое», «Свежее», «Ни разу не слушал».
-- **Spotify**: треки ищутся в YouTube Music; ненайденные можно выбрать вручную, а неудачно найденный трек — заменить («Выбрать другое видео…» в меню).
-- **Пульт ПК**: управлять Wavy на компьютере по Wi-Fi.
-- **Без интернета**: кнопка «Скачать» в плейлисте сохраняет треки YouTube на телефон.
-- **Автообновление**: при запуске проверяет Releases и предлагает поставить новую версию.
+- **Background playback**: notification with buttons, lock screen, headphones, watches.
+- **Music and video on the phone**: the "From phone" button finds everything in storage.
+- **YouTube Music / YouTube / Spotify / SoundCloud**: search, import by link or through "Share" straight from their apps, music videos in sync with the audio. Under the hood it's NewPipeExtractor.
+- **Floating mini player** on top of games and apps while Wavy is minimised. Turn it on in Settings; it needs the "Display over other apps" permission.
+- **Sync with the PC**: over Wi-Fi (address and PIN from Wavy's settings on the PC) or with a `wavy-export.json` file, both ways. On the PC you can just drop the file into the window.
+- **Anime**: episodes on the phone are grouped into titles, posters and names come from Shikimori, and watched episodes are marked automatically.
+- **Shazam**: listens through the microphone for 12 seconds; the track it finds is added to "Openings".
+- **Likes and "Liked"**: the heart in the player and in the track menu; likes move between PC and phone together with playlists.
+- **Lyrics** (LRCLIB): the current line is highlighted; tap a line to seek.
+- **Sleep timer** (15–90 minutes or "after this track") and **track radio**.
+- **Smart playlists**: top of the week and month, "On repeat", "Forgotten favorites", "Fresh", "Never played".
+- **Spotify**: tracks are searched for in YouTube Music; the ones not found can be picked by hand, and a badly matched track can be replaced ("Pick another video…" in the menu).
+- **PC remote**: control Wavy on the computer over Wi-Fi.
+- **Offline**: the "Download" button in a playlist saves YouTube tracks to the phone.
+- **Auto-update**: checks Releases on launch and offers to install the new version.
 
-Discord Rich Presence и оверлей для OBS есть только на ПК: Discord не даёт такого API на телефонах.
+Discord Rich Presence and the OBS overlay are PC-only: Discord doesn't offer that API on phones.
 
-Сборка: `cd android && ./gradlew assembleRelease`. APK подписывается ключом `android/release.p12`. Его создаёт CI при первой сборке и шифрует паролем из секрета `WAVY_KEYSTORE_PASSWORD`, который владелец репозитория придумывает сам.
+Build: `cd android && ./gradlew assembleRelease`. The APK is signed with `android/release.p12`. CI creates it on the first build and encrypts it with the password from the `WAVY_KEYSTORE_PASSWORD` secret, which the repository owner makes up.
 
-## Горячие клавиши
+## Hotkeys
 
 | | |
 |---|---|
-| `Space` | играть / пауза |
-| `←` `→` | перемотка ±5 с |
-| `Ctrl+←` `Ctrl+→` | предыдущий / следующий трек |
-| `↑` `↓` | громкость |
-| `M` | без звука |
-| `L` | лайк текущему треку |
-| `Q` / `T` | очередь / текст песни |
-| `S` / `R` | перемешать / повтор |
-| `Ctrl+F` | поиск по списку |
-| `Ctrl+K` | команды: трек, плейлист, настройка |
-| `P` | скриншот кадра (в видео) |
-| `Ctrl+Alt+P` `Ctrl+Alt+←/→` `Ctrl+Alt+↑/↓` | пауза, треки, громкость — глобально, и в игре |
-| `Ctrl+Alt+L` `Ctrl+Alt+S` `Ctrl+Alt+M` | лайк, пропуск опенинга, мини-плеер — глобально |
-| `Ctrl+V` | вставить ссылку и импортировать |
-| `Ctrl+Shift+O` | оверлей поверх игр (глобально) |
-| `Ctrl+Shift+L` | закрепить / двигать оверлей (глобально) |
-| медиаклавиши | играть, пауза, вперёд, назад |
+| `Space` | play / pause |
+| `←` `→` | seek ±5 s |
+| `Ctrl+←` `Ctrl+→` | previous / next track |
+| `↑` `↓` | volume |
+| `M` | mute |
+| `L` | like the current track |
+| `Q` / `T` | queue / lyrics |
+| `S` / `R` | shuffle / repeat |
+| `Ctrl+F` | search the list |
+| `Ctrl+K` | commands: track, playlist, setting |
+| `P` | frame screenshot (in video) |
+| `Ctrl+Alt+P` `Ctrl+Alt+←/→` `Ctrl+Alt+↑/↓` | pause, tracks, volume — global, in games too |
+| `Ctrl+Alt+L` `Ctrl+Alt+S` `Ctrl+Alt+M` | like, skip opening, mini player — global |
+| `Ctrl+V` | paste a link and import it |
+| `Ctrl+Shift+O` | overlay on top of games (global) |
+| `Ctrl+Shift+L` | lock / move the overlay (global) |
+| media keys | play, pause, next, previous |
 
-## Сборка (Windows)
+## Building (Windows)
 
-1. Поставь Rust: https://rustup.rs (вариант по умолчанию, вместе с Visual Studio Build Tools).
-2. В папке проекта:
+1. Install Rust: https://rustup.rs (the default option, together with Visual Studio Build Tools).
+2. In the project folder:
    ```bash
    cargo build --release -p wavy-native
    ```
-3. Готовый файл с иконкой: `target\release\wavy-native.exe`. Его можно переименовать в `Wavy.exe` и положить куда угодно: установка не нужна.
+3. The finished file, with its icon: `target\release\wavy-native.exe`. You can rename it to `Wavy.exe` and put it anywhere: no installation needed.
 
-Linux: нужны `libasound2-dev`, `libxkbcommon-x11-0`.
+Linux needs `libasound2-dev` and `libxkbcommon-x11-0`.
 
 ## Discord
 
-1. https://discord.com/developers/applications → **New Application**. Название станет текстом «Слушает **<название>**».
-2. Скопируй **Application ID** и вставь его в Настройки → Discord, поставь галочку.
-3. Необязательно: в Rich Presence → Art Assets загрузи картинку с ключом `logo`. Она показывается у локальных треков (у YouTube-треков подставляется превью).
+1. https://discord.com/developers/applications → **New Application**. Its name becomes the text "Listening to **<name>**".
+2. Copy the **Application ID**, paste it into Settings → Discord and tick the checkbox.
+3. Optional: under Rich Presence → Art Assets, upload an image with the key `logo`. It's shown for local tracks (YouTube tracks use their thumbnail).
 
-Discord должен быть запущен как десктоп-приложение.
+Discord has to be running as the desktop app.
 
-## Где лежат данные
+## Where data lives
 
-`%APPDATA%\wavy` (Windows) или `~/.local/share/wavy` (Linux):
-- `library.json`: библиотека, плейлисты, настройки;
-- `session.json`: очередь и позиция;
-- `covers/`, `cache/`: обложки и скачанные YouTube-треки;
+`%APPDATA%\wavy` (Windows) or `~/.local/share/wavy` (Linux):
+- `library.json`: library, playlists, settings;
+- `session.json`: queue and position;
+- `covers/`, `cache/`: covers and downloaded YouTube tracks;
 - `bin/`: yt-dlp.
 
-## Структура
+## Layout
 
 ```
-core/      библиотека (JSON), импорт и теги (lofty), yt-dlp, Discord RPC, HTTP/SSE-сервер оверлея для OBS
-native/    интерфейс (egui), аудио (rodio), медиаклавиши (souvlaki), кэш обложек
-overlay/   страница оверлея для OBS
+core/      library (JSON), import and tags (lofty), yt-dlp, Discord RPC, HTTP/SSE overlay server for OBS
+native/    interface (egui), audio (rodio), media keys (souvlaki), cover cache
+overlay/   the OBS overlay page
+android/   the Android app
+testdata/  test cases shared by the PC and Android implementations
 ```
 
-Шрифты: Inter (OFL), иконки: Phosphor (MIT). Подробности в `native/assets/README.md`.
+Fonts: Inter (OFL), icons: Phosphor (MIT). Details in `native/assets/README.md`.
 
-## Лицензия
+The screenshots use a made-up demo library (artists, covers and anime titles are fictional).
 
-GPL-3.0 (см. `LICENSE`): обе версии используют библиотеки под GPL-3.0 — rustypipe (ПК) и NewPipeExtractor (Android).
+## License
+
+GPL-3.0 (see `LICENSE`): both versions use GPL-3.0 libraries — rustypipe (PC) and NewPipeExtractor (Android).
