@@ -53,6 +53,8 @@ enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
+    /// ListenBrainz token checked: (token, user name) or an error
+    ListenBrainz(Result<(String, String), String>),
     /// internet radio connected (or not): (load token, track id, station + buffer)
     RadioReady(u64, String, Result<(wavy_core::radio::Station, wavy_core::radio::Radio), String>),
     Status(String),
@@ -343,6 +345,9 @@ struct App {
     station: Option<(String, wavy_core::radio::Radio, String)>,
     /// radio connection lost: when to try again
     radio_retry: Option<Instant>,
+    /// ListenBrainz: the token being typed, and whether it's being checked
+    lb_input: String,
+    lb_busy: bool,
 }
 
 impl App {
@@ -405,7 +410,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -1650,6 +1655,13 @@ impl App {
                         }
                     }
                     self.push_state();
+                }
+                Bg::ListenBrainz(r) => {
+                    self.lb_busy = false;
+                    match r {
+                        Ok((token, user)) => { self.lb_input.clear(); self.apply(Act::Settings(json!({"listenbrainz": {"token": token, "user": user, "enabled": true}})), ctx); self.toast(lf!("ListenBrainz: вход как {user}", "ListenBrainz: signed in as {user}"), false); }
+                        Err(e) => self.toast(e, true),
+                    }
                 }
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
@@ -3046,17 +3058,26 @@ impl App {
     }
 
     /// Last.fm: "now playing" when a track starts, scrobble after half (or 4 minutes).
+    /// Scrobbling: Last.fm and ListenBrainz, whichever are on ("now playing" at the start, the listen after half/4 min).
     fn lastfm_tick(&mut self) {
-        let acc = self.settings().lastfm;
-        if !acc.ready() || !self.audio.is_playing() { return; }
+        let st = self.settings();
+        let (acc, lb) = (st.lastfm, st.listenbrainz);
+        if !(acc.ready() || lb.ready()) || !self.audio.is_playing() { return; }
         let Some(t) = self.current.clone().filter(|t| t.anime.is_none()) else { return };
         let pos = self.audio.position();
         let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
         let send = |acc: wavy_core::lastfm::Account, t: Track, dur: f64, scrobble: Option<u64>| {
+            let lb = lb.clone();
             std::thread::spawn(move || {
                 let p = wavy_core::lastfm::Play { artist: &t.artist, title: &t.title, album: &t.album, duration: dur };
-                let r = match scrobble { Some(ts) => wavy_core::lastfm::scrobble(&acc, &p, ts), None => wavy_core::lastfm::now_playing(&acc, &p) };
-                if let Err(e) = r { wavy_core::log(&format!("last.fm «{}»: {e}", t.title)); }
+                if acc.ready() {
+                    let r = match scrobble { Some(ts) => wavy_core::lastfm::scrobble(&acc, &p, ts), None => wavy_core::lastfm::now_playing(&acc, &p) };
+                    if let Err(e) = r { wavy_core::log(&format!("last.fm «{}»: {e}", t.title)); }
+                }
+                if lb.ready() {
+                    let r = match scrobble { Some(ts) => wavy_core::listenbrainz::listen(&lb, &p, ts), None => wavy_core::listenbrainz::now_playing(&lb, &p) };
+                    if let Err(e) = r { wavy_core::log(&format!("listenbrainz «{}»: {e}", t.title)); }
+                }
             });
         };
         if self.lfm_np.as_deref() != Some(t.id.as_str()) {
@@ -4157,6 +4178,28 @@ impl App {
                                         }
                                         if pill(ui, l!("Отмена", "Cancel"), false).clicked() { self.lfm_token = None; }
                                     }
+                                }
+                            });
+                        }
+                        section(ui, "\u{E340}  ListenBrainz");
+                        let lb = s.listenbrainz.clone();
+                        if !lb.token.is_empty() {
+                            ui.horizontal(|ui| {
+                                let mut on = lb.enabled;
+                                if ui.checkbox(&mut on, lf!("Отправлять прослушивания в ListenBrainz ({})", "Send listens to ListenBrainz ({})", lb.user)).changed() { acts.push(Act::Settings(json!({"listenbrainz": {"enabled": on}}))); }
+                                // settings merge, so signing out writes explicit empty values
+                                if pill(ui, l!("Выйти", "Sign out"), false).clicked() { acts.push(Act::Settings(json!({"listenbrainz": {"token": "", "user": "", "enabled": false}}))); }
+                            });
+                        } else {
+                            ui.label(RichText::new(l!("Открытая альтернатива Last.fm. Скопируй токен со страницы listenbrainz.org/settings (нужен аккаунт MusicBrainz).", "An open alternative to Last.fm. Copy your token from listenbrainz.org/settings (needs a MusicBrainz account).")).color(th().muted).size(12.0));
+                            ui.horizontal(|ui| {
+                                ui.label(l!("Токен:", "Token:"));
+                                ui.add(egui::TextEdit::singleline(&mut self.lb_input).desired_width(240.0).password(true));
+                                let ok = self.lb_input.trim().len() >= 20 && !self.lb_busy;
+                                if ui.add_enabled(ok, pill_btn(if self.lb_busy { l!("Проверяю…", "Checking…") } else { l!("Подключить", "Connect") }, true)).clicked() {
+                                    self.lb_busy = true;
+                                    let (tx, c, token) = (self.tx.clone(), ui.ctx().clone(), self.lb_input.trim().to_string());
+                                    std::thread::spawn(move || { let r = wavy_core::listenbrainz::validate(&token).map(|u| (token, u)); let _ = tx.send(Bg::ListenBrainz(r)); c.request_repaint(); });
                                 }
                             });
                         }

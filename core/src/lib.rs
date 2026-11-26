@@ -11,6 +11,7 @@ pub mod discord;
 pub mod ffmpeg;
 pub mod local;
 pub mod lastfm;
+pub mod listenbrainz;
 pub mod lyrics;
 pub mod media;
 pub mod overlay;

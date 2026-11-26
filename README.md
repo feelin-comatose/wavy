@@ -59,6 +59,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
   Wavy is an unofficial client: the risk of an account ban is small but not zero, so a secondary account is safer.
 - **Smart playlists**: top of the week and month, "On repeat", "Forgotten favorites" (likes you haven't played for a month), "Fresh", "Never played". They build themselves; any of them can be saved as a copy.
 - **Last.fm**: scrobbling and "now playing" (your own Last.fm API key, sign-in through the Last.fm page).
+- **ListenBrainz**: the open alternative to Last.fm. Paste your token from listenbrainz.org/settings into Settings → ListenBrainz; both services can be on at once.
 - **Recap image**: a 1080×1350 PNG for social media with hours of music and your top tracks and artists.
 - **Backups**: once a day the library is saved to a folder (the last 14 copies are kept); you can choose the folder, e.g. on another drive or in the cloud. Restore from Settings.
 - **Ctrl+K command palette**: type "equalizer", "mini", or the name of a track, playlist or anime and press Enter.
