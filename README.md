@@ -80,7 +80,9 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 
 ## Android
 
-A native app (Kotlin, Jetpack Compose, Media3) in the `android/` folder. Download `Wavy.apk` from [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
+A native app (Kotlin, Jetpack Compose, Media3) in the `android/` folder.
+
+![Android: library, player in the light theme, lyrics in ocean, settings in sakura](screenshots/android.png) Download `Wavy.apk` from [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
 
 - **Themes**: the same seven themes as on the PC (Settings → Theme).
 - **Background playback**: notification with buttons, lock screen, headphones, watches.

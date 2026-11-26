@@ -26,7 +26,9 @@ import app.wavy.android.ui.SearchScreen
 import app.wavy.android.ui.SettingsScreen
 import app.wavy.android.ui.WavyTheme
 import com.github.takahirom.roborazzi.captureRoboImage
+import org.junit.After
 import org.junit.Before
+import app.wavy.android.ui.Themes
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +68,30 @@ class ScreenshotTest {
         rule.waitForIdle()
         rule.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
     }
+
+    // themes: the palette is global, so put it back for the other tests
+    @After fun reset() { Themes.set("dark"); app.wavy.android.data.Lang.set("ru") }
+    /** English screenshots for the README (screenshots/android.png). */
+    private fun readme(theme: String, name: String, content: @Composable () -> Unit) { Store.settings { it.copy(lang = "en") }; themed(theme, "en-$name", content) }
+    @Test fun readmeLibrary() = readme("dark", "library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
+    @Test fun readmePlayer() = readme("light", "player") { FullPlayer {} }
+    @Test fun readmeLyrics() {
+        val l = app.wavy.android.data.Lyrics.parseLrc("[00:01.00] I'm giving you a nightcall\n[00:05.00] to tell you how I feel\n[00:09.00] I want to drive you through the night\n[00:13.00] down the hills\n[00:17.00] I'm gonna tell you something\n[00:21.00] you don't want to hear")
+        AppState.lyrics.value = AppState.LyricsState("yt_vid00000002", app.wavy.android.data.Lyrics.Text(l))
+        readme("ocean", "lyrics") { LyricsView("yt_vid00000002", 10_000) }
+    }
+    @Test fun readmeSettings() = readme("sakura", "settings") { SettingsScreen({}, {}, {}, {}) }
+    private fun themed(theme: String, name: String, content: @Composable () -> Unit) { Store.settings { it.copy(theme = theme) }; shot("theme-$theme-$name", content) }
+
+    @Test fun lightLibrary() = themed("light", "library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
+    @Test fun lightPlayer() = themed("light", "player") { FullPlayer {} }
+    @Test fun lightPlaylist() = themed("light", "playlist") { PlaylistsScreen(Store.lib.value.playlists.first().id, {}, {}, {}) }
+    @Test fun lightSettings() = themed("light", "settings") { SettingsScreen({}, {}, {}, {}) }
+    @Test fun amoledPlayer() = themed("amoled", "player") { FullPlayer {} }
+    @Test fun oceanLibrary() = themed("ocean", "library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
+    @Test fun sakuraPlayer() = themed("sakura", "player") { FullPlayer {} }
+    @Test fun forestSettings() = themed("forest", "settings") { SettingsScreen({}, {}, {}, {}) }
+    @Test fun amberPlaylist() = themed("amber", "playlist") { PlaylistsScreen(Store.lib.value.playlists.first().id, {}, {}, {}) }
 
     @Test fun library() = shot("1-library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
     @Test fun playlists() = shot("2-playlists") { PlaylistsScreen(null, {}, {}, {}) }
