@@ -42,6 +42,8 @@
   }
 
   const flag = (k, cfg) => qs.has(k) ? qs.get(k) !== '0' : !!cfg;
+  // язык — как в Wavy (поле lang), можно задать в ссылке: ?lang=en
+  const tr = (ru, en) => ((qs.get('lang') || st?.lang) === 'en' ? en : ru);
   let lyricIdx = -1;
 
   // «Дальше»: до трёх треков, заказы из чата подписаны ником
@@ -51,7 +53,7 @@
     box.replaceChildren(...list.map((q, i) => {
       const row = document.createElement('div');
       row.className = 'q';
-      row.textContent = (i === 0 ? 'Дальше: ' : '') + (q.artist ? q.artist + ' — ' : '') + q.title + (q.by ? '  · от ' + q.by : '');
+      row.textContent = (i === 0 ? tr('Дальше: ', 'Next: ') : '') + (q.artist ? q.artist + ' — ' : '') + q.title + (q.by ? tr('  · от ', '  · from ') + q.by : '');
       return row;
     }));
     box.style.display = list.length ? 'block' : 'none';
@@ -66,7 +68,7 @@
     const t = data.track;
     if (!t) { ov.classList.add('hidden'); lastId = null; return; }
     ov.classList.toggle('paused', !data.playing);
-    $('label').textContent = data.playing ? 'Сейчас играет' : 'Пауза';
+    $('label').textContent = data.playing ? tr('Сейчас играет', 'Now playing') : tr('Пауза', 'Paused');
     if (t.id !== lastId) {
       $('title').textContent = t.title;
       $('artist').textContent = t.artist || '';

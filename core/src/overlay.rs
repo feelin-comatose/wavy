@@ -92,7 +92,7 @@ impl OverlayServer {
             let cover = t.cover.as_ref().map(|c| if c.starts_with("http") { c.clone() } else { format!("/cover/{}?v={}", t.id, sh.at) });
             json!({ "id": t.id, "title": t.title, "artist": t.artist, "album": t.album, "cover": cover, "url": t.url, "type": t.kind })
         });
-        json!({ "track": track, "playing": sh.state.playing, "position": sh.state.position, "duration": sh.state.duration, "at": sh.at, "config": sh.config, "queue": sh.queue, "lyrics": sh.lyrics })
+        json!({ "track": track, "playing": sh.state.playing, "position": sh.state.position, "duration": sh.state.duration, "at": sh.at, "config": sh.config, "queue": sh.queue, "lyrics": sh.lyrics, "lang": if crate::i18n::en() { "en" } else { "ru" } })
     }
 
     pub fn update(&self, state: &PlayerState) {
