@@ -197,7 +197,7 @@ impl Audio {
             }
         };
         self.duration = rodio::Source::total_duration(&dec).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-        p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
+        p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()).with_replaygain(wavy_core::local::replaygain(path)));
         p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
         p.play();
         self.loaded = true;

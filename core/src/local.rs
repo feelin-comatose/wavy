@@ -50,6 +50,20 @@ pub fn changed_since(dir: &Path, since_ms: u64) -> Vec<PathBuf> {
     files
 }
 
+/// "-6.53 dB" / "+1.2 dB" / "-6.53" → dB.
+pub fn parse_gain(s: &str) -> Option<f32> { s.trim().trim_end_matches(|c: char| c.is_alphabetic() || c.is_whitespace()).trim().parse().ok() }
+
+/// ReplayGain of a file as a volume factor (track gain; the peak keeps it from clipping). None — no tags.
+pub fn replaygain(file: &Path) -> Option<f32> {
+    let tagged = lofty::read_from_path(file).ok()?;
+    tagged.tags().iter().find_map(|tag| {
+        let db = parse_gain(tag.get_string(lofty::tag::ItemKey::ReplayGainTrackGain)?)?;
+        let peak = tag.get_string(lofty::tag::ItemKey::ReplayGainTrackPeak).and_then(|p| p.trim().parse::<f32>().ok()).filter(|p| *p > 0.0);
+        let g = 10f32.powf(db.clamp(-24.0, 24.0) / 20.0);
+        Some(match peak { Some(p) => g.min(1.0 / p), None => g })
+    })
+}
+
 pub fn local_id(p: &Path) -> String {
     let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     format!("loc_{}", sha16(abs.to_string_lossy().as_bytes()))
@@ -130,6 +144,15 @@ pub fn import_paths(paths: &[PathBuf], covers: &Path, mut progress: impl FnMut(u
 #[cfg(test)]
 mod watch_tests {
     use super::*;
+
+    #[test]
+    fn replaygain_values() {
+        assert_eq!(parse_gain("-6.53 dB"), Some(-6.53));
+        assert_eq!(parse_gain("+1.20 dB"), Some(1.2));
+        assert_eq!(parse_gain(" -3 "), Some(-3.0));
+        assert_eq!(parse_gain("loud"), None);
+        assert!(replaygain(Path::new("/no/such/file.mp3")).is_none());
+    }
 
     #[test]
     fn only_new_files_after_the_first_scan() {

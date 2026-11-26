@@ -84,6 +84,8 @@ pub struct Fx<S: Source> {
     heard: f32,
     secs: f64,
     frame: [f32; MAX_CH],
+    /// ReplayGain from the file's tags (volume factor): with normalization on it replaces the adaptive gain
+    replaygain: Option<f32>,
 }
 
 impl<S: Source> Fx<S> {
@@ -91,12 +93,15 @@ impl<S: Source> Fx<S> {
         let (settings, version) = shared.snapshot();
         let mut fx = Self {
             inner, shared, pos, version: u64::MAX, settings, ch: 2, rate: 44100, left: 0, frame_i: 0,
-            filters: Vec::new(), state: Vec::new(), ms: 0.0, gain: 1.0, heard: 0.0, secs: 0.0, frame: [0.0; MAX_CH],
+            filters: Vec::new(), state: Vec::new(), ms: 0.0, gain: 1.0, heard: 0.0, secs: 0.0, frame: [0.0; MAX_CH], replaygain: None,
         };
         fx.version = version.wrapping_sub(1);
         fx.pos.set(0.0);
         fx
     }
+
+    /// Use the file's ReplayGain (when normalization is on) instead of measuring loudness on the fly.
+    pub fn with_replaygain(mut self, g: Option<f32>) -> Self { self.replaygain = g; self }
 
     fn rebuild(&mut self) {
         let fs = self.rate as f32;
@@ -147,7 +152,10 @@ impl<S: Source> Fx<S> {
         }
         // normalization: average power over ~3 s → gain toward the target level (smoothly, within ×0.3…×3)
         let dt = 1.0 / self.rate as f32;
-        if self.settings.normalize {
+        if let (true, Some(rg)) = (self.settings.normalize, self.replaygain) {
+            // the file knows its own loudness: a fixed gain, reached smoothly
+            self.gain += (rg - self.gain) * (dt / 0.3).min(1.0);
+        } else if self.settings.normalize {
             let p = self.frame[..ch].iter().map(|x| x * x).sum::<f32>() / ch as f32;
             self.ms += (p - self.ms) * (dt / 3.0).min(1.0);
             self.heard += dt;
@@ -265,6 +273,19 @@ mod tests {
         assert_eq!(fx.sample_rate().get(), 55125);
         let _: Vec<f32> = fx.collect();
         assert!((pos.get() - 2.0).abs() < 0.01); // position is track time, not real time
+    }
+
+    #[test]
+    fn replaygain_is_a_fixed_gain() {
+        let sh = Shared::default();
+        sh.set(Settings { normalize: true, ..Default::default() });
+        let quiet: Vec<f32> = tone(440.0, 4.0).map(|x| x * 0.1).collect();
+        let level = rms(&quiet[quiet.len() - 44100..]);
+        let src = SamplesBuffer::new(std::num::NonZero::new(2).unwrap(), std::num::NonZero::new(44100).unwrap(), quiet);
+        // −6 dB from the tags: half as loud, not lifted like the adaptive mode would
+        let out: Vec<f32> = Fx::new(src, sh, Pos::default()).with_replaygain(Some(0.5)).collect();
+        let tail = rms(&out[out.len() - 44100..]);
+        assert!((tail / level - 0.5).abs() < 0.02, "{tail} vs {level}");
     }
 
     #[test]
