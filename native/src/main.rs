@@ -141,6 +141,8 @@ enum Act {
     TogglePlay, Next, Prev, Seek(f64), Volume(f32), SaveVolume, Shuffle, Repeat,
     /// addons: enable/disable, restart, rescan the folder
     AddonToggle(String, bool), AddonRestart(String), AddonsRescan,
+    /// put back the last deleted tracks/playlist/anime
+    Undo,
     View(View), ImportFiles, ImportFolder, ImportPaths(Vec<PathBuf>, Option<String>), ImportUrl(String, Option<String>),
     Search(String), AddTracks(Vec<Track>), PlayNext(Vec<String>), Enqueue(Vec<String>),
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
@@ -328,6 +330,8 @@ struct App {
     api_pushed: Instant,
     /// output devices for the Sound window (when they were listed, names)
     devices: Option<(Instant, Vec<String>)>,
+    /// last delete, for Undo: what was removed, message, when
+    undo: Option<(wavy_core::store::Removed, String, Instant)>,
 }
 
 impl App {
@@ -390,7 +394,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -818,9 +822,10 @@ impl App {
                 self.ensure_in_library(&ids);
                 if let Some(n) = self.store.lock().unwrap().add_to_playlist(&pid, &ids) { self.toast = Some((lf!("Добавлено в «{n}»", "Added to “{n}”"), false, Instant::now())); }
             }
-            Act::RemoveFrom(pid, ids) => self.store.lock().unwrap().remove_from_playlist(&pid, &ids),
+            Act::RemoveFrom(pid, ids) => { let r = self.store.lock().unwrap().remove_from_playlist(&pid, &ids); self.offer_undo(r, lf!("Убрано из плейлиста: {}", "Removed from the playlist: {}", ids.len())); }
             Act::RemoveTracks(ids) => {
-                self.store.lock().unwrap().remove_tracks(&ids);
+                let r = self.store.lock().unwrap().remove_tracks(&ids);
+                self.offer_undo(r, lf!("Удалено треков: {}", "Tracks removed: {}", ids.len()));
                 let cur = self.queue.get(self.qi).cloned();
                 self.queue.retain(|q| !ids.contains(q) || Some(q) == cur.as_ref());
                 self.qi = cur.and_then(|c| self.queue.iter().position(|q| *q == c)).unwrap_or(0);
@@ -832,7 +837,12 @@ impl App {
                 if ids.is_empty() { self.view = View::Playlist(p.id); } else { self.toast(lf!("Плейлист «{name}» создан", "Playlist “{name}” created"), false); }
             }
             Act::Rename(id, name) => self.store.lock().unwrap().rename_playlist(&id, &name),
-            Act::DeletePlaylist(id) => { self.store.lock().unwrap().delete_playlist(&id); self.view = View::Library; }
+            Act::DeletePlaylist(id) => {
+                let r = self.store.lock().unwrap().delete_playlist(&id);
+                let name = r.playlists.first().map(|p| p.1.name.clone()).unwrap_or_default();
+                self.offer_undo(r, lf!("Плейлист «{name}» удалён", "Playlist “{name}” deleted"));
+                self.view = View::Library;
+            }
             Act::Sync(id) => {
                 let (store, yt) = (self.store.clone(), self.yt.clone());
                 self.bg(ctx, move |tx| {
@@ -974,6 +984,10 @@ impl App {
                 if on { self.run_addon(&id); } else { self.addon_run.stop(&id); self.addon_run.exited.remove(&id); }
             }
             Act::AddonRestart(id) => self.run_addon(&id),
+            Act::Undo => if let Some((r, _, _)) = self.undo.take() {
+                self.store.lock().unwrap().undo(&r);
+                self.toast(l!("Возвращено", "Restored"), false);
+            },
             Act::AddonsRescan => { self.addon_list = wavy_core::addons::scan(&wavy_core::addons::dir()); self.start_addons(); }
             Act::OpenUrl(u) => open_url(&u),
             Act::Settings(patch) => {
@@ -1271,7 +1285,9 @@ impl App {
             Act::DeleteAnime(id) => {
                 let eps = self.store.lock().unwrap().anime(&id).map(|a| a.episodes.clone()).unwrap_or_default();
                 if self.current.as_ref().is_some_and(|t| eps.contains(&t.id)) { self.audio.stop(); self.current = None; self.queue.clear(); self.video = None; self.show_video = false; self.push_state(); }
-                self.store.lock().unwrap().delete_anime(&id);
+                let r = self.store.lock().unwrap().delete_anime(&id);
+                let name = r.anime.as_ref().map(|a| a.1.display().to_string()).unwrap_or_default();
+                self.offer_undo(r, lf!("«{name}» убрано", "“{name}” removed"));
                 self.view = View::Anime;
             }
             Act::MarkWatched(tid, w) => self.store.lock().unwrap().mark_episode(&tid, w),
@@ -1859,6 +1875,8 @@ impl eframe::App for App {
         if self.settings().mini { self.mini_window(&ctx, &mut acts); }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) { self.palette = if self.palette.is_some() { None } else { Some((String::new(), 0)) }; }
         if self.palette.is_some() { self.palette_ui(&ctx, &mut acts); }
+        // Ctrl+Z: undo the last delete (but inside a text field it's the field's own undo)
+        if self.undo.is_some() && !ctx.egui_wants_keyboard_input() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) { acts.push(Act::Undo); }
         self.keys(&ctx, &mut acts);
 
         if self.fullscreen {
@@ -1885,6 +1903,7 @@ impl eframe::App for App {
 
         self.modal_ui(&ctx, &mut acts);
         self.toast_ui(&ctx);
+        self.undo_ui(&ctx, &mut acts);
         if self.overlay_open { self.overlay_window(&ctx, &mut acts); }
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) { drop_hint(&ctx); }
 
@@ -3205,6 +3224,29 @@ impl App {
         if ov.show_lyrics { self.ensure_lyrics(ctx); }
         if self.wifi.is_some() { self.remote_tick(ctx); }
         self.api_tick(ctx);
+    }
+
+    /// Remember a delete for Undo (the bar with the button shows for a few seconds).
+    fn offer_undo(&mut self, r: wavy_core::store::Removed, msg: String) {
+        if r.is_empty() { return; }
+        if let Some((old, _, _)) = self.undo.take() { old.forget(); }
+        self.undo = Some((r, msg, Instant::now()));
+    }
+
+    /// Undo bar: message + button; after a few seconds the chance is gone (and kept files are deleted).
+    fn undo_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        let Some((_, msg, at)) = &self.undo else { return };
+        if at.elapsed() > Duration::from_secs(8) { if let Some((r, _, _)) = self.undo.take() { r.forget(); } return; }
+        ctx.request_repaint_after(Duration::from_millis(500));
+        egui::Area::new(Id::unique("undo")).anchor(Align2::CENTER_BOTTOM, [0.0, -150.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::new().fill(th().bg3).stroke(Stroke::new(1.0, th().line)).corner_radius(99).inner_margin(egui::Margin { left: 18, right: 8, top: 6, bottom: 6 }).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(msg.as_str()).color(th().text));
+                    ui.add_space(8.0);
+                    if pill(ui, l!("Отменить (Ctrl+Z)", "Undo (Ctrl+Z)"), true).clicked() { acts.push(Act::Undo); }
+                });
+            });
+        });
     }
 
     /// "Save the queue as a playlist": the name dialog, prefilled with today's date; repeats removed.

@@ -139,6 +139,27 @@ pub struct Library {
     pub history: Vec<(String, u64)>,
 }
 
+/// What a remove/delete took out of the library, so it can be put back (Undo).
+#[derive(Clone, Debug, Default)]
+pub struct Removed {
+    pub tracks: Vec<Track>,
+    /// (index in the playlist list, playlist)
+    pub playlists: Vec<(usize, Playlist)>,
+    /// (playlist id, index in it, track id), in ascending index order per playlist
+    pub memberships: Vec<(String, usize, String)>,
+    /// (index in liked, track id)
+    pub liked: Vec<(usize, String)>,
+    pub anime: Option<(usize, crate::anime::Anime)>,
+}
+
+impl Removed {
+    pub fn is_empty(&self) -> bool { self.tracks.is_empty() && self.playlists.is_empty() && self.memberships.is_empty() && self.anime.is_none() }
+    /// The undo chance is gone: delete files only kept for it (custom playlist covers).
+    pub fn forget(self) {
+        for (_, p) in self.playlists { if let Some(c) = p.cover { let _ = std::fs::remove_file(c); } }
+    }
+}
+
 pub struct Store {
     file: PathBuf,
     pub lib: Library,
@@ -206,14 +227,45 @@ impl Store {
         self.save();
     }
 
-    pub fn remove_tracks(&mut self, ids: &[String]) {
+    /// Remove tracks from the library, playlists and likes. Returns what was removed, for undo.
+    pub fn remove_tracks(&mut self, ids: &[String]) -> Removed {
+        let mut r = Removed::default();
         for id in ids {
-            self.lib.tracks.remove(id);
+            if let Some(t) = self.lib.tracks.remove(id) { r.tracks.push(t); }
         }
-        for p in &mut self.lib.playlists {
+        r.memberships = self.take_memberships(None, ids);
+        r.liked = self.lib.liked.iter().enumerate().filter(|(_, t)| ids.contains(t)).map(|(i, t)| (i, t.clone())).collect();
+        self.lib.liked.retain(|t| !ids.contains(t));
+        self.save();
+        r
+    }
+
+    /// Take `ids` out of one playlist (`pid`) or all of them, remembering where they were.
+    fn take_memberships(&mut self, pid: Option<&str>, ids: &[String]) -> Vec<(String, usize, String)> {
+        let mut out = Vec::new();
+        for p in self.lib.playlists.iter_mut().filter(|p| pid.is_none_or(|id| p.id == id)) {
+            for (i, t) in p.track_ids.iter().enumerate() { if ids.contains(t) { out.push((p.id.clone(), i, t.clone())); } }
             p.track_ids.retain(|t| !ids.contains(t));
         }
-        self.lib.liked.retain(|t| !ids.contains(t));
+        out
+    }
+
+    /// Undo: put back what a remove/delete took out. Positions are restored where possible.
+    pub fn undo(&mut self, r: &Removed) {
+        for t in &r.tracks { self.lib.tracks.entry(t.id.clone()).or_insert_with(|| t.clone()); }
+        for (i, p) in &r.playlists {
+            if !self.lib.playlists.iter().any(|x| x.id == p.id) { let i = (*i).min(self.lib.playlists.len()); self.lib.playlists.insert(i, p.clone()); }
+        }
+        // indexes were recorded in ascending order, so inserting in that order lands each one in its old place
+        for (pid, i, t) in &r.memberships {
+            if let Some(p) = self.lib.playlists.iter_mut().find(|p| &p.id == pid) {
+                if !p.track_ids.contains(t) { let i = (*i).min(p.track_ids.len()); p.track_ids.insert(i, t.clone()); }
+            }
+        }
+        for (i, t) in &r.liked { if !self.lib.liked.contains(t) { let i = (*i).min(self.lib.liked.len()); self.lib.liked.insert(i, t.clone()); } }
+        if let Some((i, a)) = &r.anime {
+            if !self.lib.anime.iter().any(|x| x.id == a.id) { let i = (*i).min(self.lib.anime.len()); self.lib.anime.insert(i, a.clone()); }
+        }
         self.save();
     }
 
@@ -250,10 +302,12 @@ impl Store {
         self.save();
     }
 
-    pub fn delete_playlist(&mut self, id: &str) {
-        if let Some(c) = self.lib.playlists.iter().find(|p| p.id == id).and_then(|p| p.cover.clone()) { let _ = std::fs::remove_file(c); }
-        self.lib.playlists.retain(|p| p.id != id);
+    /// Delete a playlist. Its custom cover file stays until `Removed::forget` (so Undo gets it back).
+    pub fn delete_playlist(&mut self, id: &str) -> Removed {
+        let mut r = Removed::default();
+        if let Some(i) = self.lib.playlists.iter().position(|p| p.id == id) { r.playlists.push((i, self.lib.playlists.remove(i))); }
         self.save();
+        r
     }
 
     pub fn add_to_playlist(&mut self, id: &str, ids: &[String]) -> Option<String> {
@@ -266,9 +320,10 @@ impl Store {
         Some(name)
     }
 
-    pub fn remove_from_playlist(&mut self, id: &str, ids: &[String]) {
-        if let Some(p) = self.playlist_mut(id) { p.track_ids.retain(|t| !ids.contains(t)); }
+    pub fn remove_from_playlist(&mut self, id: &str, ids: &[String]) -> Removed {
+        let r = Removed { memberships: self.take_memberships(Some(id), ids), ..Default::default() };
         self.save();
+        r
     }
 
     /// Library tracks (without anime episodes), newest first.
@@ -478,12 +533,15 @@ impl Store {
         }
     }
 
-    pub fn delete_anime(&mut self, id: &str) {
-        if let Some(a) = self.anime(id).cloned() {
-            for e in &a.episodes { self.lib.tracks.remove(e); }
+    pub fn delete_anime(&mut self, id: &str) -> Removed {
+        let mut r = Removed::default();
+        if let Some(i) = self.lib.anime.iter().position(|a| a.id == id) {
+            let a = self.lib.anime.remove(i);
+            for e in &a.episodes { if let Some(t) = self.lib.tracks.remove(e) { r.tracks.push(t); } }
+            r.anime = Some((i, a));
         }
-        self.lib.anime.retain(|a| a.id != id);
         self.save();
+        r
     }
 
     /// Episode watched / not.
@@ -633,6 +691,33 @@ mod sort_tests {
         assert_eq!(st.plays, 3);
         assert_eq!(st.top_tracks[0], ("a".to_string(), 2));
         assert_eq!(st.top_artists[0], ("LiSA".to_string(), 3));
+        let _ = std::fs::remove_file(&s.file);
+    }
+
+    #[test]
+    fn undo_restores_positions() {
+        let mut s = Store { file: std::env::temp_dir().join(format!("wavy-undo-{}.json", std::process::id())), lib: Library::default() };
+        for t in [tr("a", "A", "", ""), tr("b", "B", "", ""), tr("c", "C", "", "")] { s.lib.tracks.insert(t.id.clone(), t); }
+        let p1 = s.create_playlist("One", vec!["a".into(), "b".into(), "c".into()], None).id;
+        let p2 = s.create_playlist("Two", vec!["c".into(), "b".into()], None).id;
+        s.set_liked(&["b".into(), "c".into()], true);
+        let before = (s.lib.playlists.iter().map(|p| p.track_ids.clone()).collect::<Vec<_>>(), s.lib.liked.clone(), s.lib.tracks.len());
+        let snap = |s: &Store| (s.lib.playlists.iter().map(|p| p.track_ids.clone()).collect::<Vec<_>>(), s.lib.liked.clone(), s.lib.tracks.len());
+        // tracks: gone from library, playlists and likes — and back in the same places
+        let r = s.remove_tracks(&["b".into(), "c".into()]);
+        assert_eq!(snap(&s), (vec![vec!["a".to_string()], vec![]], vec![], 1));
+        s.undo(&r);
+        assert_eq!(snap(&s), before);
+        // a playlist: back at its index
+        let r = s.delete_playlist(&p1);
+        assert_eq!(s.lib.playlists.len(), 1);
+        s.undo(&r);
+        assert_eq!(s.lib.playlists.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), vec![p1.clone(), p2.clone()]);
+        // removing from one playlist doesn't touch the other
+        let r = s.remove_from_playlist(&p2, &["c".into()]);
+        assert_eq!(snap(&s).0, vec![vec!["a".to_string(), "b".into(), "c".into()], vec!["b".into()]]);
+        s.undo(&r);
+        assert_eq!(snap(&s), before);
         let _ = std::fs::remove_file(&s.file);
     }
 
