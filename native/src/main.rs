@@ -2815,6 +2815,7 @@ impl App {
         add("\u{E3D0}", if playing { l!("Пауза", "Pause") } else { l!("Играть", "Play") }, l!("Пробел", "Space"), "pause play пауза играть стоп", Cmd::Act(Act::TogglePlay));
         add("\u{E5A6}", wavy_core::i18n::tr("Следующий трек"), "Ctrl+→", "next skip дальше", Cmd::Act(Act::Next));
         add("\u{E5A4}", wavy_core::i18n::tr("Предыдущий трек"), "Ctrl+←", "prev назад", Cmd::Act(Act::Prev));
+        if !self.queue.is_empty() { add("\u{E6AA}", l!("Сохранить очередь как плейлист", "Save the queue as a playlist"), "", "queue playlist save очередь плейлист сохранить", Cmd::Act(self.save_queue_act())); }
         add("\u{E422}", l!("Перемешать", "Shuffle"), "S", "shuffle", Cmd::Act(Act::Shuffle));
         add("\u{E40E}", l!("Повтор", "Repeat"), "R", "repeat", Cmd::Act(Act::Repeat));
         add("\u{E1D8}", l!("Звук: эквалайзер, скорость, кроссфейд", "Sound: equalizer, speed, crossfade"), "", "eq эквалайзер nightcore скорость громкость нормализация", Cmd::Sound);
@@ -3206,6 +3207,13 @@ impl App {
         self.api_tick(ctx);
     }
 
+    /// "Save the queue as a playlist": the name dialog, prefilled with today's date; repeats removed.
+    fn save_queue_act(&self) -> Act {
+        let mut seen = HashSet::new();
+        let ids: Vec<String> = self.queue.iter().filter(|id| seen.insert(id.as_str())).cloned().collect();
+        Act::Modal(Modal::NewPlaylist { name: lf!("Очередь {}", "Queue {}", fmt_date(wavy_core::now_ms())), ids })
+    }
+
     /// Scan the addons folder and start the enabled ones that aren't running.
     fn start_addons(&mut self) {
         self.addon_list = wavy_core::addons::scan(&wavy_core::addons::dir());
@@ -3337,7 +3345,10 @@ impl App {
     fn queue_ui(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(l!("Очередь", "Queue")).family(semi()).size(15.0));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_queue = false; } });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if icon_btn(ui, "\u{E4F6}", 24.0, false).clicked() { self.show_queue = false; }
+                if !self.queue.is_empty() && ui.link(RichText::new(l!("в плейлист", "save as playlist")).size(12.5)).on_hover_text(l!("Сохранить очередь как плейлист", "Save the queue as a playlist")).clicked() { acts.push(self.save_queue_act()); }
+            });
         });
         ui.separator();
         ui.label(RichText::new(l!("тяни трек — переставить", "drag a track to reorder")).size(11.0).color(th().muted));
