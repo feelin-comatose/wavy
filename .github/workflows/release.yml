@@ -40,6 +40,27 @@ jobs:
           name: Wavy-windows
           path: dist/Wavy.exe
 
+  # Memory budget (CLAUDE.md): the Linux build plays music and video from a demo library, and its private
+  # memory is measured (scripts/mem-check.py). Over 100 MB while playing music blocks the release.
+  # No GPU here, so the in-process software renderer adds ~8 MB compared with a real PC.
+  memory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q libasound2-dev libxkbcommon-x11-0 xvfb xdotool ffmpeg pulseaudio
+
+      - name: Build
+        run: cargo build --release -p wavy-native
+
+      - name: Measure
+        run: python3 scripts/mem-check.py target/release/wavy-native --cycles 2
+
   # Small ffmpeg.exe for HEVC/10-bit/VP9/AV1 video and Opus/AC3/DTS audio (the player downloads it when needed).
   # Rebuilt only when the script changes — otherwise taken from the cache.
   ffmpeg:
@@ -125,9 +146,10 @@ jobs:
           path: dist/Wavy.apk
 
   release:
-    needs: [windows, android, ffmpeg]
-    # the exe ships even if the Android build broke — so PC updates aren't blocked
-    if: always() && needs.windows.result == 'success'
+    needs: [windows, android, ffmpeg, memory]
+    # the exe ships even if the Android build broke — so PC updates aren't blocked;
+    # it doesn't ship if the memory check failed
+    if: always() && needs.windows.result == 'success' && needs.memory.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

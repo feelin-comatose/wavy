@@ -226,6 +226,14 @@ try:
     music = results[2]["peak"]["priv"]
     ok = music <= args.limit_mb
     print(f"\nplaying music: {music:.1f} MB private (limit {args.limit_mb:.0f} MB) — {'OK' if ok else 'OVER THE LIMIT'}")
+    # GitHub Actions: the same table on the run's summary page
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(f"### Memory: {music:.1f} MB while playing music (limit {args.limit_mb:.0f} MB) {'✅' if ok else '❌'}\n\n")
+            f.write(f"{args.tracks} tracks with covers · renderer: {renderer} · audio: {audio}\n\n")
+            f.write("| phase | private peak, MB | private end, MB | USS peak, MB |\n|---|---:|---:|---:|\n")
+            for r in results:
+                f.write(f"| {r['phase']} | {r['peak']['priv']:.1f} | {r['end']['priv']:.1f} | {r['peak']['uss']:.1f} |\n")
     sys.exit(0 if ok else 1)
 finally:
     cleanup()
