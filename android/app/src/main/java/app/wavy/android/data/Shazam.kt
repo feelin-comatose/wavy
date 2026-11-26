@@ -20,9 +20,9 @@ import kotlin.math.max
 import kotlin.math.sin
 
 /**
- * Распознавание музыки через Shazam: из 12 секунд звука (моно, 16 кГц) строится «отпечаток», он уходит
- * на сервер Shazam. Алгоритм — из SongRec (GPL-3.0, как и Wavy), тот же, что в версии для ПК
- * (core/src/shazam.rs): отпечатки обеих версий совпадают побайтово (см. LogicTest).
+ * Music recognition through Shazam: a "fingerprint" is built from 12 seconds of audio (mono, 16 kHz) and sent
+ * to the Shazam server. The algorithm comes from SongRec (GPL-3.0, like Wavy) and matches the PC version
+ * (core/src/shazam.rs): both versions produce byte-identical fingerprints (see LogicTest).
  */
 object Shazam {
     const val RATE = 16_000
@@ -32,7 +32,7 @@ object Shazam {
 
     private class Peak(val pass: Int, val magnitude: Int, val bin: Int)
 
-    /** Отпечаток из моно-звука 16 кГц (значения −1..1). */
+    /** Fingerprint from 16 kHz mono audio (values −1..1). */
     fun signature(samples: FloatArray): ByteArray {
         val g = Gen()
         val s16 = ShortArray(samples.size) { (samples[it] * 32768f).coerceIn(-32768f, 32767f).toInt().toShort() }
@@ -176,7 +176,7 @@ object Shazam {
         }
     }
 
-    /** Отправить 12 с звука (моно 16 кГц) в Shazam. null — не узнал. */
+    /** Send 12 s of audio (16 kHz mono) to Shazam. null — not recognized. */
     fun recognize(samples: FloatArray): Found? {
         val sig = signature(samples)
         val now = System.currentTimeMillis()

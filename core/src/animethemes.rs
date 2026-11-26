@@ -1,10 +1,10 @@
-//! Опенинги и эндинги тайтла: AnimeThemes (по id MyAnimeList — он же id Шикимори),
-//! если он недоступен — MyAnimeList через Jikan. Сами треки потом ищутся на YouTube.
+//! A title's openings and endings: AnimeThemes (by MyAnimeList id, which is also the Shikimori id),
+//! falling back to MyAnimeList through Jikan. The tracks themselves are then looked up on YouTube.
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
-    /// "OP" или "ED"
+    /// "OP" or "ED"
     pub kind: String,
     pub n: u32,
     pub title: String,
@@ -12,9 +12,9 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Подпись в плейлисте: «OP1 · Kaikai Kitan».
+    /// Label in the playlist: "OP1 · Kaikai Kitan".
     pub fn label(&self) -> String { format!("{}{}", self.kind, if self.n > 0 { self.n.to_string() } else { String::new() }) }
-    /// Запрос для поиска на YouTube.
+    /// Query for searching YouTube.
     pub fn query(&self) -> String { if self.artist.is_empty() { self.title.clone() } else { format!("{} - {}", self.artist, self.title) } }
 }
 
@@ -52,7 +52,7 @@ pub fn parse_animethemes(v: &Value) -> Vec<Theme> {
     out
 }
 
-/// «1: "Kaikai Kitan (廻廻奇譚)" by Eve (eps 1-13)» → название и исполнитель.
+/// '1: "Kaikai Kitan (廻廻奇譚)" by Eve (eps 1-13)' → title and artist.
 fn parse_jikan_line(s: &str, kind: &str, idx: usize) -> Option<Theme> {
     let s = s.trim();
     let (n, rest) = match s.split_once(':') {
@@ -64,7 +64,7 @@ fn parse_jikan_line(s: &str, kind: &str, idx: usize) -> Option<Theme> {
         Some((t, a)) => (t.to_string(), a.trim()),
         None => (rest.split(" by ").next().unwrap_or(rest).to_string(), rest.split_once(" by ").map(|x| x.1).unwrap_or("")),
     };
-    // японское название в скобках — для поиска лишнее
+    // the Japanese title in brackets is noise for search
     let title = match title.rfind(" (") { Some(i) if title.ends_with(')') && title[i..].chars().any(|c| !c.is_ascii()) => title[..i].to_string(), _ => title };
     let artist = after.trim_start_matches("by ").trim();
     let artist = artist.split(" (ep").next().unwrap_or(artist).trim();

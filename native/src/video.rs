@@ -1,7 +1,7 @@
-//! Встроенный видеоплеер: MP4/MOV/MKV с H.264, декодер OpenH264 (вшит в exe, ничего не докачивается).
-//! Звук играет как обычно (rodio), а видео подстраивается под позицию звука.
-//! Декодирование — в отдельном потоке, в памяти держим всего несколько кадров.
-//! Субтитры: из MKV (ASS/SRT, собираются по ходу чтения файла) или внешний .ass/.srt.
+//! Built-in video player: MP4/MOV/MKV with H.264, OpenH264 decoder (built into the exe, nothing to download).
+//! Audio plays as usual (rodio) and the video follows the audio position.
+//! Decoding runs on a separate thread; only a few frames are kept in memory.
+//! Subtitles: from MKV (ASS/SRT, collected while reading the file) or an external .ass/.srt.
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use openh264::decoder::{Decoder, DecoderConfig, Flush};
 use openh264::formats::YUVSource;
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wavy_core::media::{Cue, SubSrc};
 
-/// Субтитры, которые видео-поток собирает по ходу (общие с интерфейсом).
+/// Subtitles the video thread collects as it goes (shared with the UI).
 pub type Subs = Arc<Mutex<Vec<Cue>>>;
 
 struct Frame {
@@ -35,20 +35,20 @@ pub struct Video {
     queue: VecDeque<Frame>,
     gen: u32,
     shown_pts: Option<f64>,
-    /// после перемотки показать первый же готовый кадр (даже на паузе)
+    /// after a seek, show the very first ready frame (even when paused)
     fresh: bool,
-    /// куда последний раз просили перемотать (или откуда открыли) и когда
+    /// where we were last asked to seek (or where we opened from) and when
     target: (f64, std::time::Instant),
     pub texture: Option<TextureHandle>,
     pub error: Option<String>,
     pub subs: Subs,
-    /// показанный кадр (RGBA) — для скриншота; держим тот же буфер, лишней копии нет
+    /// the displayed frame (RGBA) — for screenshots; it's the same buffer, no extra copy
     last: Option<([usize; 2], Vec<u8>)>,
 }
 
 impl Video {
-    /// `sub` — какие субтитры показывать (встроенная дорожка MKV или внешний файл).
-    /// `ffmpeg` — для форматов, которые не умеет OpenH264 (HEVC, 10 бит, VP9, AV1…); без него — ошибка `ffmpeg::NEED`.
+    /// `sub` — which subtitles to show (embedded MKV track or external file).
+    /// `ffmpeg` — for formats OpenH264 can't handle (HEVC, 10-bit, VP9, AV1…); without it — the `ffmpeg::NEED` error.
     pub fn open(path: PathBuf, start: f64, ctx: &egui::Context, sub: Option<SubSrc>, ffmpeg: Option<PathBuf>) -> Self {
         let (ftx, frx) = sync_channel(3);
         let (ctl_tx, ctl_rx) = channel();
@@ -66,7 +66,7 @@ impl Video {
                 let mut r = if wavy_core::media::is_mkv(&path) { decode_mkv(&path, start, &ftx, &ctl_rx, &c, embedded, &s2) } else { decode_loop(&path, start, &ftx, &ctl_rx, &c) };
                 if let (Err(e), Some(ff)) = (&r, &ffmpeg) {
                     if e.starts_with(wavy_core::ffmpeg::NEED) {
-                        // встроенный декодер не умеет — играем через ffmpeg; субтитры MKV собираем отдельным проходом
+                        // the built-in decoder can't do it — play through ffmpeg; MKV subtitles are collected in a separate pass
                         if let (Some(n), true) = (embedded, wavy_core::media::is_mkv(&path)) {
                             let (p2, s3, c2) = (path.clone(), s2.clone(), c.clone());
                             std::thread::Builder::new().name("subs".into()).spawn(move || scan_subs(&p2, n, &s3, &c2)).ok();
@@ -84,14 +84,14 @@ impl Video {
         Self { frames: frx, ctrl: ctl_tx, queue: VecDeque::new(), gen: 0, shown_pts: None, fresh: false, texture: None, error: None, subs, target: (start, std::time::Instant::now()), last: None }
     }
 
-    /// Время показанного кадра (для проверок в examples/).
+    /// Time of the displayed frame (for checks in examples/).
     #[allow(dead_code)]
     pub fn shown(&self) -> Option<f64> { self.shown_pts }
 
-    /// Текущий кадр: размер и пиксели RGBA.
+    /// Current frame: size and RGBA pixels.
     pub fn frame(&self) -> Option<([usize; 2], &[u8])> { self.last.as_ref().map(|(s, p)| (*s, p.as_slice())) }
 
-    /// Субтитры, которые должны быть на экране в момент `t`.
+    /// Subtitles that should be on screen at time `t`.
     pub fn subs_at(&self, t: f64) -> Vec<Cue> {
         let s = self.subs.lock().unwrap();
         let mut v: Vec<Cue> = s.iter().filter(|c| c.start <= t && t < c.end).cloned().collect();
@@ -99,41 +99,41 @@ impl Video {
         v
     }
 
-    /// Перемотка: декодер начинает с ближайшего ключевого кадра.
+    /// Seek: the decoder starts from the nearest keyframe.
     pub fn seek(&mut self, t: f64) {
         self.gen += 1;
         self.queue.clear();
-        // иначе старый (более поздний) кадр выглядит как «видео убежало вперёд» → бесконечная перемотка
+        // otherwise the old (later) frame looks like "video ran ahead" → endless seeking
         self.shown_pts = None;
         self.fresh = true;
         self.target = (t.max(0.0), std::time::Instant::now());
         let _ = self.ctrl.send(Ctrl::Seek(t.max(0.0), self.gen));
     }
 
-    /// Вызывать каждый кадр интерфейса с текущей позицией звука.
+    /// Call every UI frame with the current audio position.
     pub fn update(&mut self, clock: f64, ctx: &egui::Context) {
         loop {
             if self.queue.len() >= 3 { break; }
             match self.frames.try_recv() {
                 Ok(Ok(f)) if f.gen == self.gen => self.queue.push_back(f),
-                Ok(Ok(_)) => continue, // кадр из до-перемоточной эпохи
+                Ok(Ok(_)) => continue, // a frame from before the seek
                 Ok(Err(e)) => { self.error = Some(e); break; }
                 Err(_) => break,
             }
         }
-        // открылись не с того места (например, со старой позиции прошлой серии) и кадров нет — догоняем звук
+        // opened at the wrong place (e.g. at the previous episode's old position) and there are no frames — catch up with the audio
         let lost = self.queue.is_empty() && (self.shown_pts.is_none() || self.fresh) && (clock - self.target.0).abs() > 1.0 && self.target.1.elapsed() > Duration::from_millis(400);
-        // звук ушёл назад (или сильно вперёд) от того, что у нас есть — перематываем видео
+        // audio went back (or far forward) from what we have — seek the video
         let behind = lost || self.shown_pts.is_some_and(|p| p > clock + 1.0);
         let far_ahead = self.queue.back().is_some_and(|f| f.pts + 2.0 < clock);
         if behind || far_ahead {
             self.seek(clock);
             return;
         }
-        // самый свежий кадр, время которого уже наступило
+        // the newest frame whose time has already come
         let mut pick = None;
         while self.queue.front().is_some_and(|f| f.pts <= clock + 0.015) { pick = self.queue.pop_front(); }
-        // до старта воспроизведения показываем первый кадр, чтобы не было чёрного экрана
+        // before playback starts, show the first frame so the screen isn't black
         if pick.is_none() && (self.texture.is_none() || self.fresh) { pick = self.queue.pop_front(); }
         if let Some(f) = pick {
             let img = ColorImage::from_rgba_unmultiplied(f.size, &f.rgba);
@@ -169,7 +169,7 @@ fn check_ctrl(ctrl: &Receiver<Ctrl>) -> Flow {
 fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Result<(), String> {
     let file = std::fs::File::open(path).map_err(|e| lf!("не удалось открыть видео: {e}", "couldn't open the video: {e}"))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    // не разобрался MP4 (например, HEVC в hvc1) — пусть попробует ffmpeg
+    // couldn't parse the MP4 (e.g. HEVC in hvc1) — let ffmpeg try
     let mut mp4 = mp4::Mp4Reader::read_header(BufReader::new(file), size).map_err(|e| format!("{}MP4: {e}", wavy_core::ffmpeg::NEED))?;
     let (track_id, timescale, nal_len, params) = {
         let t = mp4.tracks().values()
@@ -186,9 +186,9 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
     };
     let count = mp4.sample_count(track_id).map_err(|e| e.to_string())?;
 
-    // индекс кадров: время показа и «ключевой ли» — нужен для перемотки
-    // для фрагментированного MP4 (так отдаёт YouTube) библиотека неверно считает время и место кадров
-    // в файле — считаем сами и читаем кадры напрямую
+    // frame index: presentation time and "is keyframe" — needed for seeking
+    // for fragmented MP4 (as YouTube serves it) the library computes frame times and positions
+    // in the file wrong — we compute them ourselves and read frames directly
     let mut locs: Option<(std::fs::File, Vec<(u64, u32)>)> = None;
     let mut index: Vec<(f64, bool)> = if mp4.is_fragmented() {
         let moofs = moof_offsets(path).map_err(|e| lf!("не удалось разобрать MP4: {e}", "couldn't parse the MP4: {e}"))?;
@@ -207,7 +207,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
     };
     index.resize(count as usize, (index.last().map(|l| l.0).unwrap_or(0.0), false));
     if !index.iter().any(|x| x.1) { if let Some(first) = index.first_mut() { first.1 = true; } }
-    // первый кадр — это ноль (в MP4 бывает сдвиг из-за B-кадров)
+    // the first frame is zero (MP4 can have an offset because of B-frames)
     let t0 = index.iter().take(32).map(|x| x.0).fold(f64::INFINITY, f64::min);
     let t0 = if t0.is_finite() { t0 } else { 0.0 };
 
@@ -218,7 +218,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
         let k = index.iter().enumerate().filter(|(_, (t, s))| *s && *t - t0 <= target + 0.001).map(|(i, _)| i).last().unwrap_or(0);
         let mut dec = Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new().flush_after_decode(Flush::NoFlush))
             .map_err(|e| lf!("декодер H.264: {e}", "H.264 decoder: {e}"))?;
-        let mut pending: BinaryHeap<Reverse<i64>> = BinaryHeap::new(); // кадры выходят в порядке показа
+        let mut pending: BinaryHeap<Reverse<i64>> = BinaryHeap::new(); // frames come out in presentation order
         let to_key = |t: f64| (t * 1_000_000.0) as i64;
 
         for i in k..count as usize {
@@ -270,7 +270,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
                 Err(e) => if !logged_err { logged_err = true; wavy_core::log(&format!("видео: кадр {i} не декодировался: {e}")); },
             }
         }
-        // хвост буфера декодера
+        // the tail of the decoder buffer
         if let Ok(rest) = dec.flush_remaining() {
             for img in rest {
                 let Some(Reverse(key)) = pending.pop() else { break };
@@ -281,7 +281,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
                 }
             }
         }
-        // конец видео: ждём перемотку или закрытие
+        // end of video: wait for a seek or close
         match ctrl.recv() {
             Ok(Ctrl::Seek(t, g)) => { target = t; gen = g; }
             Err(_) => return Ok(()),
@@ -289,7 +289,7 @@ fn decode_loop(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>,
     }
 }
 
-/// Позиции блоков moof в файле (верхний уровень MP4).
+/// Positions of moof boxes in the file (MP4 top level).
 fn moof_offsets(path: &Path) -> std::io::Result<Vec<u64>> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
@@ -309,8 +309,8 @@ fn moof_offsets(path: &Path) -> std::io::Result<Vec<u64>> {
     Ok(out)
 }
 
-/// Время показа, «ключевой ли» и место в файле (смещение, размер) для каждого кадра
-/// фрагментированного MP4 — по блокам moof/traf/tfhd/tfdt/trun, как в стандарте ISO BMFF.
+/// Presentation time, "is keyframe" and location in the file (offset, size) for each frame
+/// of a fragmented MP4 — from the moof/traf/tfhd/tfdt/trun boxes, as in the ISO BMFF standard.
 fn fragmented_index<R>(mp4: &mp4::Mp4Reader<R>, track_id: u32, timescale: f64, moof_pos: &[u64]) -> (Vec<(f64, bool)>, Vec<(u64, u32)>) {
     let trex = mp4.moov.mvex.as_ref().map(|m| &m.trex);
     let (mut idx, mut locs) = (Vec::new(), Vec::new());
@@ -337,7 +337,7 @@ fn fragmented_index<R>(mp4: &mp4::Mp4Reader<R>, track_id: u32, timescale: f64, m
                     let cts = trun.sample_cts.get(j).map(|c| if trun.version == 1 { *c as i32 as i64 } else { *c as i64 }).unwrap_or(0);
                     let flags = if j == 0 { trun.first_sample_flags.or(trun.sample_flags.first().copied()).unwrap_or(def_flags) }
                         else { trun.sample_flags.get(j).copied().unwrap_or(def_flags) };
-                    idx.push(((dts as i64 + cts) as f64 / timescale, flags & 0x0001_0000 == 0)); // бит sample_is_non_sync
+                    idx.push(((dts as i64 + cts) as f64 / timescale, flags & 0x0001_0000 == 0)); // sample_is_non_sync bit
                     locs.push((off, size));
                     dts += dur;
                 }
@@ -349,7 +349,7 @@ fn fragmented_index<R>(mp4: &mp4::Mp4Reader<R>, track_id: u32, timescale: f64, m
     (idx, locs)
 }
 
-/// Профили H.264, которые OpenH264 не умеет: 10 бит (Hi10P), 4:2:2, 4:4:4.
+/// H.264 profiles OpenH264 can't handle: 10-bit (Hi10P), 4:2:2, 4:4:4.
 fn unsupported_profile(profile: u8) -> Option<&'static str> {
     match profile {
         110 => Some(l!("10-битное H.264 (Hi10P)", "10-bit H.264 (Hi10P)")),
@@ -358,7 +358,7 @@ fn unsupported_profile(profile: u8) -> Option<&'static str> {
     }
 }
 
-/// avcC (CodecPrivate в MKV): длина префикса NAL и SPS/PPS в виде Annex B.
+/// avcC (CodecPrivate in MKV): NAL length prefix size and SPS/PPS as Annex B.
 fn parse_avcc(c: &[u8]) -> Result<(usize, Vec<u8>, u8), String> {
     if c.len() < 7 { return Err(l!("нет описания H.264", "no H.264 description").into()); }
     let profile = c[1];
@@ -382,7 +382,7 @@ fn parse_avcc(c: &[u8]) -> Result<(usize, Vec<u8>, u8), String> {
     Ok((nal_len, params, profile))
 }
 
-/// Есть ли в кадре IDR (ключевой кадр) — для блоков MKV без флага keyframe.
+/// Whether the frame contains an IDR (keyframe) — for MKV blocks without the keyframe flag.
 fn has_idr(data: &[u8], nal_len: usize) -> bool {
     let mut p = 0;
     while p + nal_len <= data.len() {
@@ -394,7 +394,7 @@ fn has_idr(data: &[u8], nal_len: usize) -> bool {
     false
 }
 
-/// Длина-префиксные NAL → Annex B (то, что ест OpenH264).
+/// Length-prefixed NALs → Annex B (what OpenH264 consumes).
 fn to_annexb(data: &[u8], nal_len: usize, buf: &mut Vec<u8>) {
     let mut p = 0;
     while p + nal_len <= data.len() {
@@ -418,8 +418,8 @@ fn video_codec_error(codec: &str) -> String {
     lf!("{}видео в {name}", "{}the video is {name}", wavy_core::ffmpeg::NEED)
 }
 
-/// MKV: H.264 + субтитры. Заголовок (кодек, avcC) читаем matroska-demuxer, а пакеты и перемотку
-/// берём у symphonia (у неё перемотка надёжная). Перемотка — к ближайшему ключевому кадру до нужного места.
+/// MKV: H.264 + subtitles. The header (codec, avcC) is read by matroska-demuxer, while packets and seeking
+/// come from symphonia (its seeking is reliable). Seeking goes to the nearest keyframe before the target.
 fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context, sub_track: Option<u64>, subs: &Subs) -> Result<(), String> {
     use matroska_demuxer::{MatroskaFile, TrackType};
     use symphonia::core::{formats::{FormatOptions, SeekMode, SeekTo}, io::MediaSourceStream, meta::MetadataOptions, probe::Hint, units::Time};
@@ -459,7 +459,7 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
     let mut buf = Vec::new();
     let mut logged_err = false;
     'outer: loop {
-        // ключевой кадр не позже target: смотрим окно перед ним (15 с, потом шире)
+        // a keyframe no later than target: look at the window before it (15 s, then wider)
         let mut key: Option<f64> = None;
         if target > 0.3 {
             for back in [15.0, 60.0, 600.0] {
@@ -525,7 +525,7 @@ fn decode_mkv(path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, 
     }
 }
 
-/// Субтитры из MKV, когда видео идёт через ffmpeg: один быстрый проход по файлу (берём только пакеты субтитров).
+/// Subtitles from MKV when the video goes through ffmpeg: one quick pass over the file (subtitle packets only).
 fn scan_subs(path: &Path, track: u64, subs: &Subs, ctx: &egui::Context) {
     use symphonia::core::{formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint};
     let codec = std::fs::File::open(path).ok().and_then(|f| matroska_demuxer::MatroskaFile::open(BufReader::new(f)).ok())
@@ -546,25 +546,25 @@ fn scan_subs(path: &Path, track: u64, subs: &Subs, ctx: &egui::Context) {
             subs.lock().unwrap().append(&mut batch);
             ctx.request_repaint();
         }
-        if Arc::strong_count(subs) == 1 { return; } // видео закрыли
+        if Arc::strong_count(subs) == 1 { return; } // the video was closed
     }
     subs.lock().unwrap().append(&mut batch);
 }
 
-/// Процесс ffmpeg, который убивается вместе с потоком видео.
+/// An ffmpeg process that's killed together with the video thread.
 struct Child(std::process::Child);
 impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
 
-/// Видео через ffmpeg: кадры RGBA по трубе, время и размер кадра — из фильтра showinfo.
-/// Перемотка — перезапуск с -ss (ffmpeg сам декодирует от ключевого кадра до нужного места).
-/// -hwaccel auto: если видеокарта умеет этот кодек — декодирует она (на слабом ПК это главное).
-/// Память: ffmpeg отдаёт YUV 4:2:0 (в 2,7 раза меньше RGBA) и декодирует в 2 потока — ~100 МБ на 1080p HEVC
-/// вместо ~350 МБ по умолчанию; в RGBA переводим сами.
+/// Video through ffmpeg: RGBA frames over a pipe; frame time and size come from the showinfo filter.
+/// Seeking restarts with -ss (ffmpeg decodes from the keyframe to the target itself).
+/// -hwaccel auto: if the GPU supports the codec, it decodes (that's what matters on a weak PC).
+/// Memory: ffmpeg outputs YUV 4:2:0 (2.7× smaller than RGBA) and decodes on 2 threads — ~100 MB for 1080p HEVC
+/// instead of ~350 MB by default; we convert to RGBA ourselves.
 fn decode_ffmpeg(ff: &Path, path: &Path, start: f64, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Result<(), String> {
     use std::io::{BufRead, Read};
     use std::process::Stdio;
     let (mut target, mut gen) = (start, 0u32);
-    let mut ever = false; // хоть один кадр за всё время (перемотка за конец файла — не ошибка)
+    let mut ever = false; // at least one frame overall (seeking past the end of the file isn't an error)
     'outer: loop {
         let mut c = wavy_core::ffmpeg::cmd(ff);
         c.args(["-nostdin", "-hide_banner", "-nostats", "-loglevel", "info", "-hwaccel", "auto", "-threads", "2", "-copyts"]);
@@ -623,12 +623,12 @@ fn decode_ffmpeg(ff: &Path, path: &Path, start: f64, out: &SyncSender<Result<Fra
     }
 }
 
-/// YUV 4:2:0 (planar) → RGBA. Матрица BT.709 для HD, BT.601 для SD, «телевизионный» диапазон 16–235.
+/// YUV 4:2:0 (planar) → RGBA. BT.709 matrix for HD, BT.601 for SD, "TV" range 16–235.
 fn yuv420_to_rgba(src: &[u8], w: usize, h: usize) -> Vec<u8> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let (yp, rest) = src.split_at(w * h);
     let (up, vp) = rest.split_at(cw * ch);
-    // коэффициенты ×1024
+    // coefficients ×1024
     let (rv, gu, gv, bu) = if h >= 720 { (1613, 192, 479, 1900) } else { (1436, 352, 731, 1815) };
     let mut out = vec![255u8; w * h * 4];
     for row in 0..h {
@@ -650,7 +650,7 @@ fn yuv420_to_rgba(src: &[u8], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
-/// Отдать готовый кадр интерфейсу, не блокируясь насмерть (во время ожидания слушаем перемотку).
+/// Hand a ready frame to the UI without blocking forever (listen for seeks while waiting).
 fn send(mut frame: Frame, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Flow {
     loop {
         match out.try_send(Ok(frame)) {
@@ -669,7 +669,7 @@ fn send(mut frame: Frame, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiv
 }
 
 fn emit(img: &openh264::decoder::DecodedYUV<'_>, pts: f64, target: f64, gen: u32, out: &SyncSender<Result<Frame, String>>, ctrl: &Receiver<Ctrl>, ctx: &egui::Context) -> Flow {
-    if pts + 0.05 < target { return Flow::Go; } // догоняем точку перемотки — кадры до неё не нужны
+    if pts + 0.05 < target { return Flow::Go; } // catching up to the seek point — frames before it aren't needed
     let (w, h) = img.dimensions();
     let mut rgba = vec![0u8; w * h * 4];
     img.write_rgba8(&mut rgba);

@@ -1,5 +1,5 @@
-# При каждом пуше в main: Wavy.exe (Windows) + Wavy.apk (Android) → один релиз build-N.
-# Номер N вшивается в обе сборки — по нему работает автообновление.
+# On every push to main: Wavy.exe (Windows) + Wavy.apk (Android) → one build-N release.
+# N is baked into both builds — auto-update relies on it.
 name: Build & release
 
 on:
@@ -20,7 +20,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # без сети, меньше секунды; включает общие с Android примеры (testdata/parity)
+      # no network, under a second; includes the cases shared with Android (testdata/parity)
       - name: Tests
         run: cargo test --release -p wavy-core
 
@@ -40,8 +40,8 @@ jobs:
           name: Wavy-windows
           path: dist/Wavy.exe
 
-  # Маленький ffmpeg.exe для HEVC/10 бит/VP9/AV1 и звука Opus/AC3/DTS (плеер качает его сам, когда понадобится).
-  # Собирается заново только при изменении скрипта — иначе берётся из кэша.
+  # Small ffmpeg.exe for HEVC/10-bit/VP9/AV1 video and Opus/AC3/DTS audio (the player downloads it when needed).
+  # Rebuilt only when the script changes — otherwise taken from the cache.
   ffmpeg:
     runs-on: ubuntu-latest
     steps:
@@ -67,8 +67,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     env:
-      # пароль от android/release.p12 (Settings → Secrets → Actions). Без него APK не публикуется:
-      # иначе следующая версия не встанет поверх (другая подпись).
+      # password for android/release.p12 (Settings → Secrets → Actions). Without it the APK isn't published:
+      # otherwise the next version wouldn't install over the old one (different signature).
       HAS_KEY: ${{ secrets.WAVY_KEYSTORE_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
@@ -86,8 +86,8 @@ jobs:
         env:
           PW: ${{ secrets.WAVY_KEYSTORE_PASSWORD }}
         run: |
-          # Ключ создаётся один раз, шифруется паролем из секрета и сохраняется в репозиторий.
-          # Пароль знает только владелец репозитория — его никуда передавать не нужно.
+          # The key is created once, encrypted with the password from the secret and committed to the repo.
+          # Only the repository owner knows the password — it never needs to be shared.
           if [ ! -f release.p12 ]; then
             keytool -genkeypair -storetype PKCS12 -keystore release.p12 -alias wavy -keyalg RSA -keysize 3072 \
               -validity 11000 -storepass "$PW" -keypass "$PW" -dname "CN=Wavy, O=Wavy"
@@ -126,7 +126,7 @@ jobs:
 
   release:
     needs: [windows, android, ffmpeg]
-    # exe выходит, даже если Android-сборка сломалась — чтобы не блокировать обновления на ПК
+    # the exe ships even if the Android build broke — so PC updates aren't blocked
     if: always() && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     steps:

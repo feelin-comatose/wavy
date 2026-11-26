@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Wavy is a music and anime player. There is a desktop app (Rust, egui; Windows primary, Linux works) and an Android app (Kotlin, Jetpack Compose, Media3). Code comments, commit messages and the default UI language are Russian; every user-visible string also has an English translation (see "Translations").
+Wavy is a music and anime player. There is a desktop app (Rust, egui; Windows primary, Linux works) and an Android app (Kotlin, Jetpack Compose, Media3). Code comments are in English (so the project is easy to fork). Commit messages and the default UI language are Russian; every user-visible string also has an English translation (see "Translations").
 
 ## Commands
 

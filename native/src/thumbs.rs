@@ -1,5 +1,5 @@
-//! Кэш обложек: грузим и уменьшаем в фоне, держим ограниченное число текстур.
-//! Это главная экономия памяти: 500 обложек по 64px ≈ 8 МБ вместо сотен МБ.
+//! Cover cache: load and downscale in the background, keep a limited number of textures.
+//! This is the main memory saving: 500 covers at 64px ≈ 8 MB instead of hundreds of MB.
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -32,7 +32,7 @@ impl Thumbs {
         Self { tex: HashMap::new(), order: VecDeque::new(), pending: HashSet::new(), failed: HashSet::new(), req: req_tx, res: res_rx }
     }
 
-    /// Вызывать раз за кадр.
+    /// Call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((key, img)) = self.res.try_recv() {
             self.pending.remove(&key);
@@ -52,7 +52,7 @@ impl Thumbs {
 
     pub fn get(&mut self, src: &str, size: u32) -> Option<TextureHandle> { self.request(src.to_string(), size) }
 
-    /// Постер целиком, без квадратной обрезки (size — по большей стороне).
+    /// Whole poster, without the square crop (size — by the longer side).
     pub fn poster(&mut self, src: &str, size: u32) -> Option<TextureHandle> { self.request(format!("P|{src}"), size) }
 
     fn request(&mut self, src: String, size: u32) -> Option<TextureHandle> {
@@ -79,11 +79,11 @@ fn load(src: &str, size: u32) -> Option<ColorImage> {
         let img = img.thumbnail(size, size).to_rgba8();
         return Some(ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()));
     }
-    // квадратная обрезка по центру (YouTube-превью 4:3 с чёрными полосами)
+    // center square crop (YouTube 4:3 thumbnails with black bars)
     let (w, h) = (img.width(), img.height());
     let s = w.min(h);
     let img = if src.contains("ytimg.com") && w > h {
-        let s2 = (h as f32 * 0.75) as u32; // у hq/default превью сверху и снизу полосы
+        let s2 = (h as f32 * 0.75) as u32; // hq/default thumbnails have bars at the top and bottom
         img.crop_imm((w - s2) / 2, (h - s2) / 2, s2, s2)
     } else {
         img.crop_imm((w - s) / 2, (h - s) / 2, s, s)

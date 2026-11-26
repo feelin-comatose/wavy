@@ -5,16 +5,16 @@ import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
 
-/** Музыка и видео из памяти телефона (MediaStore). */
+/** Music and video from the phone's storage (MediaStore). */
 object LocalScanner {
-    /** Имена видеофайлов и их папки (для разбора серий аниме): id трека → (имя без расширения, папка). */
+    /** Video file names and their folders (for parsing anime episodes): track id → (name without extension, folder). */
     val videoNames = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String?>>()
 
     fun scan(ctx: Context): List<Track> {
         val out = ArrayList<Track>()
         val now = System.currentTimeMillis()
         val cr = ctx.contentResolver
-        // музыка
+        // music
         val aCols = arrayOf(
             MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.DATE_ADDED,
@@ -33,7 +33,7 @@ object LocalScanner {
                 )
             }
         }
-        // видео
+        // video
         val vCols = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.TITLE, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.DATE_ADDED,
             MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
         cr.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, vCols, null, null, null)?.use { c ->

@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import app.wavy.android.data.L
 import app.wavy.android.data.fmtTime
 
-/** Окна ручного выбора видео: список ненайденных треков Spotify и поиск видео (как на ПК). */
+/** Manual video choice dialogs: list of Spotify tracks not found and video search (same as on the PC). */
 @Composable
 fun PickDialogs() {
     val nf by AppState.notFound.collectAsState()

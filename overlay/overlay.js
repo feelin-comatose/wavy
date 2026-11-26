@@ -1,9 +1,9 @@
-// Оверлей: подписывается на /events (SSE) локального сервера Wavy.
+// Overlay: subscribes to /events (SSE) of the local Wavy server.
 (function () {
   const qs = new URLSearchParams(location.search);
   const $ = (id) => document.getElementById(id);
   const ov = $('ov');
-  const base = qs.get('server') || window.__WAVY_SERVER__ || ''; // Tauri-окно грузит страницу локально и ходит на сервер Wavy
+  const base = qs.get('server') || window.__WAVY_SERVER__ || ''; // the Tauri window loads the page locally and talks to the Wavy server
   let st = null;
   let lastId = null;
   let hideTimer = null;
@@ -42,11 +42,11 @@
   }
 
   const flag = (k, cfg) => qs.has(k) ? qs.get(k) !== '0' : !!cfg;
-  // язык — как в Wavy (поле lang), можно задать в ссылке: ?lang=en
+  // language follows Wavy (the lang field); can be set in the link: ?lang=en
   const tr = (ru, en) => ((qs.get('lang') || st?.lang) === 'en' ? en : ru);
   let lyricIdx = -1;
 
-  // «Дальше»: до трёх треков, заказы из чата подписаны ником
+  // "Next": up to three tracks; chat requests are labeled with the nickname
   function renderQueue(data) {
     const box = $('queue');
     const list = flag('queue', data.config?.showQueue) ? (data.queue || []) : [];
@@ -88,7 +88,7 @@
       $('fill').style.width = st.duration ? (pos / st.duration) * 100 + '%' : '0%';
       $('cur').textContent = fmt(pos);
       $('dur').textContent = fmt(st.duration);
-      // текущая строка текста песни
+      // current lyrics line
       const ly = flag('lyrics', st.config?.showLyrics) ? st.lyrics : null;
       let idx = -1;
       if (ly && ly.length) { for (let i = 0; i < ly.length; i++) { if (ly[i][0] <= pos + 0.2) idx = i; else break; } }
@@ -111,7 +111,7 @@
   }
   connect();
 
-  // Tauri: перемещение и ресайз окна в режиме редактирования
+  // Tauri: moving and resizing the window in edit mode
   const T = window.__TAURI__;
   if (T && T.window) {
     const w = T.window.getCurrentWindow();

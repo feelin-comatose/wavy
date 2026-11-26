@@ -14,10 +14,10 @@ pub struct Playlist {
     pub source: Option<String>,
     #[serde(default)]
     pub created_at: u64,
-    /// своя картинка обложки (файл в data_dir/covers)
+    /// custom cover image (file in data_dir/covers)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<String>,
-    /// папка в боковой панели
+    /// folder in the sidebar
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
 }
@@ -33,7 +33,7 @@ impl Playlist {
 pub struct DiscordSettings { pub enabled: bool, pub client_id: String, pub show_buttons: bool }
 impl Default for DiscordSettings { fn default() -> Self { Self { enabled: false, client_id: String::new(), show_buttons: true } } }
 
-/// Необязательный ключ Spotify Web API — нужен только для плейлистов больше 100 треков.
+/// Optional Spotify Web API key — only needed for playlists over 100 tracks.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SpotifySettings { pub client_id: String, pub client_secret: String }
@@ -57,55 +57,55 @@ pub struct Settings {
     pub discord: DiscordSettings,
     pub overlay: OverlaySettings,
     pub overlay_window: OverlayWindowSettings,
-    /// Сам скачивать и ставить новые версии с GitHub Releases.
+    /// Download and install new versions from GitHub Releases automatically.
     pub auto_update: bool,
-    /// Язык интерфейса: "ru" или "en".
+    /// Interface language: "ru" or "en".
     pub lang: String,
     pub spotify: SpotifySettings,
-    /// Сортировка: "library" или id плейлиста → способ (см. Sort).
+    /// Sorting: "library" or playlist id → method (see Sort).
     pub sort: HashMap<String, String>,
-    /// Сборка, которую человек уже видел (для окна «Что нового» после обновления).
+    /// Build the user has already seen (for the "What's new" dialog after an update).
     pub last_build: Option<u32>,
-    /// Мини-плеер: открыт ли и где.
+    /// Mini player: whether it's open and where.
     pub mini: bool,
     pub mini_pos: Option<[f32; 2]>,
-    /// Крестик сворачивает в трей, а не закрывает (Windows).
+    /// The close button minimizes to the tray instead of quitting (Windows).
     pub close_to_tray: bool,
-    /// Звук: скорость (1.0 — как есть), кроссфейд в секундах (0 — выкл), выравнивание громкости, эквалайзер.
+    /// Sound: speed (1.0 — as is), crossfade in seconds (0 — off), volume normalization, equalizer.
     pub speed: f32,
     pub crossfade: f32,
     pub normalize: bool,
     pub eq_on: bool,
     pub eq: [f32; 10],
-    /// Аниме: сам пропускать опенинги (по AniSkip), предлагать следующую серию на эндинге, аккаунт Шикимори.
+    /// Anime: skip openings automatically (via AniSkip), offer the next episode during the ending, Shikimori account.
     pub anime_autoskip: bool,
     pub anime_next: bool,
     pub shiki: crate::shikimori::Account,
-    /// Заказы из чата Twitch: канал, включено ли, макс. длина трека (мин).
+    /// Twitch chat song requests: channel, enabled or not, max track length (min).
     pub twitch_channel: String,
     pub twitch_sr: bool,
     pub twitch_max_min: u32,
-    /// Вход в Twitch (чтобы отвечать в чат), сколько голосов «!skip» пропускает трек (0 — выкл),
-    /// награда за баллы канала, которая заказывает трек (id; пусто — нет).
+    /// Twitch sign-in (to reply in chat), how many "!skip" votes skip a track (0 — off),
+    /// the channel points reward that requests a track (id; empty — none).
     pub twitch_account: crate::twitch::Account,
     pub twitch_skip_votes: u32,
     pub twitch_reward: String,
-    /// Писать «Исполнитель — Название» в файл now_playing.txt (для OBS «Текст из файла»).
+    /// Write "Artist — Title" to now_playing.txt (for OBS "Read from file").
     pub now_playing_file: bool,
-    /// Лимит кэша (ГБ, 0 — без лимита): старое удаляется само.
+    /// Cache limit (GB, 0 — no limit): old files are removed automatically.
     pub cache_limit_gb: u32,
-    /// Синхронизация с телефоном по Wi-Fi: включена ли и PIN.
+    /// Wi-Fi sync with the phone: enabled or not, and the PIN.
     pub wifi_sync: bool,
     pub wifi_pin: String,
-    /// Куки YouTube для видео 18+: имя браузера (firefox, chrome, edge…) или путь к cookies.txt. Пусто — выкл.
+    /// YouTube cookies for 18+ videos: browser name (firefox, chrome, edge…) or path to cookies.txt. Empty — off.
     pub yt_cookies: String,
-    /// Аккаунт YouTube Music по этим кукам: лайки, плейлисты и «Моя волна».
+    /// YouTube Music account through these cookies: likes, playlists and "My wave".
     pub yt_account: bool,
-    /// Глобальные горячие клавиши: действие → «Ctrl+Alt+P» (пусто — выключено; нет ключа — по умолчанию).
+    /// Global hotkeys: action → "Ctrl+Alt+P" (empty — disabled; no key — default).
     pub hotkeys: HashMap<String, String>,
-    /// Скробблинг в Last.fm.
+    /// Last.fm scrobbling.
     pub lastfm: crate::lastfm::Account,
-    /// Автобэкап библиотеки раз в день: папка (пусто — data_dir/backups) и когда был последний (мс).
+    /// Daily library auto-backup: folder (empty — data_dir/backups) and when the last one ran (ms).
     pub backup_dir: String,
     pub last_backup: u64,
 }
@@ -121,13 +121,13 @@ pub struct Library {
     pub tracks: HashMap<String, Track>,
     pub playlists: Vec<Playlist>,
     pub settings: Settings,
-    /// Раздел «Аниме»: тайтлы, их серии лежат в tracks (с полем anime).
+    /// "Anime" section: titles; their episodes live in tracks (with the anime field).
     pub anime: Vec<crate::anime::Anime>,
-    /// Сколько раз трек слушали (больше 30 секунд) — для сортировки «Часто слушаю».
+    /// How many times a track was played (over 30 seconds) — for the "Most played" sort.
     pub plays: HashMap<String, u32>,
-    /// Лайкнутые треки, свежие первыми (раздел «Любимое»).
+    /// Liked tracks, newest first (the "Liked" section).
     pub liked: Vec<String>,
-    /// История прослушиваний: (трек, когда, мс) — для «Итогов». Хранится последние 50 000.
+    /// Listening history: (track, when, ms) — for "Recap". The last 50,000 are kept.
     pub history: Vec<(String, u64)>,
 }
 
@@ -152,8 +152,8 @@ impl Store {
         }
     }
 
-    /// Резервная копия библиотеки (плейлисты, треки, лайки, история, настройки) в `dir`.
-    /// Хранит `keep` последних копий, старые удаляет.
+    /// Back up the library (playlists, tracks, likes, history, settings) to `dir`.
+    /// Keeps the last `keep` copies and deletes older ones.
     pub fn backup(&self, dir: &std::path::Path, name: &str, keep: usize) -> Result<std::path::PathBuf, String> {
         std::fs::create_dir_all(dir).map_err(|e| lf!("папка недоступна: {e}", "the folder is unavailable: {e}"))?;
         let path = dir.join(name);
@@ -166,7 +166,7 @@ impl Store {
         Ok(path)
     }
 
-    /// Восстановить библиотеку из копии. Текущая библиотека сначала сохраняется рядом (library.before-restore.json).
+    /// Restore the library from a backup. The current library is saved alongside first (library.before-restore.json).
     pub fn restore(&mut self, path: &std::path::Path) -> Result<usize, String> {
         let text = std::fs::read_to_string(path).map_err(|e| lf!("не читается: {e}", "can't be read: {e}"))?;
         let lib: Library = serde_json::from_str(&text).map_err(|_| l!("это не резервная копия Wavy", "this isn't a Wavy backup").to_string())?;
@@ -178,7 +178,7 @@ impl Store {
         Ok(n)
     }
 
-    /// Применить JSON-патч к настройкам (глубокое слияние).
+    /// Apply a JSON patch to the settings (deep merge).
     pub fn patch_settings(&mut self, patch: &Value) {
         let mut cur = serde_json::to_value(&self.lib.settings).unwrap_or(Value::Null);
         merge(&mut cur, patch);
@@ -191,7 +191,7 @@ impl Store {
     pub fn add_tracks(&mut self, tracks: Vec<Track>) {
         for mut t in tracks {
             if let Some(old) = self.lib.tracks.get(&t.id) {
-                t.added_at = old.added_at; // сохраняем порядок добавления
+                t.added_at = old.added_at; // keep the order they were added in
             }
             self.lib.tracks.insert(t.id.clone(), t);
         }
@@ -209,7 +209,7 @@ impl Store {
         self.save();
     }
 
-    /// Переставить треки внутри плейлиста: `moving` встают перед позицией `to` (индекс в исходном списке).
+    /// Reorder tracks within a playlist: `moving` go before position `to` (index in the original list).
     pub fn move_in_playlist(&mut self, pid: &str, moving: &[String], to: usize) {
         let Some(p) = self.lib.playlists.iter_mut().find(|p| p.id == pid) else { return };
         p.track_ids = move_items(&p.track_ids, moving, to);
@@ -263,18 +263,18 @@ impl Store {
         self.save();
     }
 
-    /// Треки библиотеки (без серий аниме), новые сверху.
+    /// Library tracks (without anime episodes), newest first.
     pub fn is_liked(&self, id: &str) -> bool { self.lib.liked.iter().any(|x| x == id) }
 
-    /// Лайкнуть/снять лайк. Новые лайки — наверх «Любимого».
+    /// Like/unlike. New likes go to the top of "Liked".
     pub fn set_liked(&mut self, ids: &[String], on: bool) {
         self.lib.liked.retain(|x| !ids.contains(x));
         if on { for id in ids.iter().rev() { self.lib.liked.insert(0, id.clone()); } }
         self.save();
     }
 
-    /// Засчитать прослушивание.
-    /// Умный плейлист: собирается сам по правилу (см. SMART). Без серий аниме.
+    /// Count a play.
+    /// Smart playlist: builds itself by a rule (see SMART). Without anime episodes.
     pub fn smart(&self, rule: &str) -> Vec<String> {
         const DAY: u64 = 86_400_000;
         let now = now_ms();
@@ -294,7 +294,7 @@ impl Store {
             v.into_iter().map(|t| t.id.clone()).collect()
         };
         match rule {
-            // лайкнутое, что не играло месяц
+            // liked but not played for a month
             "forgotten" => self.lib.liked.iter().filter(|id| music(id) && last.get(id.as_str()).is_none_or(|at| *at < now.saturating_sub(30 * DAY))).cloned().collect(),
             "week" => top(now.saturating_sub(7 * DAY)),
             "month" => top(now.saturating_sub(30 * DAY)),
@@ -303,7 +303,7 @@ impl Store {
                 v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
                 v.into_iter().take(50).map(|(id, _)| id.clone()).collect()
             }
-            // добавлено за две недели и ещё ни разу не слушалось
+            // added within two weeks and never played yet
             "fresh" => unplayed(now.saturating_sub(14 * DAY)),
             "never" => unplayed(0),
             _ => vec![],
@@ -317,7 +317,7 @@ impl Store {
         self.save();
     }
 
-    /// Итоги за период (с `since` мс): всего прослушиваний, минут, топ треков и артистов.
+    /// Recap for a period (since `since` ms): total plays, minutes, top tracks and artists.
     pub fn stats(&self, since: u64) -> Stats {
         let mut st = Stats::default();
         let mut tracks: HashMap<&str, u32> = HashMap::new();
@@ -342,7 +342,7 @@ impl Store {
         st
     }
 
-    /// Поправить название / исполнителя / альбом / обложку трека.
+    /// Edit a track's title / artist / album / cover.
     pub fn edit_track(&mut self, id: &str, title: &str, artist: &str, album: &str, cover: Option<Option<String>>) {
         if let Some(t) = self.lib.tracks.get_mut(id) {
             t.title = title.trim().to_string();
@@ -353,8 +353,8 @@ impl Store {
         }
     }
 
-    /// Группы дублей: одно и то же видео YouTube или тот же файл, либо совпадают исполнитель+название
-    /// и длительность (±3 с). Внутри группы первым — самый старый трек (его и оставляем).
+    /// Duplicate groups: the same YouTube video or file, or matching artist+title
+    /// and duration (±3 s). Within a group the oldest track comes first (that's the one kept).
     pub fn duplicates(&self) -> Vec<Vec<String>> {
         let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
         let mut groups: Vec<Vec<&Track>> = Vec::new();
@@ -373,7 +373,7 @@ impl Store {
         groups.into_iter().filter(|g| g.len() > 1).map(|g| g.into_iter().map(|t| t.id.clone()).collect()).collect()
     }
 
-    /// Оставить по одному из каждой группы: в плейлистах и «Любимом» лишние заменяются оставленным.
+    /// Keep one from each group: in playlists and "Liked" the extras are replaced by the kept one.
     pub fn merge_duplicates(&mut self, groups: &[Vec<String>]) -> usize {
         let mut removed = 0;
         for g in groups {
@@ -401,8 +401,8 @@ impl Store {
         self.save();
     }
 
-    /// Порядок треков по способу сортировки. `ids` приходят в «родном» порядке (библиотека — новые сверху,
-    /// плейлист — как составлен). Неизвестный способ — родной порядок.
+    /// Track order for a sort method. `ids` come in their "native" order (library — newest first,
+    /// playlist — as arranged). An unknown method keeps the native order.
     pub fn sorted(&self, mut ids: Vec<String>, how: &str, playlist: bool) -> Vec<String> {
         let t = |id: &String| self.lib.tracks.get(id);
         let key = |s: &str| s.trim().to_lowercase();
@@ -410,7 +410,7 @@ impl Store {
             ids.sort_by_cached_key(|id| t(id).map(|t| (f(t).is_empty(), f(t), key(&t.title))).unwrap_or((true, String::new(), String::new())));
         };
         match how {
-            "plays" => { ids.sort_by_key(|id| std::cmp::Reverse(self.lib.plays.get(id).copied().unwrap_or(0))); } // стабильно: при равенстве — родной порядок
+            "plays" => { ids.sort_by_key(|id| std::cmp::Reverse(self.lib.plays.get(id).copied().unwrap_or(0))); } // stable: on a tie — native order
             "newest" if playlist => ids.reverse(),
             "oldest" if !playlist => ids.reverse(),
             "title" => by(&|t| key(&t.title), &mut ids),
@@ -432,7 +432,7 @@ impl Store {
     pub fn anime(&self, id: &str) -> Option<&crate::anime::Anime> { self.lib.anime.iter().find(|a| a.id == id) }
     pub fn anime_mut(&mut self, id: &str) -> Option<&mut crate::anime::Anime> { self.lib.anime.iter_mut().find(|a| a.id == id) }
 
-    /// Добавить серии в тайтл (найти по ключу или создать). Возвращает id тайтла и был ли он новым.
+    /// Add episodes to a title (found by key or created). Returns the title id and whether it was new.
     pub fn add_episodes(&mut self, key: &str, parsed: &crate::anime::Parsed, tracks: Vec<Track>) -> (String, bool) {
         let idx = match self.lib.anime.iter().position(|a| a.key == key) {
             Some(i) => i,
@@ -453,7 +453,7 @@ impl Store {
         (id, is_new)
     }
 
-    /// Серии по номерам.
+    /// Episodes by number.
     pub fn sort_anime(&mut self, id: &str) {
         let Some(a) = self.lib.anime.iter().find(|a| a.id == id) else { return };
         let mut eps: Vec<Track> = a.episodes.iter().filter_map(|e| self.lib.tracks.get(e).cloned()).collect();
@@ -462,7 +462,7 @@ impl Store {
         if let Some(a) = self.anime_mut(id) { a.episodes = ids; }
     }
 
-    /// Обновить исполнителя у серий (после того как с Шикимори пришло русское название).
+    /// Update the artist of episodes (after the Russian title arrives from Shikimori).
     pub fn retitle_episodes(&mut self, id: &str) {
         let Some(a) = self.anime(id).cloned() else { return };
         for e in &a.episodes {
@@ -478,7 +478,7 @@ impl Store {
         self.save();
     }
 
-    /// Серия просмотрена / нет.
+    /// Episode watched / not.
     pub fn mark_episode(&mut self, track_id: &str, watched: bool) {
         let Some(aid) = self.lib.tracks.get(track_id).and_then(|t| t.anime.clone()) else { return };
         if let Some(a) = self.anime_mut(&aid) {
@@ -488,7 +488,7 @@ impl Store {
         self.save();
     }
 
-    /// Запомнить, где остановились (серия и позиция).
+    /// Remember where we stopped (episode and position).
     pub fn set_progress(&mut self, track_id: &str, pos: f64) {
         let Some(aid) = self.lib.tracks.get(track_id).and_then(|t| t.anime.clone()) else { return };
         if let Some(a) = self.anime_mut(&aid) { a.last = Some(track_id.to_string()); a.last_pos = pos; }
@@ -504,7 +504,7 @@ pub struct Stats {
     pub top_artists: Vec<(String, u32)>,
 }
 
-/// Список с перенесёнными элементами: `moving` (в их исходном порядке) встают перед позицией `to`.
+/// List with elements moved: `moving` (in their original order) go before position `to`.
 pub fn move_items(list: &[String], moving: &[String], to: usize) -> Vec<String> {
     let before = list.iter().take(to).filter(|x| moving.contains(x)).count();
     let mut rest: Vec<String> = list.iter().filter(|x| !moving.contains(x)).cloned().collect();
@@ -532,7 +532,7 @@ fn merge(a: &mut Value, b: &Value) {
     }
 }
 
-/// Умные плейлисты: (правило, название, пояснение).
+/// Smart playlists: (rule, name, description).
 pub const SMART: &[(&str, &str, &str)] = &[
     ("week", "Топ недели", "Чаще всего за 7 дней"),
     ("month", "Топ месяца", "Чаще всего за 30 дней"),
@@ -558,8 +558,8 @@ mod sort_tests {
         let j = |v: Vec<String>| v.join("");
         assert_eq!(j(s.sorted(ids.clone(), "manual", true)), "abc");
         assert_eq!(j(s.sorted(ids.clone(), "newest", true)), "cba");
-        assert_eq!(j(s.sorted(ids.clone(), "title", true)), "cba"); // латиница раньше кириллицы, без учёта регистра
-        assert_eq!(j(s.sorted(ids.clone(), "artist", true)), "bac"); // без исполнителя — в конце
+        assert_eq!(j(s.sorted(ids.clone(), "title", true)), "cba"); // Latin before Cyrillic, case-insensitive
+        assert_eq!(j(s.sorted(ids.clone(), "artist", true)), "bac"); // no artist — at the end
         assert_eq!(j(s.sorted(ids.clone(), "album", true)), "cba");
         s.lib.plays.insert("c".into(), 5);
         s.lib.plays.insert("a".into(), 2);
@@ -595,7 +595,7 @@ mod sort_tests {
         }
         let mut ep = tr("e", "Серия 1", "", ""); ep.anime = Some("an".into()); s.lib.tracks.insert("e".into(), ep);
         s.lib.liked = vec!["a".into(), "d".into()];
-        // a играл давно, d — вчера, c — дважды на этой неделе, серия аниме — не в счёт
+        // a played long ago, d yesterday, c twice this week, the anime episode doesn't count
         s.lib.history = vec![("a".into(), now - 45 * day), ("d".into(), now - day), ("c".into(), now - 2 * day), ("c".into(), now - day), ("e".into(), now)];
         s.lib.plays = [("a", 1), ("d", 1), ("c", 2), ("e", 9)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         assert_eq!(s.smart("forgotten"), vec!["a"]);

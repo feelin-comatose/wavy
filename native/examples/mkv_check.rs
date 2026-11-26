@@ -1,5 +1,5 @@
-//! Проверка MKV без окна: дорожки, кадры H.264, субтитры, перемотка.
-//! cargo run -p wavy-native --example mkv_check -- <файл.mkv> [shazam]
+//! Check an MKV without a window: tracks, H.264 frames, subtitles, seeking.
+//! cargo run -p wavy-native --example mkv_check -- <file.mkv> [shazam]
 #[allow(dead_code)]
 #[macro_use]
 extern crate wavy_core;
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let path = std::path::PathBuf::from(&a[1]);
-    // WAVY_FFMPEG=<путь к ffmpeg> — проверить и форматы, которые идут через него
+    // WAVY_FFMPEG=<path to ffmpeg> — also check the formats that go through it
     let ff = std::env::var_os("WAVY_FFMPEG").map(std::path::PathBuf::from);
     let info = wavy_core::media::probe(&path);
     println!("длительность {:?}, видео «{}»", info.duration, info.video_codec);
@@ -31,7 +31,7 @@ fn main() {
     let mut v = video::Video::open(path.clone(), 0.0, &ctx, sub, ff.clone());
     let t0 = Instant::now();
     let (mut shown, mut last) = (0, None::<eframe::egui::TextureId>);
-    // «играем» 12 секунд со скоростью x4
+    // "play" 12 seconds at x4 speed
     let mut clock = 0.0;
     while clock < 12.0 {
         v.update(clock, &ctx);
@@ -43,7 +43,7 @@ fn main() {
     if v.error.is_none() {
         println!("кадров показано (обновлений текстуры): {shown}, размер {:?}, за {:?}", v.texture.as_ref().map(|t| t.size()), t0.elapsed());
         for t in [0.5, 2.0, 4.0, 11.0] { println!("  сабы @{t}: {:?}", v.subs_at(t).iter().map(|c| (c.text.clone(), c.top)).collect::<Vec<_>>()); }
-        // перемотка вперёд и назад
+        // seek forward and back
         for target in [20.0, 3.0] {
             v.seek(target);
             let t1 = Instant::now();
@@ -56,7 +56,7 @@ fn main() {
             println!("перемотка на {target}: кадр {:?}, за {:?}; сабы {:?}", v.shown(), t1.elapsed(), v.subs_at(target + 0.5).iter().map(|c| c.text.clone()).collect::<Vec<_>>());
         }
     }
-    // как при переходе к следующей серии: видео открылось с позиции прошлой серии (27.8), а звук идёт с нуля
+    // as when moving to the next episode: the video opened at the previous episode's position (27.8) while audio starts from zero
     let mut v2 = video::Video::open(path.clone(), 27.8, &ctx, None, ff.clone());
     let mut clock = 0.0;
     let t2 = Instant::now();

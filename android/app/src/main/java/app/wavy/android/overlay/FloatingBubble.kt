@@ -36,9 +36,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Плавающий мини-плеер поверх других приложений (аналог оверлея на ПК).
- * Показывается, когда приложение свёрнуто, есть что играть и включено в настройках
- * (нужно разрешение «Поверх других приложений»). Перетаскивается пальцем.
+ * Floating mini player on top of other apps (counterpart of the PC overlay).
+ * Shown when the app is minimized, something is playing, and it's enabled in settings
+ * (needs the "Display over other apps" permission). Can be dragged with a finger.
  */
 class FloatingBubble(private val ctx: Context, private val player: Player) {
     private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -124,7 +124,7 @@ class FloatingBubble(private val ctx: Context, private val player: Player) {
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP or Gravity.START; x = dp(12); y = dp(120) }
 
-        // перетаскивание; короткое касание обложки/текста — открыть приложение
+        // dragging; a short tap on the cover/text opens the app
         var sx = 0f; var sy = 0f; var ox = 0; var oy = 0; var moved = false
         val drag = View.OnTouchListener { _, e ->
             when (e.action) {

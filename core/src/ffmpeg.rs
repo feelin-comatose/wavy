@@ -1,14 +1,14 @@
-//! ffmpeg для видео и звука, которые не умеет встроенный декодер (HEVC/H.265, 10-битное H.264, VP9, AV1,
-//! звук Opus/AC3/DTS/TrueHD). Это минимальная сборка (scripts/build-ffmpeg.sh, несколько МБ) из релизов Wavy:
-//! скачивается один раз и только когда впервые понадобилась. H.264 по-прежнему играет без неё.
+//! ffmpeg for video and audio the built-in decoder can't handle (HEVC/H.265, 10-bit H.264, VP9, AV1,
+//! Opus/AC3/DTS/TrueHD audio). It's a minimal build (scripts/build-ffmpeg.sh, a few MB) from Wavy's releases:
+//! downloaded once, and only when first needed. H.264 still plays without it.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-/// Начало текста ошибки «нужен ffmpeg» (видео/звук в формате, который встроенный декодер не умеет).
+/// Prefix of the "ffmpeg needed" error text (video/audio in a format the built-in decoder can't handle).
 pub const NEED: &str = "NEED_FFMPEG:";
 
-/// Ошибка «нужен ffmpeg» → текст для человека.
+/// "ffmpeg needed" error → human-readable text.
 pub fn human(err: &str) -> &str { err.strip_prefix(NEED).unwrap_or(err) }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,19 +28,19 @@ pub struct Ffmpeg {
 fn exe() -> &'static str { if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" } }
 
 impl Ffmpeg {
-    /// Ищет готовый ffmpeg: data_dir/bin/codecs/, затем PATH. Ничего не качает.
+    /// Looks for an existing ffmpeg: data_dir/bin/codecs/, then PATH. Downloads nothing.
     ///
-    /// Отдельная папка — не прихоть: yt-dlp ищет ffmpeg рядом с собой (в bin/) и, найдя нашу урезанную
-    /// сборку, пытается ей перепаковывать скачанное — и падает («Error splitting the argument list»).
+    /// A separate folder isn't a whim: yt-dlp looks for ffmpeg next to itself (in bin/) and, on finding our stripped-down
+    /// build, tries to remux downloads with it — and fails ("Error splitting the argument list").
     pub fn new(bin_dir: PathBuf) -> Self {
         let bin_dir = bin_dir.join("codecs");
         let local = bin_dir.join(exe());
-        // сборки 16–17 клали ffmpeg прямо в bin/ — переносим
+        // builds 16–17 put ffmpeg straight into bin/ — move it
         if let Some(old) = bin_dir.parent().map(|d| d.join(exe())).filter(|p| p.exists()) {
             let _ = std::fs::create_dir_all(&bin_dir);
             if std::fs::rename(&old, &local).is_err() { let _ = std::fs::remove_file(&old); }
         }
-        // старые копии, которые не удалось стереть при обновлении (Windows не даёт удалить запущенный exe)
+        // old copies that couldn't be deleted during an update (Windows won't delete a running exe)
         if let Ok(rd) = std::fs::read_dir(&bin_dir) {
             for e in rd.flatten() { if e.file_name().to_string_lossy().starts_with("ffmpeg.old") { let _ = std::fs::remove_file(e.path()); } }
         }
@@ -53,7 +53,7 @@ impl Ffmpeg {
     pub fn state(&self) -> State { self.state.lock().unwrap().clone() }
     pub fn path(&self) -> Option<PathBuf> { match self.state() { State::Ready(p) => Some(p), _ => None } }
 
-    /// Скачать в фоне, если ещё нет (повторный вызов во время загрузки ничего не делает).
+    /// Download in the background if missing (calling again during the download does nothing).
     pub fn install_background(&self, on_change: impl Fn() + Send + 'static) {
         {
             let mut st = self.state.lock().unwrap();
@@ -70,8 +70,8 @@ impl Ffmpeg {
         }).ok();
     }
 
-    /// ffmpeg с кодировщиком MP3 (экспорт). Ждёт идущую загрузку; если готовый ffmpeg старый, без MP3 (сборки
-    /// до 23-й), — скачивает новый. Блокирует: вызывать из фонового потока.
+    /// ffmpeg with an MP3 encoder (export). Waits for an ongoing download; if the existing ffmpeg is old and lacks MP3 (builds
+    /// before 23), downloads a new one. Blocking: call from a background thread.
     pub fn ready_with_mp3(&self, progress: impl Fn(u8)) -> Result<PathBuf, String> {
         loop {
             {
@@ -94,7 +94,7 @@ impl Ffmpeg {
     }
 }
 
-/// Есть ли в этом ffmpeg кодировщик `name`.
+/// Whether this ffmpeg has encoder `name`.
 pub fn has_encoder(bin: &Path, name: &str) -> bool {
     cmd(bin).args(["-hide_banner", "-h", &format!("encoder={name}")]).output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("Encoder {name}")))
@@ -122,7 +122,7 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
     drop(f);
     if got < 1_000_000 { let _ = std::fs::remove_file(&part); return Err(l!("скачался не тот файл (слишком маленький)", "the wrong file was downloaded (too small)").into()); }
     if dest.exists() && std::fs::remove_file(&dest).is_err() {
-        // старый ffmpeg сейчас работает (идёт видео) — удалить нельзя, но переименовать Windows разрешает
+        // the old ffmpeg is running right now (video is playing) — it can't be deleted, but Windows allows renaming it
         let _ = std::fs::rename(&dest, dir.join(format!("ffmpeg.old{}.exe", crate::now_ms())));
     }
     std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
@@ -134,7 +134,7 @@ fn download(dir: &Path, progress: impl Fn(u8)) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-/// Запуск без мигающей консоли в Windows.
+/// Launch without a flashing console window on Windows.
 pub fn cmd(bin: &Path) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(bin);
@@ -146,7 +146,7 @@ pub fn cmd(bin: &Path) -> Command {
     c
 }
 
-/// Строка showinfo → (время кадра, ширина, высота).
+/// showinfo line → (frame time, width, height).
 pub fn parse_showinfo(line: &str) -> Option<(f64, usize, usize)> {
     let t = line.split("pts_time:").nth(1)?.split_whitespace().next()?.parse().ok()?;
     let s = line.split(" s:").nth(1)?.split_whitespace().next()?;
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(super::parse_showinfo("Input #0, matroska"), None);
     }
 
-    /// ffmpeg из bin/ переезжает в bin/codecs/ — там его не найдёт yt-dlp.
+    /// ffmpeg moves from bin/ to bin/codecs/ — yt-dlp won't find it there.
     #[test]
     fn moves_out_of_ytdlp_dir() {
         let bin = std::env::temp_dir().join(format!("wavy-ff-{}", std::process::id()));

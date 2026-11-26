@@ -1,11 +1,11 @@
-//! Глобальные горячие клавиши: работают, даже когда окно Wavy не в фокусе (в игре).
-//! Сочетания хранятся строкой «Ctrl+Alt+P» (настройки: действие → сочетание, пусто — выключено).
+//! Global hotkeys: work even when the Wavy window isn't focused (in a game).
+//! Combinations are stored as a string like "Ctrl+Alt+P" (settings: action → combination, empty — disabled).
 use eframe::egui;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::GlobalHotKeyManager;
 use std::collections::HashMap;
 
-/// (действие, подпись, сочетание по умолчанию)
+/// (action, label, default combination)
 pub const ACTIONS: &[(&str, &str, &str)] = &[
     ("toggle", "Пауза / играть", "Ctrl+Alt+P"),
     ("next", "Следующий трек", "Ctrl+Alt+Right"),
@@ -19,7 +19,7 @@ pub const ACTIONS: &[(&str, &str, &str)] = &[
     ("lock", "Закрепить / двигать оверлей", "Ctrl+Shift+L"),
 ];
 
-/// Сочетание для действия с учётом настроек.
+/// Combination for an action, taking settings into account.
 pub fn combo(map: &HashMap<String, String>, action: &str) -> String {
     map.get(action).cloned().unwrap_or_else(|| ACTIONS.iter().find(|a| a.0 == action).map(|a| a.2.to_string()).unwrap_or_default())
 }
@@ -45,7 +45,7 @@ fn code(key: &str) -> Option<Code> {
     })
 }
 
-/// «Ctrl+Alt+P» → HotKey. Без модификатора не принимаем: иначе клавиша перестанет работать везде.
+/// "Ctrl+Alt+P" → HotKey. Not accepted without a modifier: otherwise the key would stop working everywhere.
 pub fn parse(s: &str) -> Option<HotKey> {
     let parts: Vec<&str> = s.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
     let (key, mods) = parts.split_last()?;
@@ -57,7 +57,7 @@ pub fn parse(s: &str) -> Option<HotKey> {
     Some(HotKey::new(Some(m), code(key)?))
 }
 
-/// Нажатая в окне клавиша (для записи сочетания) → «Ctrl+Alt+P».
+/// A key pressed in the window (for recording a combination) → "Ctrl+Alt+P".
 pub fn from_egui(key: egui::Key, m: egui::Modifiers) -> Option<String> {
     use egui::Key::*;
     let k = match key {
@@ -75,12 +75,12 @@ pub fn from_egui(key: egui::Key, m: egui::Modifiers) -> Option<String> {
     Some(s + &k)
 }
 
-/// Зарегистрированные сочетания: id события → действие.
+/// Registered combinations: event id → action.
 #[derive(Default)]
 pub struct Keys { pub ids: HashMap<u32, String>, registered: Vec<HotKey>, pub failed: Vec<String> }
 
 impl Keys {
-    /// Перерегистрировать всё по настройкам. `failed` — сочетания, занятые другой программой.
+    /// Re-register everything from settings. `failed` — combinations taken by another program.
     pub fn apply(&mut self, mgr: &GlobalHotKeyManager, map: &HashMap<String, String>) {
         let _ = mgr.unregister_all(&self.registered);
         self.registered.clear();

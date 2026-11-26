@@ -1,5 +1,5 @@
-//! Итоги картинкой (1080×1350, как пост в соцсетях): часы музыки, прослушивания, топ треков и артистов.
-//! Чёрно-белая, как и сам Wavy. Текст рисуется Inter; иероглифы — системным шрифтом (как в интерфейсе).
+//! Recap image (1080×1350, like a social media post): hours of music, plays, top tracks and artists.
+//! Black and white, like Wavy itself. Text is drawn with Inter; CJK with the system font (as in the UI).
 use ab_glyph::{Font, FontArc, FontVec, PxScale, ScaleFont};
 use image::{Rgba, RgbaImage};
 use std::path::Path;
@@ -46,7 +46,7 @@ fn blend(img: &mut RgbaImage, x: i32, y: i32, c: Rgba<u8>, a: f32) {
 fn rect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, c: Rgba<u8>) {
     for yy in y..y + h {
         for xx in x..x + w {
-            // скруглённые углы
+            // rounded corners
             let dx = if xx < x + r { x + r - xx } else if xx >= x + w - r { xx - (x + w - r - 1) } else { 0 };
             let dy = if yy < y + r { y + r - yy } else if yy >= y + h - r { yy - (y + h - r - 1) } else { 0 };
             let d = ((dx * dx + dy * dy) as f32).sqrt();
@@ -56,11 +56,11 @@ fn rect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, c: Rgba<u8>
     }
 }
 
-/// Текст в строку, обрезается многоточием по ширине `max`. Возвращает ширину.
+/// Single-line text, truncated with an ellipsis to width `max`. Returns the width.
 fn text(img: &mut RgbaImage, fonts: &Fonts, font: &FontArc, size: f32, x: f32, y: f32, s: &str, c: Rgba<u8>, max: f32) -> f32 {
     let scale = PxScale::from(size);
     let pick = |ch: char| -> &FontArc { if font.glyph_id(ch).0 != 0 { font } else { fonts.cjk.as_ref().filter(|f| f.glyph_id(ch).0 != 0).unwrap_or(font) } };
-    // обрезка по ширине
+    // truncate to width
     let width = |s: &str| s.chars().map(|ch| pick(ch).as_scaled(scale).h_advance(pick(ch).glyph_id(ch))).sum::<f32>();
     let mut s = s.to_string();
     if width(&s) > max {
@@ -88,7 +88,7 @@ fn cover(img: &mut RgbaImage, path: Option<&Path>, x: i32, y: i32, size: u32) {
     let s = src.width().min(src.height());
     let sq = src.crop_imm((src.width() - s) / 2, (src.height() - s) / 2, s, s).resize_exact(size, size, image::imageops::FilterType::Triangle).to_rgba8();
     for (px, py, p) in sq.enumerate_pixels() {
-        // скругление углов картинки
+        // round the image corners
         let (dx, dy) = ((px as i32 - size as i32 / 2).abs(), (py as i32 - size as i32 / 2).abs());
         let edge = size as i32 / 2 - 12;
         if dx > edge && dy > edge && (((dx - edge).pow(2) + (dy - edge).pow(2)) as f32).sqrt() > 12.0 { continue; }
@@ -102,7 +102,7 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
     let m = 72.0;
     text(&mut img, &f, &f.semi, 26.0, m, 64.0, l!("WAVY · ИТОГИ", "WAVY · RECAP"), MUTED, 900.0);
     text(&mut img, &f, &f.bold, 84.0, m, 100.0, &r.period, TEXT, 940.0);
-    // три плитки с цифрами
+    // three tiles with numbers
     let tiles = [(r.hours.clone(), l!("музыки", "of music")), (r.plays.to_string(), l!("прослушиваний", "plays")), (r.top_artist.clone().unwrap_or_else(|| "—".into()), l!("артист №1", "top artist"))];
     let tw = (W as f32 - 2.0 * m - 2.0 * 20.0) / 3.0;
     for (i, (big, small)) in tiles.iter().enumerate() {
@@ -111,7 +111,7 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
         text(&mut img, &f, &f.bold, if big.chars().count() > 9 { 34.0 } else { 46.0 }, x + 26.0, 262.0, big, TEXT, tw - 52.0);
         text(&mut img, &f, &f.regular, 24.0, x + 26.0, 330.0, small, MUTED, tw - 52.0);
     }
-    // топ треков
+    // top tracks
     text(&mut img, &f, &f.semi, 32.0, m, 430.0, l!("Топ треков", "Top tracks"), TEXT, 900.0);
     for (i, e) in r.tracks.iter().take(5).enumerate() {
         let y = 490.0 + i as f32 * 104.0;
@@ -120,7 +120,7 @@ pub fn render(r: &Recap, cjk: Option<Vec<u8>>) -> RgbaImage {
         text(&mut img, &f, &f.semi, 31.0, m + 156.0, y + 8.0, &e.title, TEXT, W as f32 - m - (m + 156.0));
         text(&mut img, &f, &f.regular, 24.0, m + 156.0, y + 50.0, &e.sub, MUTED, W as f32 - m - (m + 156.0));
     }
-    // топ артистов — полосками
+    // top artists — as bars
     let ay = 1032.0;
     text(&mut img, &f, &f.semi, 32.0, m, ay, l!("Топ артистов", "Top artists"), TEXT, 900.0);
     let max = r.artists.first().map(|a| a.1).unwrap_or(1).max(1) as f32;
@@ -154,7 +154,7 @@ mod tests {
         let cjk = ["/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"].iter().find_map(|p| std::fs::read(p).ok());
         let img = render(&r, cjk);
         assert_eq!(img.dimensions(), (W, H));
-        // что-то нарисовано светлым
+        // something is drawn in light color
         assert!(img.pixels().filter(|p| p.0[0] > 200).count() > 5000);
         if let Ok(p) = std::env::var("WAVY_RECAP_OUT") { img.save(p).unwrap(); }
     }

@@ -1,5 +1,5 @@
-//! Опенинги и эндинги серий из AniSkip (открытая база, без ключа). Тайтл — по id MyAnimeList,
-//! он совпадает с id Шикимори. Ответы кэшируются: серия смотрится много раз, а база меняется редко.
+//! Episode openings and endings from AniSkip (open database, no key). The title is looked up by MyAnimeList id,
+//! which equals the Shikimori id. Responses are cached: an episode is watched many times, the database rarely changes.
 use serde_json::Value;
 use std::path::Path;
 
@@ -28,7 +28,7 @@ fn parse(v: &Value) -> Vec<Skip> {
     out
 }
 
-/// Отрезки серии `ep` тайтла `mal_id` (длина серии `length` — сервер подгоняет время под нашу версию).
+/// Segments of episode `ep` of title `mal_id` (episode length `length` — the server adjusts timings to our release).
 pub fn fetch(mal_id: u64, ep: u32, length: f64, cache: &Path) -> Result<Vec<Skip>, String> {
     let file = cache.join(format!("{mal_id}_{ep}.json"));
     if let Some(v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { return Ok(parse(&v)); }

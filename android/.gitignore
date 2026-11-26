@@ -4,4 +4,4 @@
 /local.properties
 /.kotlin
 *.jks
-# release.p12 создаёт CI при первой сборке и коммитит сюда: он зашифрован паролем из секрета WAVY_KEYSTORE_PASSWORD
+# release.p12 is created by CI on the first build and committed here: it's encrypted with the password from the WAVY_KEYSTORE_PASSWORD secret

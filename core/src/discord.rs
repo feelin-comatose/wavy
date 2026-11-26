@@ -1,4 +1,4 @@
-//! Discord Rich Presence в отдельном потоке: «Слушает Wavy» + трек, обложка, прогресс.
+//! Discord Rich Presence on a separate thread: "Listening to Wavy" + track, cover, progress.
 use crate::{PlayerState, now_ms};
 use discord_rich_presence::{activity::*, DiscordIpc, DiscordIpcClient};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
@@ -22,7 +22,7 @@ pub struct Discord {
 }
 
 impl Discord {
-    /// `on_status` вызывается из фонового потока при смене статуса.
+    /// `on_status` is called from the background thread when the status changes.
     pub fn start(on_status: impl Fn(&DiscordStatus) + Send + 'static) -> Self {
         let (tx, rx) = channel::<Msg>();
         let status = Arc::new(Mutex::new(DiscordStatus::default()));
@@ -98,7 +98,7 @@ impl Discord {
 
 fn clip(s: &str, n: usize) -> String {
     let mut s: String = s.chars().take(n).collect();
-    while s.chars().count() < 2 { s.push(' '); } // Discord требует ≥ 2 символов
+    while s.chars().count() < 2 { s.push(' '); } // Discord requires ≥ 2 characters
     s
 }
 

@@ -3,25 +3,25 @@ package app.wavy.android.data
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-/** Трек. Поля и имена совпадают с десктопной версией — для синхронизации плейлистов. */
+/** A track. Fields and names match the desktop version — for playlist sync. */
 @Serializable
 data class Track(
     val id: String,
     val type: String, // local | youtube | stream
-    val path: String? = null, // для local: content:// URI
+    val path: String? = null, // for local: content:// URI
     val videoId: String? = null,
     val url: String? = null,
     val title: String,
     val artist: String = "",
     val album: String = "",
-    val duration: Double = 0.0, // секунды
+    val duration: Double = 0.0, // seconds
     val cover: String? = null,
     val addedAt: Long = 0,
     val video: Boolean = false,
 ) {
     val isLocal get() = type == "local"
     val hasVideo get() = video || videoId != null
-    /** Маленькая обложка для списков (экономит память и трафик). */
+    /** Small cover for lists (saves memory and traffic). */
     val thumb get() = videoId?.let { "https://i.ytimg.com/vi/$it/mqdefault.jpg" } ?: cover
 }
 
@@ -44,14 +44,14 @@ data class Settings(
     val floatingPlayer: Boolean = false,
     val spotifyClientId: String = "",
     val spotifyClientSecret: String = "",
-    /** синхронизация с ПК по Wi-Fi: адрес (192.168.1.5:3738) и PIN из настроек Wavy на ПК */
+    /** Wi-Fi sync with the PC: address (192.168.1.5:3738) and PIN from Wavy's settings on the PC */
     val syncAddr: String = "",
     val syncPin: String = "",
-    /** язык интерфейса: "ru" или "en" */
+    /** interface language: "ru" or "en" */
     val lang: String = "ru",
 )
 
-/** Сохранённая очередь — чтобы продолжить с того же места после перезапуска. */
+/** Saved queue — to pick up where you left off after a restart. */
 @Serializable
 data class Session(val queue: List<String> = emptyList(), val index: Int = 0, val positionMs: Long = 0)
 
@@ -62,15 +62,15 @@ data class Library(
     val settings: Settings = Settings(),
     val session: Session = Session(),
     val anime: List<Anime> = emptyList(),
-    /** лайки, новые первыми */
+    /** likes, newest first */
     val liked: List<String> = emptyList(),
-    /** сколько раз трек проиграл дольше 30 секунд */
+    /** how many times the track played for longer than 30 seconds */
     val plays: Map<String, Int> = emptyMap(),
-    /** когда что играло — для умных плейлистов */
+    /** what played when — for smart playlists */
     val history: List<Play> = emptyList(),
 )
 
-/** Одно прослушивание: трек и время (мс). */
+/** One play: track and time (ms). */
 @Serializable
 data class Play(val id: String, val at: Long)
 

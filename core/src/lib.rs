@@ -1,5 +1,5 @@
-//! Общее ядро Wavy: библиотека, импорт, YouTube (yt-dlp), Discord RPC, сервер оверлея.
-//! Используется нативной версией (egui).
+//! Wavy's shared core: library, import, YouTube (yt-dlp), Discord RPC, overlay server.
+//! Used by the native (egui) app.
 #[macro_use]
 pub mod i18n;
 pub mod anime;
@@ -49,10 +49,10 @@ pub struct Track {
     pub cover: Option<String>,
     #[serde(default)]
     pub added_at: u64,
-    /// Локальный видеофайл (mp4/m4v/mov). У YouTube-треков видео есть всегда (по video_id).
+    /// Local video file (mp4/m4v/mov). YouTube tracks always have video (by video_id).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub video: bool,
-    /// Серия аниме: id тайтла (такие треки живут в разделе «Аниме», а не в музыке).
+    /// Anime episode: title id (such tracks live in the "Anime" section, not in music).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anime: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,11 +63,11 @@ impl Track {
     pub fn is_local(&self) -> bool {
         self.kind == "local"
     }
-    /// Можно ли показать видео для этого трека.
+    /// Whether video can be shown for this track.
     pub fn has_video(&self) -> bool {
         self.video || self.video_id.is_some()
     }
-    /// Маленькая обложка (для списков) — экономит память.
+    /// Small cover (for lists) — saves memory.
     pub fn thumb(&self) -> Option<String> {
         match (&self.video_id, &self.cover) {
             (Some(v), _) => Some(format!("https://i.ytimg.com/vi/{v}/default.jpg")),
@@ -76,7 +76,7 @@ impl Track {
     }
 }
 
-/// Состояние плеера, которое уходит в Discord и оверлей.
+/// Player state sent to Discord and the overlay.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlayerState {
     pub track: Option<Track>,
@@ -85,8 +85,8 @@ pub struct PlayerState {
     pub duration: f64,
 }
 
-/// Общий HTTP-клиент. Сертификаты берутся из системы (а не из встроенного списка),
-/// чтобы всё работало за антивирусами/прокси, которые проверяют HTTPS.
+/// Shared HTTP client. Certificates come from the system (not a built-in list),
+/// so everything works behind antivirus software/proxies that inspect HTTPS.
 pub fn http() -> &'static ureq::Agent {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     AGENT.get_or_init(|| {
@@ -99,7 +99,7 @@ pub fn http() -> &'static ureq::Agent {
     })
 }
 
-/// Лог для диагностики: data_dir/wavy.log (при > 1 МБ старый уходит в wavy.old.log).
+/// Diagnostic log: data_dir/wavy.log (over 1 MB the old one moves to wavy.old.log).
 pub fn log(msg: &str) {
     use std::io::Write;
     let path = data_dir().join("wavy.log");
@@ -113,7 +113,7 @@ pub fn log(msg: &str) {
     }
 }
 
-/// Куда сохранять скриншоты кадров: «Изображения/Wavy».
+/// Where to save frame screenshots: "Pictures/Wavy".
 pub fn pictures_dir() -> PathBuf {
     let d = dirs::picture_dir().unwrap_or_else(data_dir).join("Wavy");
     let _ = std::fs::create_dir_all(&d);

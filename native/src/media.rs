@@ -1,5 +1,5 @@
-//! Системные медиа-контролы: медиаклавиши клавиатуры, плашка плеера в Windows
-//! (рядом с громкостью, с обложкой), MPRIS на Linux, Now Playing на macOS.
+//! System media controls: keyboard media keys, the Windows media flyout
+//! (next to the volume, with the cover), MPRIS on Linux, Now Playing on macOS.
 use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig, SeekDirection};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -26,7 +26,7 @@ impl Media {
         #[cfg(not(windows))]
         let hwnd = None;
         let ctx = cc.egui_ctx.clone();
-        // на Linux без D-Bus-сессии (например, в контейнере) медиа-контролы просто выключены
+        // on Linux without a D-Bus session (e.g. in a container) media controls are simply off
         #[cfg(all(unix, not(target_os = "macos")))]
         if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
             return Self { controls: None, last_track: None, last_playing: None };

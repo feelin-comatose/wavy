@@ -1,4 +1,4 @@
-//! Проверка YouTube-цепочки: cargo run -p wavy-core --example yt_check -- <data_dir> [url]
+//! Check the YouTube chain: cargo run -p wavy-core --example yt_check -- <data_dir> [url]
 use wavy_core::{store::Store, youtube::YouTube};
 
 fn main() {
@@ -19,7 +19,7 @@ fn main() {
         }
         Err(e) => println!("поиск: ОШИБКА {e}"),
     }
-    // ждём JS-движок deno (качается в фоне)
+    // wait for the deno JS engine (downloads in the background)
     let t = std::time::Instant::now();
     while matches!(yt.deno_status(), wavy_core::youtube::Deno::Installing) { std::thread::sleep(std::time::Duration::from_millis(300)); }
     println!("deno: {:?} (ждали {:.1}s)", yt.deno_status(), t.elapsed().as_secs_f32());

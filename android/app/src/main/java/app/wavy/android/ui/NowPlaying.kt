@@ -85,7 +85,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** Позиция воспроизведения, обновляется 4 раза в секунду, пока экран видим. */
+/** Playback position, updated 4 times a second while the screen is visible. */
 @Composable
 fun rememberPosition(): Pair<Long, Long> {
     var pos by remember { mutableLongStateOf(0L) }
@@ -203,8 +203,8 @@ fun FullPlayer(onClose: () -> Unit) {
 }
 
 /**
- * Видео: локальный файл рисуется прямо из основного плеера; клип с YouTube — отдельный беззвучный
- * плеер с видеодорожкой, который подстраивается под позицию музыки (как на ПК).
+ * Video: a local file is drawn straight from the main player; a YouTube clip uses a separate muted
+ * player with the video track that follows the music's position (same as on the PC).
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -235,7 +235,7 @@ fun VideoArea(t: Track, playing: Boolean) {
                 val vp = remember(u) { ExoPlayer.Builder(ctx).build().apply { volume = 0f; setMediaItem(MediaItem.fromUri(u)); prepare() } }
                 DisposableEffect(vp) { onDispose { vp.release() } }
                 LaunchedEffect(vp) {
-                    // держим видео рядом со звуком: расхождение > 0.4 с — перематываем
+                    // keep video next to audio: drift > 0.4 s — seek
                     while (true) {
                         val target = PlayerConn.position()
                         if (kotlin.math.abs(vp.currentPosition - target) > 400) vp.seekTo(target)
@@ -253,7 +253,7 @@ fun VideoArea(t: Track, playing: Boolean) {
     }
 }
 
-/** Текст песни: текущая строка подсвечена и прокручивается к середине, тап по строке — перемотка. */
+/** Lyrics: the current line is highlighted and scrolled to the middle; tapping a line seeks. */
 @Composable
 fun LyricsView(id: String, posMs: Long) {
     LaunchedEffect(id) { AppState.loadLyrics(id) }

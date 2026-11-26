@@ -23,7 +23,7 @@ import okhttp3.Request
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Импорт из Spotify (как на ПК): список треков → поиск каждого на YouTube Music. */
+/** Import from Spotify (same as on the PC): track list → search for each one on YouTube Music. */
 object Spotify {
     data class SpTrack(val title: String, val artists: String, val album: String, val duration: Double)
     class SpList(val name: String, val tracks: List<SpTrack>, val maybeTruncated: Boolean)
@@ -31,7 +31,7 @@ object Spotify {
 
     private val js = Json { ignoreUnknownKeys = true }
 
-    /** open.spotify.com/(intl-xx/)playlist|album|track/ID или spotify:playlist:ID */
+    /** open.spotify.com/(intl-xx/)playlist|album|track/ID or spotify:playlist:ID */
     fun parseUrl(url: String): Pair<String, String>? {
         val u = url.trim()
         if (u.startsWith("spotify:")) {
@@ -49,7 +49,7 @@ object Spotify {
     private val JsonElement?.str get() = (this?.takeIf { it !is JsonNull })?.jsonPrimitive?.contentOrNull
     private val JsonElement?.num get() = (this?.takeIf { it !is JsonNull })?.jsonPrimitive?.doubleOrNull
 
-    /** Публичная embed-страница: без ключей, до 100 треков. */
+    /** Public embed page: no keys, up to 100 tracks. */
     fun fetchEmbed(kind: String, id: String): SpList {
         val html = Http.get("https://open.spotify.com/embed/$kind/$id", mapOf("Accept-Language" to "en"))
         val start = html.indexOf("""<script id="__NEXT_DATA__" type="application/json">""")
@@ -67,7 +67,7 @@ object Spotify {
         return SpList(name, tracks, kind == "playlist" && tracks.size >= 100)
     }
 
-    /** Официальный Web API: весь плейлист любого размера (нужны Client ID и Secret). */
+    /** Official Web API: the whole playlist of any size (needs a Client ID and Secret). */
     fun fetchApi(kind: String, id: String, clientId: String, secret: String): SpList {
         val auth = Base64.getEncoder().encodeToString("$clientId:$secret".toByteArray())
         val tokReq = Request.Builder().url("https://accounts.spotify.com/api/token")
@@ -95,7 +95,7 @@ object Spotify {
         return SpList(name, out, false)
     }
 
-    /** Название без хвостов, которых нет у видео: «(feat. X)», «- Remastered 2011», «[Explicit]» (как на ПК). */
+    /** Title without tails the video doesn't have: "(feat. X)", "- Remastered 2011", "[Explicit]" (same as on the PC). */
     fun cleanTitle(s: String): String {
         var t = s.lowercase()
         for ((open, close) in listOf('(' to ')', '[' to ']')) {
@@ -111,7 +111,7 @@ object Spotify {
         return t.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
     }
 
-    /** Кандидаты: песни YouTube Music, а если их мало — ещё и видео YouTube. Сбои сети повторяются. */
+    /** Candidates: YouTube Music songs, plus YouTube videos if there are too few. Network failures are retried. */
     fun candidates(q: String): List<Track> {
         fun retry(block: () -> List<Track>): List<Track> {
             repeat(3) { i -> runCatching { return block() }; Thread.sleep(800L * (i + 1)) }
@@ -122,7 +122,7 @@ object Spotify {
         return out
     }
 
-    /** Лучший кандидат: название, исполнитель, длительность, «официальность» (та же оценка, что на ПК). */
+    /** Best candidate: title, artist, duration, "officialness" (the same scoring as on the PC). */
     fun match(t: SpTrack, search: (String) -> List<Track> = ::candidates): Track? {
         val mainArtist = t.artists.split(',').first().trim()
         val cands = search(if (mainArtist.isEmpty()) t.title else "$mainArtist ${t.title}")
@@ -142,7 +142,7 @@ object Spotify {
                 if (d > 30 && !(titleOk && artistOk)) score -= 20
             }
             for (bad in listOf("live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"))
-                if (ct.contains(bad) != title.contains(bad)) score -= 8 // и наоборот: в Spotify «(Live)», а у видео нет
+                if (ct.contains(bad) != title.contains(bad)) score -= 8 // and the reverse: Spotify says "(Live)" but the video doesn't
             if (c.url?.contains("music.youtube") == true && c.album.isNotEmpty()) score += 3
             if (ct.contains("audio")) score += 2
             score -= i * 0.3
@@ -151,7 +151,7 @@ object Spotify {
         return best?.takeIf { it.first > -25 }?.second?.let { fromCandidate(it, t) }
     }
 
-    /** Трек библиотеки из найденного видео: название, исполнитель и альбом — из Spotify. */
+    /** Library track from the found video: title, artist and album come from Spotify. */
     fun fromCandidate(c: Track, t: SpTrack) = c.copy(
         url = "https://music.youtube.com/watch?v=${c.videoId}", title = t.title.ifEmpty { c.title },
         artist = t.artists.ifEmpty { c.artist }, album = t.album.ifEmpty { c.album },

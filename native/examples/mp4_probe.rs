@@ -1,4 +1,4 @@
-// Отладка таймстемпов MP4: cargo run -p wavy-native --example mp4_probe -- <file>
+// Debug MP4 timestamps: cargo run -p wavy-native --example mp4_probe -- <file>
 fn main() {
     let path = std::env::args().nth(1).expect("file");
     let f = std::fs::File::open(&path).unwrap();

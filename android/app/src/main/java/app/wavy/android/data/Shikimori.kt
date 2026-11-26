@@ -16,7 +16,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** Шикимори: поиск тайтла (GraphQL, без ключа) — как в версии для ПК. */
+/** Shikimori: title search (GraphQL, no key) — same as the PC version. */
 object Shikimori {
     private val HOSTS = listOf("https://shikimori.io", "https://shikimori.one")
     private const val UA = "Wavy (Android music & anime player)"
@@ -57,7 +57,7 @@ object Shikimori {
 
     private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
-    /** Похожесть строк: доля общих биграмм (Дайс). */
+    /** String similarity: share of common bigrams (Dice). */
     fun similarity(a0: String, b0: String): Double {
         val a = norm(a0); val b = norm(b0)
         if (a.isEmpty() || b.isEmpty()) return 0.0
@@ -70,7 +70,7 @@ object Shikimori {
         return 2.0 * common / total
     }
 
-    /** Выбрать тайтл: похожесть названия, сезон, число серий (как на ПК). */
+    /** Pick a title: name similarity, season, episode count (same as on the PC). */
     fun bestMatch(title: String, season: Int?, episodes: Int, list: List<Hit>): Hit? {
         val want = season ?: 1
         return list.map { a ->

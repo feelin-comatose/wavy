@@ -1,4 +1,4 @@
-//! Проверка Shazam: cargo run -p wavy-native --example shazam_file -- <файл> [секунда] [дорожка]
+//! Check Shazam: cargo run -p wavy-native --example shazam_file -- <file> [second] [track]
 #[allow(dead_code)]
 #[macro_use]
 extern crate wavy_core;

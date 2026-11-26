@@ -1,12 +1,12 @@
-//! Тексты песен с LRCLIB (открытая база, без ключа): синхронные (построчно со временем) или простые.
-//! Ответы кэшируются на диске — второй раз без интернета.
+//! Lyrics from LRCLIB (open database, no key): synced (line by line with timestamps) or plain.
+//! Responses are cached on disk — the second time works offline.
 use crate::Track;
 use serde_json::Value;
 use std::path::Path;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Lyrics {
-    /// строки со временем (секунды); пусто — синхронного текста нет
+    /// timed lines (seconds); empty — no synced lyrics
     pub synced: Vec<(f64, String)>,
     pub plain: String,
     pub instrumental: bool,
@@ -14,14 +14,14 @@ pub struct Lyrics {
 
 impl Lyrics {
     pub fn is_empty(&self) -> bool { self.synced.is_empty() && self.plain.trim().is_empty() && !self.instrumental }
-    /// Номер текущей строки.
+    /// Index of the current line.
     pub fn line_at(&self, t: f64) -> Option<usize> {
         let i = self.synced.partition_point(|(s, _)| *s <= t + 0.15);
         i.checked_sub(1)
     }
 }
 
-/// «[01:23.45] текст» → (83.45, «текст»). Несколько меток на строке — несколько строк.
+/// "[01:23.45] text" → (83.45, "text"). Several timestamps on a line give several lines.
 pub fn parse_lrc(s: &str) -> Vec<(f64, String)> {
     let mut out = Vec::new();
     for line in s.lines() {
@@ -40,18 +40,18 @@ pub fn parse_lrc(s: &str) -> Vec<(f64, String)> {
     out
 }
 
-/// Название без мусора YouTube: «(Official Video)», «[MV]», «feat.» и т.п.; «Артист - Песня» → разделить.
+/// Title without YouTube junk: "(Official Video)", "[MV]", "feat." etc.; "Artist - Song" → split.
 pub fn clean(track: &Track) -> (String, String) {
     let mut artist = track.artist.trim_end_matches(" - Topic").trim().to_string();
     let re = regex::Regex::new(r"(?i)\s*[\(\[【][^\)\]】]*(official|video|audio|lyric|mv|m/v|hd|4k|remaster|visuali[sz]er|music|clip|full|ver\.?|version|opening|ending)[^\)\]】]*[\)\]】]").unwrap();
     let mut title = re.replace_all(&track.title, "").to_string();
     title = regex::Regex::new(r"(?i)\s*(official\s+)?(music\s+)?(video|audio|mv|lyric video)\s*$").unwrap().replace(&title, "").to_string();
-    // японский стиль: «YOASOBI「アイドル」»
+    // Japanese style: "YOASOBI「アイドル」"
     if let Some(c) = regex::Regex::new(r"^(.*?)\s*「(.+?)」").unwrap().captures(&title) {
         if !c[1].trim().is_empty() { artist = c[1].trim().to_string(); }
         title = c[2].to_string();
     } else if let Some((a, t)) = title.split_once(" - ").or_else(|| title.split_once(" – ")).or_else(|| title.split_once(" — ")) {
-        // «Артист - Песня» — так называют видео на YouTube
+        // "Artist - Song" — how YouTube videos are usually named
         if track.kind != "local" || artist.is_empty() {
             artist = a.trim().to_string();
             title = t.trim().to_string();
@@ -77,7 +77,7 @@ fn get_json(url: &str) -> Result<Option<Value>, String> {
     }
 }
 
-/// Найти текст трека (сначала в кэше).
+/// Find a track's lyrics (cache first).
 pub fn fetch(track: &Track, cache: &Path) -> Result<Lyrics, String> {
     let file = cache.join(format!("{}.json", crate::sha16(track.id.as_bytes())));
     if let Some(v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { return Ok(from_json(&v)); }
@@ -91,7 +91,7 @@ pub fn fetch(track: &Track, cache: &Path) -> Result<Lyrics, String> {
         found = get_json(&u)?;
     }
     if found.is_none() {
-        // поиск: берём вариант с близкой длительностью, лучше — с синхронным текстом
+        // search: take a result with a close duration, preferably with synced lyrics
         let q = format!("{artist} {title}");
         if let Some(Value::Array(list)) = get_json(&format!("https://lrclib.net/api/search?q={}", enc(q.trim())))? {
             let close = |v: &&Value| track.duration <= 0.0 || (v["duration"].as_f64().unwrap_or(0.0) - track.duration).abs() < 8.0;

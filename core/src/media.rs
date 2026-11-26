@@ -1,18 +1,18 @@
-//! Что внутри видеофайла: длительность, звуковые дорожки, субтитры (встроенные в MKV и внешние .ass/.srt).
+//! What's inside a video file: duration, audio tracks, subtitles (embedded in MKV and external .ass/.srt).
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioTrack {
     pub label: String,
     pub lang: String,
-    /// Умеем ли декодировать без ffmpeg (AAC, FLAC, MP3, Vorbis, PCM; Opus/AC3/DTS — через ffmpeg).
+    /// Whether we can decode it without ffmpeg (AAC, FLAC, MP3, Vorbis, PCM; Opus/AC3/DTS go through ffmpeg).
     pub supported: bool,
     pub default: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SubSrc {
-    /// Номер дорожки в MKV.
+    /// Track number in the MKV.
     Embedded(u64),
     External(PathBuf),
 }
@@ -27,7 +27,7 @@ pub struct SubTrack {
 }
 
 impl SubTrack {
-    /// Ключ для запоминания выбора между сериями: язык+название встроенной дорожки или хвост имени файла.
+    /// Key for remembering the choice across episodes: language+name of the embedded track, or the file name's tail.
     pub fn key(&self) -> String {
         match &self.src {
             SubSrc::Embedded(_) => format!("e:{}|{}", self.lang, self.label),
@@ -41,7 +41,7 @@ pub struct MediaInfo {
     pub duration: Option<f64>,
     pub audio: Vec<AudioTrack>,
     pub subs: Vec<SubTrack>,
-    /// Кодек видео, если его не показать (HEVC, 10-бит H.264 и т.п.).
+    /// Video codec, if it can't be shown (HEVC, 10-bit H.264 etc.).
     pub video_codec: String,
 }
 
@@ -93,7 +93,7 @@ fn audio_codec_name(codec: &str) -> &str {
     }
 }
 
-/// Разобрать файл (только заголовок — быстро даже для гигабайтного MKV).
+/// Parse a file (header only — fast even for a multi-gigabyte MKV).
 pub fn probe(path: &Path) -> MediaInfo {
     let mut info = MediaInfo::default();
     if is_mkv(path) {
@@ -111,7 +111,7 @@ pub fn probe(path: &Path) -> MediaInfo {
                         }
                         matroska_demuxer::TrackType::Subtitle => {
                             let codec = t.codec_id();
-                            if !matches!(codec, "S_TEXT/ASS" | "S_TEXT/SSA" | "S_TEXT/UTF8" | "S_ASS" | "S_SSA") { continue; } // картинки (PGS/VobSub) не умеем
+                            if !matches!(codec, "S_TEXT/ASS" | "S_TEXT/SSA" | "S_TEXT/UTF8" | "S_ASS" | "S_SSA") { continue; } // image subtitles (PGS/VobSub) aren't supported
                             info.subs.push(SubTrack { src: SubSrc::Embedded(t.track_number().get()), label: label(t.name(), &lang, ""), lang, default: t.flag_default(), forced: t.flag_forced() });
                         }
                         matroska_demuxer::TrackType::Video => {
@@ -146,7 +146,7 @@ pub fn duration_of(path: &Path) -> Option<f64> {
     }
 }
 
-/// Какие субтитры включить по умолчанию: запомненные для тайтла → помеченные «по умолчанию» → русские → первые.
+/// Which subtitles to enable by default: remembered for the title → marked "default" → Russian → first.
 pub fn pick_subs(info: &MediaInfo, pref: Option<&str>) -> Option<usize> {
     match pref {
         Some("off") => return None,
@@ -158,25 +158,25 @@ pub fn pick_subs(info: &MediaInfo, pref: Option<&str>) -> Option<usize> {
         .or(if info.subs.is_empty() { None } else { Some(0) })
 }
 
-/// Какую звуковую дорожку играть: запомненную → помеченную «по умолчанию» → первую.
-/// Формат не важен: то, чего нет в symphonia (Opus, AC3…), сыграет ffmpeg.
+/// Which audio track to play: remembered → marked "default" → first.
+/// The format doesn't matter: what symphonia lacks (Opus, AC3…) is played by ffmpeg.
 pub fn pick_audio(info: &MediaInfo, pref: Option<usize>) -> usize {
     if let Some(p) = pref.filter(|p| *p < info.audio.len()) { return p; }
     info.audio.iter().position(|a| a.default).unwrap_or(0)
 }
 
-// ---------- субтитры ----------
+// ---------- subtitles ----------
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cue {
     pub start: f64,
     pub end: f64,
     pub text: String,
-    /// Надпись сверху (\an8 и т.п.) — надписи на экране, переводы вывесок.
+    /// Line at the top (\an8 etc.) — on-screen text, sign translations.
     pub top: bool,
 }
 
-/// Текст ASS без тегов оформления: {\b1}, {\pos(..)} → ничего; \N → перенос. Векторные рисунки ({\p1}) — пропускаем.
+/// ASS text without styling tags: {\b1}, {\pos(..)} → nothing; \N → line break. Vector drawings ({\p1}) are skipped.
 pub fn clean_ass(text: &str) -> Option<(String, bool)> {
     let mut out = String::with_capacity(text.len());
     let mut top = false;
@@ -201,7 +201,7 @@ pub fn clean_ass(text: &str) -> Option<(String, bool)> {
     if t.is_empty() { None } else { Some((t, top)) }
 }
 
-/// Строка события ASS из MKV-блока: «ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text».
+/// ASS event line from an MKV block: "ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text".
 pub fn mkv_ass_block(data: &[u8], start: f64, dur: f64) -> Option<Cue> {
     let s = String::from_utf8_lossy(data);
     let text = s.splitn(9, ',').nth(8)?;
@@ -209,7 +209,7 @@ pub fn mkv_ass_block(data: &[u8], start: f64, dur: f64) -> Option<Cue> {
     Some(Cue { start, end: start + dur.max(0.5), text, top })
 }
 
-/// Блок SRT из MKV (S_TEXT/UTF8): просто текст, иногда с <i>.
+/// SRT block from MKV (S_TEXT/UTF8): plain text, sometimes with <i>.
 pub fn mkv_srt_block(data: &[u8], start: f64, dur: f64) -> Option<Cue> {
     let text = strip_html(&String::from_utf8_lossy(data));
     if text.trim().is_empty() { return None; }
@@ -226,7 +226,7 @@ fn strip_html(s: &str) -> String {
 }
 
 fn ass_time(s: &str) -> Option<f64> {
-    // H:MM:SS.cc (ASS), HH:MM:SS,mmm (SRT), MM:SS.mmm (VTT без часов)
+    // H:MM:SS.cc (ASS), HH:MM:SS,mmm (SRT), MM:SS.mmm (VTT without hours)
     let parts: Vec<&str> = s.trim().split(':').collect();
     let (h, m, sec) = match parts.as_slice() { [h, m, s] => (*h, *m, *s), [m, s] => ("0", *m, *s), _ => return None };
     let (h, m): (f64, f64) = (h.parse().ok()?, m.parse().ok()?);
@@ -234,7 +234,7 @@ fn ass_time(s: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
-/// Внешний .ass/.ssa/.srt целиком.
+/// Whole external .ass/.ssa/.srt.
 pub fn load_sub_file(path: &Path) -> Vec<Cue> {
     let bytes = std::fs::read(path).unwrap_or_default();
     let text = decode_text(&bytes);
@@ -244,7 +244,7 @@ pub fn load_sub_file(path: &Path) -> Vec<Cue> {
     cues
 }
 
-/// UTF-8 (с BOM или без), UTF-16 или, если не вышло, Windows-1251 — старые русские сабы часто в ней.
+/// UTF-8 (with or without BOM), UTF-16 or, failing that, Windows-1251 — old Russian subs often use it.
 fn decode_text(b: &[u8]) -> String {
     if b.starts_with(&[0xEF, 0xBB, 0xBF]) { return String::from_utf8_lossy(&b[3..]).into_owned(); }
     if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) {

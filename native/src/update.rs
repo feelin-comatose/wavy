@@ -1,10 +1,10 @@
-//! Автообновление с GitHub Releases: сборки называются build-N, номер N вшивается в exe
-//! при сборке (переменная WAVY_BUILD в GitHub Actions). Локальные сборки не обновляются.
+//! Auto-update from GitHub Releases: builds are named build-N, N is baked into the exe
+//! at build time (the WAVY_BUILD variable in GitHub Actions). Local builds don't update.
 use serde_json::Value;
 
 pub const REPO: &str = "feelin-comatose/wavy";
 
-/// Номер сборки этого exe (None — собран не в GitHub Actions).
+/// Build number of this exe (None — not built in GitHub Actions).
 pub fn current_build() -> Option<u32> {
     option_env!("WAVY_BUILD").and_then(|s| s.parse().ok())
 }
@@ -14,7 +14,7 @@ pub struct Release {
     pub url: String,
 }
 
-/// Есть ли сборка новее текущей.
+/// Whether there's a newer build than the current one.
 pub fn check() -> Result<Option<Release>, String> {
     let Some(cur) = current_build() else { return Ok(None) };
     let mut r = wavy_core::http()
@@ -31,7 +31,7 @@ pub fn check() -> Result<Option<Release>, String> {
     Ok(Some(Release { build, url }))
 }
 
-/// Скачать новый exe и подменить им текущий (вступит в силу после перезапуска).
+/// Download the new exe and replace the current one with it (takes effect after a restart).
 pub fn install(rel: &Release) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let tmp = exe.with_file_name("Wavy.update.exe");
@@ -50,14 +50,14 @@ pub fn install(rel: &Release) -> Result<(), String> {
     Ok(())
 }
 
-/// Запустить свежий exe (после выхода этого процесса сессия восстановится).
+/// Launch the fresh exe (the session is restored after this process exits).
 pub fn restart() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).arg("--restarted").spawn();
     }
 }
 
-/// «Что нового» между сборками: заголовки и описания коммитов (без служебных строк).
+/// "What's new" between builds: commit titles and descriptions (without service lines).
 pub fn changes(from: u32, to: u32) -> Result<Vec<(String, String)>, String> {
     let mut r = wavy_core::http()
         .get(&format!("https://api.github.com/repos/{REPO}/compare/build-{from}...build-{to}"))
@@ -74,12 +74,12 @@ fn parse_changes<'a>(msgs: impl Iterator<Item = &'a str>) -> Vec<(String, String
     msgs.filter_map(|m| {
         let mut lines = m.lines();
         let title = lines.next()?.trim().to_string();
-        // мелочи сборки людям не интересны
+        // build trivia isn't interesting to people
         if title.starts_with("Cargo.lock") || title.starts_with("Merge ") || title.is_empty() { return None; }
         let body: Vec<&str> = lines.map(str::trim_end)
             .filter(|l| !l.starts_with("Co-Authored-By:") && !l.starts_with("Claude-Session:") && !l.starts_with("Signed-off-by:"))
             .collect();
-        // абзацы: строки внутри абзаца склеиваем
+        // paragraphs: lines within a paragraph are joined
         let body = body.split(|l| l.trim().is_empty()).map(|p| p.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" ")).filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
         Some((title, body))
     }).collect()

@@ -4,11 +4,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
-/** Язык интерфейса: русский (по умолчанию) или английский. Переводы — прямо в коде: L("Настройки", "Settings"). */
+/** Interface language: Russian (default) or English. Translations live in the code: L("Настройки", "Settings"). */
 object Lang {
     var en by mutableStateOf(false)
     fun set(code: String) { en = code == "en" }
 }
 
-/** Строка на текущем языке (Compose перерисует экран при смене языка). */
+/** String in the current language (Compose redraws the screen when the language changes). */
 fun L(ru: String, en: String): String = if (Lang.en) en else ru

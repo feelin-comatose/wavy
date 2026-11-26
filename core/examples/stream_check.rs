@@ -1,4 +1,4 @@
-//! Проверка потока через yt-dlp: cargo run -p wavy-core --example stream_check -- <ссылка>
+//! Check streaming through yt-dlp: cargo run -p wavy-core --example stream_check -- <url>
 fn main() {
     let url = std::env::args().nth(1).unwrap();
     let t = wavy_core::Track { id: "x".into(), kind: "stream".into(), path: None, video_id: None, url: Some(url), title: "t".into(), artist: String::new(),

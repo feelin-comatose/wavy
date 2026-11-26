@@ -1,23 +1,23 @@
-//! Аниме: тайтлы из видеофайлов серий. Название и номер серии берутся из имени файла
-//! (или папки), обложка и русское название — с Шикимори.
+//! Anime: titles from episode video files. The title and episode number come from the file name
+//! (or folder); the cover and Russian title come from Shikimori.
 use crate::{local, now_ms, sha16, Track};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Видео, которое можно добавить как серию.
+/// A video that can be added as an episode.
 pub const EPISODE_EXT: &[&str] = &["mkv", "mp4", "m4v", "mov"];
-/// Внешние субтитры рядом с серией.
+/// External subtitles next to an episode.
 pub const SUB_EXT: &[&str] = &["ass", "ssa", "srt", "vtt"];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Anime {
     pub id: String,
-    /// Нормализованное название из имён файлов — по нему серии собираются в тайтл.
+    /// Normalized name from file names — episodes are grouped into a title by it.
     pub key: String,
-    /// Название, как его удалось вытащить из файлов (пока нет данных Шикимори).
+    /// The title as extracted from the files (until there's Shikimori data).
     pub title: String,
     pub shiki_id: Option<u64>,
     pub name: String,
@@ -26,31 +26,31 @@ pub struct Anime {
     pub episodes_total: u32,
     pub score: f32,
     pub year: u32,
-    /// Постер, сохранённый локально (covers/poster_<id>.jpg).
+    /// Poster saved locally (covers/poster_<id>.jpg).
     pub poster: Option<String>,
     pub url: Option<String>,
-    /// Серии (id треков) по порядку.
+    /// Episodes (track ids) in order.
     pub episodes: Vec<String>,
-    /// Просмотренные серии.
+    /// Watched episodes.
     pub watched: Vec<String>,
-    /// На какой серии остановились и где.
+    /// Which episode we stopped at, and where.
     pub last: Option<String>,
     pub last_pos: f64,
-    /// Выбранная звуковая дорожка (номер среди звуковых) — переносится на следующие серии.
+    /// Chosen audio track (index among audio tracks) — carried over to the next episodes.
     pub audio: Option<usize>,
-    /// Выбранные субтитры: "off", "e:<язык или номер>" или "x:<суффикс файла>".
+    /// Chosen subtitles: "off", "e:<language or index>" or "x:<file suffix>".
     pub subs: Option<String>,
     pub added_at: u64,
-    /// Шикимори уже спрашивали (даже если не нашли).
+    /// Shikimori has already been asked (even if nothing was found).
     pub matched: bool,
 }
 
 impl Anime {
-    /// Название для показа: русское с Шикимори → оригинальное → из файлов.
+    /// Display name: Russian from Shikimori → original → from the files.
     pub fn display(&self) -> &str {
         if !self.russian.is_empty() { &self.russian } else if !self.name.is_empty() { &self.name } else { &self.title }
     }
-    /// Строка «ТВ · 2023 · 28 эп. · ★ 9.25».
+    /// A string like "ТВ · 2023 · 28 эп. · ★ 9.25".
     pub fn meta(&self) -> String {
         let mut v = Vec::new();
         if !self.kind.is_empty() { v.push(kind_ru(&self.kind).to_string()); }
@@ -74,7 +74,7 @@ pub fn kind_ru(kind: &str) -> &str {
     }
 }
 
-/// Что удалось понять из имени файла серии.
+/// What could be understood from an episode file name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
     pub title: String,
@@ -86,7 +86,7 @@ fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pat).unwrap())
 }
 
-/// Мусор из имён релизов: качество, кодеки, источники.
+/// Junk from release names: quality, codecs, sources.
 const JUNK: &[&str] = &[
     "1080p", "720p", "480p", "2160p", "4k", "1080", "720", "x264", "x265", "h264", "h265", "h.264", "h.265", "hevc", "avc", "aac", "flac", "ac3", "opus",
     "10bit", "10-bit", "8bit", "hi10p", "web", "web-dl", "webdl", "webrip", "bd", "bdrip", "bdremux", "bluray", "blu-ray", "dvd", "dvdrip", "tvrip", "hdtv",
@@ -98,22 +98,22 @@ fn is_junk(word: &str) -> bool {
     !w.is_empty() && (JUNK.contains(&w.as_str()) || w.ends_with("bit"))
 }
 
-/// Убрать скобки с группами, качеством и CRC; разделители → пробелы.
+/// Remove brackets with groups, quality and CRC; separators → spaces.
 fn clean(s: &str) -> String {
     static BR: OnceLock<Regex> = OnceLock::new();
     static PAR: OnceLock<Regex> = OnceLock::new();
     static NUM: OnceLock<Regex> = OnceLock::new();
-    // [01] / [12v2] / [05 из 12] — это номер серии (AniLibria и др.), а не группа: превращаем в « - 01 »
+    // [01] / [12v2] / [05 из 12] is an episode number (AniLibria etc.), not a group: turn it into " - 01 "
     let s = re(&NUM, r"\[(\d{1,4}(?:\.\d)?)(?:v\d)?(?:\s*(?:из|of|/)\s*\d+)?\]").replace(s, " - $1 ").into_owned();
     let mut s = re(&BR, r"\[[^\]]*\]|【[^】]*】|\{[^}]*\}").replace_all(&s, " ").into_owned();
-    // (1080p), (BD 1080p HEVC), (2023), (ABCD1234) — убираем; (TV) и прочее осмысленное оставляем
+    // (1080p), (BD 1080p HEVC), (2023), (ABCD1234) — remove; keep (TV) and other meaningful ones
     s = re(&PAR, r"\(([^)]*)\)").replace_all(&s, |c: &regex::Captures| {
         let inner = &c[1];
         let crc = inner.len() == 8 && inner.chars().all(|ch| ch.is_ascii_hexdigit());
         let year = inner.len() == 4 && inner.chars().all(|ch| ch.is_ascii_digit());
         if crc || year || inner.split_whitespace().any(is_junk) { " ".to_string() } else { c[0].to_string() }
     }).into_owned();
-    // точки и подчёркивания как разделители (Title.S01E02.1080p / Title_-_02)
+    // dots and underscores as separators (Title.S01E02.1080p / Title_-_02)
     if s.contains('_') { s = s.replace('_', " "); }
     if !s.contains(' ') || s.matches('.').count() >= 2 {
         static DOT: OnceLock<Regex> = OnceLock::new();
@@ -123,7 +123,7 @@ fn clean(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Отрезать хвост из мусора («Title 1080p x264» → «Title»).
+/// Cut a junk tail ("Title 1080p x264" → "Title").
 fn strip_tail(s: &str) -> String {
     let mut words: Vec<&str> = s.split_whitespace().collect();
     while words.last().is_some_and(|w| is_junk(w) || *w == "-" || *w == "–" || *w == "|") { words.pop(); }
@@ -131,7 +131,7 @@ fn strip_tail(s: &str) -> String {
     words.join(" ")
 }
 
-/// Сезон из названия: «Season 2», «2nd Season», «S2», «Сезон 2».
+/// Season from the title: "Season 2", "2nd Season", "S2", "Сезон 2".
 fn season_of(title: &str) -> Option<u32> {
     static S: OnceLock<Regex> = OnceLock::new();
     let r = re(&S, r"(?i)\b(?:season|сезон)\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)\s+season\b|\bs(\d{1,2})\b");
@@ -139,11 +139,11 @@ fn season_of(title: &str) -> Option<u32> {
     c.get(1).or(c.get(2)).or(c.get(3)).and_then(|m| m.as_str().parse().ok())
 }
 
-/// Разобрать имя файла серии. Если в имени нет названия («01.mkv») — берём папку.
+/// Parse an episode file name. If the name has no title ("01.mkv"), use the folder.
 pub fn parse_path(path: &Path) -> Parsed {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut p = parse_name(&stem);
-    // «Серия 01», «01», «Episode 5» — название в папке (а «Season 2» / «Сезон 2» — ещё уровнем выше)
+    // "Серия 01", "01", "Episode 5" — the title is in the folder (and "Season 2" / "Сезон 2" one level higher)
     if p.title.chars().filter(|c| c.is_alphabetic()).count() < 2 || is_generic(&p.title) {
         let mut dir = path.parent();
         while let Some(d) = dir {
@@ -175,7 +175,7 @@ fn strip_season(t: &str) -> String {
     re(&S, r"(?i)\b(?:season|сезон)\s*\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)\s+season\b|\bs\d{1,2}\b").replace_all(t, "").into_owned()
 }
 
-/// Разобрать имя без расширения.
+/// Parse a name without extension.
 pub fn parse_name(stem: &str) -> Parsed {
     let s = clean(stem);
     static SE: OnceLock<Regex> = OnceLock::new();
@@ -190,7 +190,7 @@ pub fn parse_name(stem: &str) -> Parsed {
         let title = strip_tail(&c[1]);
         return Parsed { season: c[2].parse().ok(), episode: num(&c[3]), title };
     }
-    // [Group] Title - 05v2 [1080p]  — самый частый формат фансаба
+    // [Group] Title - 05v2 [1080p]  — the most common fansub format
     if let Some(c) = re(&DASH, r"^(.*?)\s+[-–]\s+(?:(?i:ep|episode|e|серия)\.?\s*)?(\d{1,4}(?:\.\d)?)(?:v\d)?(?:\s|$)").captures(&s) {
         let title = strip_tail(&c[1]);
         if !title.is_empty() { return Parsed { episode: num(&c[2]), season: season_of(&title), title }; }
@@ -204,8 +204,8 @@ pub fn parse_name(stem: &str) -> Parsed {
         let rest = strip_tail(&c[2]);
         if c[1].len() <= 3 || rest.is_empty() { return Parsed { title: rest, episode: num(&c[1]), season: None }; }
     }
-    // Title 05 (число в конце после чистки мусора). «Mob Psycho 100» без серии тут тоже станет серией 100 —
-    // но такие имена файлов у серий встречаются редко, а «Title 05» — часто
+    // Title 05 (a number at the end after junk is stripped). "Mob Psycho 100" without an episode also becomes episode 100 here —
+    // but episode files are rarely named like that, while "Title 05" is common
     let st = strip_tail(&s);
     if let Some(c) = re(&TAIL, r"^(.*\D)\s(\d{1,4})(?:v\d)?$").captures(&st) {
         let title = strip_tail(&c[1]);
@@ -216,13 +216,13 @@ pub fn parse_name(stem: &str) -> Parsed {
     Parsed { season: season_of(&st), title: st, episode: None }
 }
 
-/// Ключ для группировки серий: только буквы и цифры в нижнем регистре + сезон.
+/// Key for grouping episodes: only letters and digits, lowercase, plus the season.
 pub fn key_of(p: &Parsed) -> String {
     let base: String = strip_season(&p.title).to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
     match p.season { Some(s) if s > 1 => format!("{base}#s{s}"), _ => base }
 }
 
-/// Строка поиска на Шикимори: название + сезон («Title 2nd Season» Шикимори находит и по «Title 2»).
+/// Shikimori search string: title + season (Shikimori finds "Title 2nd Season" by "Title 2" too).
 pub fn search_query(p: &Parsed) -> String {
     let base = strip_season(&p.title).split_whitespace().collect::<Vec<_>>().join(" ");
     match p.season { Some(s) if s > 1 => format!("{base} {s}"), _ => base }
@@ -240,7 +240,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
     }
 }
 
-/// Серия как трек: название — «Серия N», исполнитель — тайтл (видно в плеере, Discord и оверлее).
+/// An episode as a track: title is "Episode N", artist is the anime title (shown in the player, Discord and the overlay).
 pub fn episode_track(path: &Path, p: &Parsed, anime_title: &str) -> Track {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let title = match p.episode {
@@ -272,7 +272,7 @@ pub struct ImportGroup {
     pub tracks: Vec<Track>,
 }
 
-/// Файлы и папки → серии, сгруппированные по тайтлам.
+/// Files and folders → episodes grouped by title.
 pub fn scan(paths: &[PathBuf], mut progress: impl FnMut(usize, usize)) -> Vec<ImportGroup> {
     let mut files = Vec::new();
     for p in paths {
@@ -307,7 +307,7 @@ pub fn new_anime(key: &str, p: &Parsed) -> Anime {
     Anime { id: format!("an_{}", sha16(key.as_bytes())), key: key.into(), title: p.title.clone(), added_at: now_ms(), ..Default::default() }
 }
 
-/// Внешние субтитры к серии: файлы .ass/.srt с тем же началом имени рядом или в подпапках (Subs/, RUS Sub/ …).
+/// External subtitles for an episode: .ass/.srt files with the same name prefix next to it or in subfolders (Subs/, RUS Sub/ …).
 pub fn external_subs(video: &Path) -> Vec<PathBuf> {
     let Some(dir) = video.parent() else { return vec![] };
     let stem = video.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();

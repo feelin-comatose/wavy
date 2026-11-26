@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Минимальный ffmpeg для Wavy: только то, что не умеет встроенный декодер — видео HEVC/H.265 (в т.ч. 10 бит),
-# 10-битное H.264, VP9, AV1, MPEG-4 и звук Opus, AC3/E-AC3, DTS, TrueHD, — плюс аппаратное декодирование
-# видеокартой (D3D11VA/DXVA2) на Windows, и кодировщик MP3 (LAME) для экспорта плейлистов. Получается один ffmpeg(.exe) на несколько МБ вместо готовых сборок на 80–180 МБ.
+# Minimal ffmpeg for Wavy: only what the built-in decoder can't do — HEVC/H.265 video (incl. 10-bit),
+# 10-bit H.264, VP9, AV1, MPEG-4 and Opus, AC3/E-AC3, DTS, TrueHD audio — plus hardware decoding
+# on the GPU (D3D11VA/DXVA2) on Windows, and an MP3 encoder (LAME) for playlist export. The result is a single ffmpeg(.exe) of a few MB instead of ready-made 80–180 MB builds.
 #
-#   scripts/build-ffmpeg.sh windows <папка>   — ffmpeg.exe (кросс-сборка mingw, так собирает CI)
-#   scripts/build-ffmpeg.sh linux <папка>     — ffmpeg для проверок на Linux
+#   scripts/build-ffmpeg.sh windows <folder>   — ffmpeg.exe (mingw cross-build, the way CI builds it)
+#   scripts/build-ffmpeg.sh linux <folder>     — ffmpeg for checks on Linux
 #
-# Исходники: переменная SRC (распакованный ffmpeg-$VER) или скачиваются с ffmpeg.org в WORK.
+# Sources: the SRC variable (an unpacked ffmpeg-$VER) or downloaded from ffmpeg.org into WORK.
 set -euo pipefail
 TARGET=${1:-windows}
 OUT=$(realpath -m "${2:-dist}")
@@ -23,7 +23,7 @@ fi
 BUILD="$WORK/build-$TARGET"
 mkdir -p "$BUILD"
 
-# LAME — кодировщик MP3 (экспорт песен), собирается статически и вшивается в ffmpeg
+# LAME — MP3 encoder (song export), built statically and linked into ffmpeg
 LAME_VER=3.100
 LAME_SHA=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
 LAME_SRC="$WORK/lame-$LAME_VER"

@@ -1,4 +1,4 @@
-// Проверка декодирования файла: cargo run -p wavy-native --example decode -- <file>
+// Check decoding a file: cargo run -p wavy-native --example decode -- <file>
 fn main() {
     let path = std::env::args().nth(1).expect("file");
     let f = std::fs::File::open(&path).unwrap();

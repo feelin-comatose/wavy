@@ -1,4 +1,4 @@
-// Wavy — нативная версия (egui + rodio). Без браузерного движка: минимум памяти.
+// Wavy — native version (egui + rodio). No browser engine: minimal memory.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[macro_use]
@@ -27,22 +27,22 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use wavy_core::{anime, discord::{Discord, DiscordStatus}, fmt_time, local, media::{MediaInfo, SubSrc}, overlay::OverlayServer, shazam::Found, shikimori::ShikiAnime, store::Store, youtube::YouTube, PlayerState, Track};
 
-// ---------- палитра ----------
+// ---------- palette ----------
 const BG: Color32 = Color32::from_rgb(0x0a, 0x0a, 0x0c);
 const BG2: Color32 = Color32::from_rgb(0x10, 0x10, 0x13);
 const BG3: Color32 = Color32::from_rgb(0x18, 0x18, 0x1c);
 const LINE: Color32 = Color32::from_rgb(0x23, 0x23, 0x29);
 const TEXT: Color32 = Color32::from_rgb(0xe4, 0xe4, 0xe8);
 const MUTED: Color32 = Color32::from_rgb(0x7a, 0x7a, 0x86);
-const ACCENT: Color32 = Color32::from_rgb(0xf4, 0xf4, 0xf5); // акцент — белый
-const ACCENT_DIM: Color32 = Color32::from_rgb(0xf4, 0xf4, 0xf5); // заливка основных кнопок
+const ACCENT: Color32 = Color32::from_rgb(0xf4, 0xf4, 0xf5); // accent is white
+const ACCENT_DIM: Color32 = Color32::from_rgb(0xf4, 0xf4, 0xf5); // fill for primary buttons
 const ACCENT_SOFT: Color32 = Color32::from_rgb(0xa1, 0xa1, 0xaa);
 const BAD: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
 const OK: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
 
 const AUDIO_FILTER: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "alac", "aiff", "mp4", "m4v", "mov", "mkv", "m3u", "m3u8"];
-/// Плейлист, куда Shazam складывает распознанные опенинги.
-/// Плейлист для песен из Shazam в аниме (название на языке интерфейса; ищется по обоим).
+/// Playlist where Shazam puts recognized openings.
+/// Playlist for songs from Shazam in anime (name in the interface language; looked up by both).
 const OPENINGS: [&str; 2] = ["Опенинги", "Openings"];
 fn openings() -> &'static str { l!("Опенинги", "Openings") }
 
@@ -63,7 +63,7 @@ enum Bg {
     OpenPlaylist(String),
     Search(Result<Vec<Track>, String>),
     Ready { token: u64, path: PathBuf },
-    /// видео трека пропало с YouTube или стало 18+ — нашли такой же трек в другом видео (bool: 18+)
+    /// the track's video is gone from YouTube or became 18+ — found the same track in another video (bool: 18+)
     Replaced(Track, bool),
     ReadyStream { token: u64, dl: wavy_core::stream::Download },
     VideoDownloading { id: String, dl: wavy_core::stream::Download },
@@ -82,30 +82,30 @@ enum Bg {
     Lyrics(String, Result<wavy_core::lyrics::Lyrics, String>),
     Radio(String, Result<Vec<Track>, String>),
     Skips(String, Vec<wavy_core::aniskip::Skip>),
-    /// вход/синхронизация с Шикимори: обновлённый аккаунт (токены) или ошибка
+    /// Shikimori sign-in/sync: updated account (tokens) or an error
     Shiki(Result<wavy_core::shikimori::Account, String>, bool),
     SongRequest(String, Result<Track, String>),
-    /// Twitch: код для входа / вход завершён / обновился токен
+    /// Twitch: sign-in code / sign-in finished / token refreshed
     TwitchDevice(Result<wavy_core::twitch::Device, String>),
     TwitchLogin(Result<wavy_core::twitch::Account, String>),
     TwitchToken(wavy_core::twitch::Account),
-    /// импорт из Spotify: что не нашлось на YouTube (плейлист, треки)
+    /// Spotify import: what wasn't found on YouTube (playlist, tracks)
     NotFound(Option<String>, Vec<wavy_core::spotify::SpTrack>),
-    /// результаты поиска для ручного выбора видео
+    /// search results for the manual video choice
     Picked(Result<Vec<Track>, String>),
-    /// вход через Google: путь к сохранённым кукам
+    /// Google sign-in: path to the saved cookies
     GoogleCookies(Result<String, String>),
-    /// аккаунт YouTube Music подключён (или нет)
+    /// YouTube Music account connected (or not)
     Account(Result<(), String>),
-    /// «Моя волна»: треки, докрутка ли это
+    /// "My wave": tracks, whether it's a top-up
     Wave(Result<Vec<Track>, String>, bool),
-    /// Last.fm: страница входа (токен, ссылка) / вход завершён
+    /// Last.fm: sign-in page (token, link) / sign-in finished
     LastfmBegin(Result<(String, String), String>),
     LastfmDone(Result<wavy_core::lastfm::Account, String>),
     CacheSize(u64, usize),
-    /// опенинги и эндинги: (тайтл, найденные треки)
+    /// openings and endings: (title, tracks found)
     Themes(String, Result<Vec<Track>, String>),
-    /// куки для 18+ заданы, но yt-dlp с ними не справился (браузер открыт, нет входа…)
+    /// cookies for 18+ are set, but yt-dlp couldn't use them (browser open, not signed in…)
     CookiesFailed(String),
 }
 
@@ -118,27 +118,27 @@ enum Modal {
     AnimeMatch { id: String, query: String, results: Vec<ShikiAnime>, busy: bool, err: Option<String> },
     DeleteAnime { id: String },
     Shazam { state: ShazamState, to_openings: bool },
-    /// изменения между сборками: (с, по, загруженный список)
+    /// changes between builds: (from, to, downloaded list)
     WhatsNew { from: u32, to: u32, items: Option<Result<Vec<(String, String)>, String>> },
     EditTrack { id: String, title: String, artist: String, album: String },
     Dupes { groups: Vec<Vec<String>> },
     Folder { id: String, name: String },
-    /// треки из Spotify, которых не нашлось на YouTube: (плейлист, куда добавить; треки)
+    /// Spotify tracks not found on YouTube: (playlist to add to; tracks)
     NotFound { pid: Option<String>, items: Vec<wavy_core::spotify::SpTrack> },
-    /// ручной выбор видео для трека: поиск по YouTube Music и YouTube
+    /// manual video choice for a track: search YouTube Music and YouTube
     Pick { query: String, results: Vec<Track>, busy: bool, err: Option<String>, target: PickTarget, back: Vec<wavy_core::spotify::SpTrack> },
 }
 
-/// Аккаунт YouTube Music.
+/// YouTube Music account.
 #[derive(Clone, PartialEq)]
 enum AccState { Off, Connecting, On, Err(String) }
 
-/// Для чего выбираем видео.
+/// What we're choosing a video for.
 #[derive(Clone)]
 enum PickTarget {
-    /// у трека библиотеки не то видео — заменить (id и плейлисты те же)
+    /// a library track has the wrong video — replace it (id and playlists stay)
     Replace(String),
-    /// трек из Spotify не нашёлся — добавить в библиотеку (и в плейлист)
+    /// a Spotify track wasn't found — add it to the library (and the playlist)
     Add { pid: Option<String>, sp: wavy_core::spotify::SpTrack },
 }
 
@@ -153,27 +153,27 @@ enum Act {
     Modal(Modal), YtUpdate, SyncExport, SyncImport(Option<PathBuf>), ToggleVideo, Fullscreen(bool), CheckUpdate, Restart,
     ImportAnime(Vec<PathBuf>), ImportAnimeFiles, ImportAnimeFolder, PlayAnime(String, Option<String>), AnimeSearch(String), AnimeApply(String, ShikiAnime),
     DeleteAnime(String), MarkWatched(String, bool), AudioTrack(usize), Subs(Option<usize>), Shazam, ShazamAdd(Found, bool),
-    /// треки → MP3 в папку; Some(название) — плейлист целиком (своя подпапка)
+    /// tracks → MP3 into a folder; Some(name) — a whole playlist (its own subfolder)
     Export(Vec<String>, Option<String>),
-    /// опенинги и эндинги тайтла → плейлист
+    /// a title's openings and endings → playlist
     AnimeThemes(String),
-    /// ручной выбор видео: поиск / выбор (видео, для чего, оставшиеся ненайденные)
+    /// manual video choice: search / pick (video, what for, the remaining not-found ones)
     PickSearch(String), PickChoose(Track, PickTarget, Vec<wavy_core::spotify::SpTrack>),
-    /// аккаунт YouTube Music: вход через Google / отмена / подключить по кукам / выйти
+    /// YouTube Music account: sign in with Google / cancel / connect with cookies / sign out
     GoogleLogin, GoogleLoginCancel, AccountConnect, AccountLogout,
-    /// импорт из аккаунта: лайки / сохранённые плейлисты
+    /// import from the account: likes / saved playlists
     YtImportLikes, YtImportPlaylists,
-    /// «Моя волна» (true — докрутить очередь, false — начать заново)
+    /// "My wave" (true — top up the queue, false — start over)
     Wave(bool),
-    /// субтитры из любого файла (имя не совпадает с серией)
+    /// subtitles from any file (name doesn't match the episode)
     PickSubs,
-    /// сохранить текущий кадр видео в PNG
+    /// save the current video frame as PNG
     Screenshot,
-    /// (ключ: "library" или id плейлиста, способ)
+    /// (key: "library" or playlist id, method)
     Sort(String, String),
     PlaylistCover(String), PlaylistCoverReset(String),
     Like(Vec<String>, bool),
-    /// перетаскивание в текущем списке (плейлист / «Любимое»): треки, куда (индекс)
+    /// drag and drop within the current list (playlist / "Liked"): tracks, target (index)
     Move(Vec<String>, usize),
     MoveQueue(usize, usize),
     WhatsNew(u32, u32), ToggleMini, ShowWindow, Quit,
@@ -210,7 +210,7 @@ struct App {
     pending_next: bool,
     seek_drag: Option<f64>,
     last_pushed: (Option<String>, bool),
-    /// Что и когда последний раз ушло в оверлей: (позиция, играло ли, когда) — оверлей досчитывает время сам, мы сверяем.
+    /// What was last sent to the overlay and when: (position, playing or not, when) — the overlay advances time itself; we check it.
     pushed_clock: (f64, bool, Instant),
     shown_at: Instant,
 
@@ -223,7 +223,7 @@ struct App {
 
     media: media::Media,
     media_rx: Receiver<media::MediaCmd>,
-    resume: Option<(String, f64, bool)>, // (id трека, позиция, автоплей) — продолжить с того же места
+    resume: Option<(String, f64, bool)>, // (track id, position, autoplay) — continue from the same place
     session_saved: Instant,
     spin: f32,
     show_video: bool,
@@ -235,30 +235,30 @@ struct App {
     upd: Option<UpdState>,
     upd_checked: Option<Instant>,
     started: Instant,
-    /// положение и размер окна до полного экрана — чтобы вернуть их после
+    /// window position and size before full screen — to restore them afterwards
     pre_fullscreen: Option<(Pos2, Vec2, bool)>,
     restore_window: Option<(Pos2, Vec2, bool, u8)>,
     _hotkeys: Option<GlobalHotKeyManager>,
     hk_rx: Receiver<u32>,
     hk_keys: hotkeys::Keys,
-    /// запись нового сочетания в настройках: для какого действия
+    /// recording a new combination in settings: for which action
     hk_capture: Option<String>,
-    /// Дорожки текущего видео и что выбрано (звук — номер среди звуковых, субтитры — номер в списке).
+    /// Tracks of the current video and what's selected (audio — index among audio tracks, subtitles — index in the list).
     media_info: Option<(String, MediaInfo)>,
     audio_sel: usize,
     sub_sel: Option<usize>,
-    /// серия, уже отмеченная просмотренной (чтобы не писать на диск каждый кадр)
+    /// episode already marked watched (so we don't write to disk every frame)
     watched_mark: Option<String>,
-    /// ffmpeg для HEVC/10 бит/VP9/AV1 и звука Opus/AC3/DTS (качается по требованию)
+    /// ffmpeg for HEVC/10-bit/VP9/AV1 and Opus/AC3/DTS audio (downloaded on demand)
     ff: wavy_core::ffmpeg::Ffmpeg,
-    /// звук не открылся без ffmpeg — переоткрыть трек, когда он скачается
+    /// audio didn't open without ffmpeg — reopen the track once it's downloaded
     reload_after_ff: bool,
     exporting: bool,
-    /// (трек, сколько раз уже восстанавливали после обрыва)
+    /// (track, how many times it has been recovered after a drop)
     cut_retries: Option<(String, u8)>,
-    /// трек, прослушивание которого уже засчитано (после 30 секунд)
+    /// track whose play has already been counted (after 30 seconds)
     counted: Option<String>,
-    /// перетаскиваемые треки и куда бросить; строка под мышью (для сердечка)
+    /// dragged tracks and where to drop them; the row under the mouse (for the heart)
     drag_ids: Option<Vec<String>>,
     drop_at: Option<usize>,
     hover_row: Option<String>,
@@ -267,7 +267,7 @@ struct App {
     focus_filter: bool,
     quitting: bool,
     sleep: Option<Sleep>,
-    /// треки радио (не в библиотеке, только в очереди)
+    /// radio tracks (not in the library, only in the queue)
     radio: Vec<Track>,
     show_lyrics: bool,
     lyrics: Option<(String, Option<Result<wavy_core::lyrics::Lyrics, String>>)>,
@@ -275,53 +275,53 @@ struct App {
     stats_period: u8,
     skips: Option<(String, Vec<wavy_core::aniskip::Skip>)>,
     auto_skipped: HashSet<String>,
-    /// «следующая серия через…»: (серия, когда переключить); серия, где человек выбрал остаться
+    /// "next episode in…": (episode, when to switch); the episode where the user chose to stay
     next_ep: Option<(String, Instant)>,
     stay_ep: Option<String>,
     shiki_code: String,
-    /// чат Twitch: (канал, флаг остановки), заказы, кто когда заказывал, id заказанных в очереди
-    /// чат Twitch: (канал|вход, стоп, отправка в чат)
+    /// Twitch chat: (channel, stop flag), requests, who requested when, ids of requested tracks in the queue
+    /// Twitch chat: (channel|sign-in, stop, sending to chat)
     twitch: Option<(String, Arc<std::sync::atomic::AtomicBool>, wavy_core::twitch::Chat)>,
     sr_tx: Sender<wavy_core::twitch::Msg>,
     sr_rx: Receiver<wavy_core::twitch::Msg>,
     skip_vote: wavy_core::twitch::SkipVote,
-    /// пульт с телефона: состояние для него и команды от него
+    /// phone remote: state for it and commands from it
     remote: (Arc<Mutex<serde_json::Value>>, Arc<Mutex<Option<String>>>, Sender<(String, f64)>, Receiver<(String, f64)>),
-    /// ждём первую награду за баллы, чтобы запомнить её как «заказ трека»
+    /// waiting for the first channel points reward to remember it as the "song request" one
     reward_bind: bool,
-    /// для какого тайтла сейчас ищутся опенинги
+    /// which title openings are being looked up for right now
     themes_busy: Option<String>,
-    /// палитра команд (Ctrl+K): запрос и выбранная строка
+    /// command palette (Ctrl+K): query and selected row
     palette: Option<(String, usize)>,
-    /// открыть окошко «Звук» (из палитры команд)
+    /// open the "Sound" window (from the command palette)
     sound_open: bool,
-    /// аккаунт YouTube Music: подключён ли (и ошибка, если нет)
+    /// YouTube Music account: connected or not (and the error if not)
     acc: AccState,
-    /// идёт вход через Google: флаг отмены
+    /// Google sign-in in progress: cancel flag
     google_login: Option<Arc<std::sync::atomic::AtomicBool>>,
-    /// «Моя волна» играет (очередь докручивается сама) / подбирается
+    /// "My wave" is playing (the queue tops itself up) / being picked
     wave_on: bool,
     wave_busy: bool,
-    /// Last.fm: кому уже отправлено «сейчас слушает», что уже заскробблено, когда начал играть (с), токен входа
+    /// Last.fm: who has already been sent "now playing", what's already scrobbled, when playback started (s), sign-in token
     lfm_np: Option<String>,
     lfm_done: Option<String>,
     lfm_started: u64,
     lfm_token: Option<String>,
-    /// вход в Twitch: код для twitch.tv/activate
+    /// Twitch sign-in: code for twitch.tv/activate
     twitch_device: Option<wavy_core::twitch::Device>,
     sr_last: std::collections::HashMap<String, Instant>,
-    /// заказы из чата: id трека → кто заказал
+    /// chat requests: track id → who requested it
     sr_by: HashMap<String, String>,
     cache_size: Option<(u64, usize)>,
     cache_trimmed: Instant,
     cache_counting: bool,
     wifi: Option<(String, wavy_core::wifisync::Server)>,
-    /// трек, для которого уже начат кроссфейд
+    /// track for which the crossfade has already started
     xfaded: Option<String>,
     tray: Option<(tray::Tray, Receiver<tray::Cmd>)>,
-    /// команды от следующих запусков Wavy (показать окно / закрыться после обновления)
+    /// commands from later Wavy launches (show the window / quit after an update)
     instance: Option<Receiver<instance::Cmd>>,
-    /// шрифт с иероглифами уже подгружен (или искали и не нашли)
+    /// the CJK font is already loaded (or we looked and didn't find one)
     cjk_loaded: bool,
     cjk_check: Instant,
 }
@@ -345,7 +345,7 @@ impl App {
         let mut toast = None;
         if let Err(e) = overlay.start(s.overlay.port) { wavy_core::log(&format!("оверлей: {e}")); toast = Some((format!("Оверлей: {e}"), true, Instant::now())); }
 
-        // глобальные хоткеи (работают и в игре): пауза, треки, громкость, оверлей… — настраиваются
+        // global hotkeys (work in games too): pause, tracks, volume, overlay… — configurable
         let (hk_tx, hk_rx) = channel();
         let hotkeys = GlobalHotKeyManager::new().ok();
         let mut hk_keys = hotkeys::Keys::default();
@@ -387,19 +387,19 @@ impl App {
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
         app.overlay_open = s.overlay_window.visible;
         app.tray = tray::new(cc);
-        // после обновления — показать, что поменялось
+        // after an update — show what changed
         if let Some(cur) = update::current_build() {
             match s.last_build { Some(m) if m < cur => app.apply(Act::WhatsNew(m, cur), &ctx), _ => {} }
             if s.last_build != Some(cur) { app.store.lock().unwrap().patch_settings(&json!({"lastBuild": cur})); }
         }
         app.restore_session(&ctx);
-        // «Открыть с помощью Wavy»
+        // "Open with Wavy"
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
         if !args.is_empty() { app.apply(Act::ImportPaths(args, None), &ctx); }
         app
     }
 
-    /// Серии, у которых раньше не распознался номер (например, «Title_[01]_[AniLibria_TV]»), — разобрать заново.
+    /// Episodes whose number wasn't recognized before (e.g. "Title_[01]_[AniLibria_TV]") — parse them again.
     fn fix_episode_numbers(&mut self) {
         let mut s = self.store.lock().unwrap();
         let fix: Vec<(String, anime::Parsed)> = s.lib.tracks.values().filter(|t| t.anime.is_some() && t.episode.is_none())
@@ -415,7 +415,7 @@ impl App {
         s.save();
     }
 
-    /// Нужен ffmpeg: скачать (один раз), по готовности — перерисовать.
+    /// ffmpeg is needed: download it (once) and repaint when ready.
     fn need_ffmpeg(&mut self, ctx: &egui::Context) {
         let c = ctx.clone();
         self.ff.install_background(move || c.request_repaint());
@@ -442,7 +442,7 @@ impl App {
         let id = self.queue[self.qi].clone();
         self.current = self.track(&id);
         self.resume = Some((id, pos, false));
-        // локальный файл открываем сразу на паузе; YouTube — при нажатии play
+        // a local file is opened right away, paused; YouTube on pressing play
         if self.current.as_ref().is_some_and(|t| t.is_local()) { self.load_current(ctx); }
     }
 
@@ -450,7 +450,7 @@ impl App {
     fn track(&self, id: &str) -> Option<Track> {
         self.store.lock().unwrap().lib.tracks.get(id).cloned().or_else(|| self.results.iter().chain(self.radio.iter()).find(|t| t.id == id).cloned())
     }
-    /// Подключить аккаунт YouTube Music по кукам из настроек (в фоне).
+    /// Connect the YouTube Music account with cookies from settings (in the background).
     fn connect_account(&mut self, ctx: &egui::Context) {
         self.acc = AccState::Connecting;
         let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
@@ -482,7 +482,7 @@ impl App {
         ids.into_iter().filter(|id| s.lib.tracks.get(id).is_some_and(|t| format!("{} {} {}", t.title, t.artist, t.album).to_lowercase().contains(&q))).collect()
     }
 
-    // ---------- воспроизведение ----------
+    // ---------- playback ----------
     fn play_list(&mut self, ids: Vec<String>, start: usize, force_shuffle: bool, ctx: &egui::Context) {
         if ids.is_empty() { return; }
         self.resume = None;
@@ -504,7 +504,7 @@ impl App {
     fn load_current(&mut self, ctx: &egui::Context) {
         let Some(id) = self.queue.get(self.qi).cloned() else { return };
         let Some(t) = self.track(&id) else { return };
-        // новый запуск трека — новое прослушивание (а продолжение после обрыва — то же самое)
+        // starting a track anew is a new play (while resuming after a drop is the same one)
         if self.resume.as_ref().map(|r| &r.0) != Some(&id) { self.counted = None; self.lfm_np = None; self.lfm_done = None; }
         self.token += 1;
         let token = self.token;
@@ -523,10 +523,10 @@ impl App {
             std::thread::spawn(move || {
                 let t0 = Instant::now();
                 let mut res = fetch_audio(&yt, &t, &cache);
-                // видео удалено / закрыто / недоступно в стране / 18+ (без входа не дают) — ищем этот же трек в другом видео
+                // video deleted / private / unavailable in the country / 18+ (not served without sign-in) — look for the same track in another video
                 if let Err(e) = &res {
                     let age = age_restricted(e);
-                    // 18+ и в настройках есть куки — пробуем то же видео «со входом»
+                    // 18+ and settings have cookies — try the same video "signed in"
                     if age && yt.has_cookies() {
                         let _ = tx.send(Bg::Status(lf!("«{}»: видео 18+ — пробую с куками браузера…", "“{}”: 18+ video — trying with browser cookies…", t.title)));
                         c.request_repaint();
@@ -543,7 +543,7 @@ impl App {
                         let why = if age { l!("видео 18+, YouTube не даёт его без входа", "18+ video, YouTube won't play it without signing in") } else { l!("больше нет на YouTube", "no longer on YouTube") };
                         let _ = tx.send(Bg::Status(lf!("«{}»: {why} — ищу такой же трек в другом видео…", "“{}”: {why} — looking for the same track in another video…", t.title)));
                         c.request_repaint();
-                        // первая замена может оказаться тоже 18+ (YouTube смотрит на название) — пробуем до трёх
+                        // the first replacement may also be 18+ (YouTube looks at the title) — try up to three
                         for n in wavy_core::spotify::find_replacements(&yt, &t).unwrap_or_default().into_iter().take(3) {
                             wavy_core::log(&format!("«{}»: пробую замену {:?}", t.title, n.video_id));
                             match fetch_audio(&yt, &n, &cache) {
@@ -561,13 +561,13 @@ impl App {
                 wavy_core::log(&format!("трек «{}»: старт через {:.1} с", t.title, t0.elapsed().as_secs_f32()));
                 let _ = tx.send(msg);
                 c.request_repaint();
-                // предзагрузка следующего трека целиком — переключение будет мгновенным
+                // preload the whole next track — switching will be instant
                 if let Some(n) = next { if let Ok(AudioSrc::Stream(dl)) = fetch_audio(&yt, &n, &cache) { dl.wait_for(u64::MAX, Duration::from_secs(600)); } }
             });
         }
     }
 
-    /// Дорожки видеофайла: какую озвучку и какие субтитры включить (для аниме — как в прошлой серии).
+    /// Video file tracks: which dub and which subtitles to enable (for anime — same as the previous episode).
     fn prepare_media(&mut self, t: &Track) {
         self.media_info = None;
         self.audio_sel = 0;
@@ -594,7 +594,7 @@ impl App {
                 let cur = self.current.as_ref().map(|t| t.id.clone());
                 if let Some((id, pos, autoplay)) = self.resume.take() {
                     if Some(&id) == cur.as_ref() {
-                        if pos > 1.0 { self.audio.seek(pos); } // прыгнет, когда этот кусок докачается
+                        if pos > 1.0 { self.audio.seek(pos); } // will jump when this chunk finishes downloading
                         if !autoplay { self.audio.pause(); }
                     }
                 }
@@ -626,7 +626,7 @@ impl App {
 
     fn track_failed(&mut self, err: String) {
         if err.starts_with(wavy_core::ffmpeg::NEED) && matches!(self.ff.state(), wavy_core::ffmpeg::State::Missing | wavy_core::ffmpeg::State::Downloading(_)) {
-            // звук в Opus/AC3/DTS… — качаем декодер и переоткроем трек с того же места
+            // audio in Opus/AC3/DTS… — download the decoder and reopen the track from the same place
             self.reload_after_ff = true;
             self.loading = false;
             self.toast(l!("Скачиваю декодер для этого формата (≈6 МБ, один раз)…", "Downloading a decoder for this format (≈6 MB, once)…"), false);
@@ -638,7 +638,7 @@ impl App {
         self.toast(lf!("Не получилось воспроизвести «{title}»: {err}", "Couldn't play “{title}”: {err}"), true);
         self.errors_in_row += 1;
         self.loading = false;
-        // без звукового устройства листать очередь бессмысленно — останавливаемся
+        // without an audio device, skipping through the queue is pointless — stop
         if self.audio.has_device() && self.errors_in_row < 5 && self.qi + 1 < self.queue.len() { self.pending_next = true; }
     }
 
@@ -661,9 +661,9 @@ impl App {
         self.load_current(ctx);
     }
 
-    /// Трек «доиграл», хотя до конца далеко: оборвалась загрузка с YouTube (ссылка протухла, 403, сеть).
-    /// Раньше плеер в этот момент просто включал следующую песню. Теперь перезапускает загрузку и
-    /// продолжает с того же места — до двух раз на трек, потом уже следующая.
+    /// The track "finished" though it's far from the end: the YouTube download broke (link expired, 403, network).
+    /// The player used to just start the next song at this point. Now it restarts the download and
+    /// continues from the same place — up to twice per track, then moves on to the next one.
     fn recover_cut(&mut self, ctx: &egui::Context) -> bool {
         let Some(t) = self.current.clone() else { return false };
         if t.is_local() || t.duration < 15.0 { return false; }
@@ -695,9 +695,9 @@ impl App {
         }
     }
 
-    /// Оверлей (OBS) и системный плеер сами досчитывают время от последнего обновления. Если трек долго
-    /// грузился или позиция ушла (докачка, перемотка в недокачанное), их часы расходятся со звуком —
-    /// раз в секунду сверяем и поправляем. Discord не трогаем: у него лимит на частоту обновлений.
+    /// The overlay (OBS) and the system player advance time themselves from the last update. If the track took long
+    /// to load or the position drifted (download catching up, seeking into an undownloaded part), their clocks drift from the audio —
+    /// so once a second we check and correct. Discord is left alone: it rate-limits updates.
     fn sync_clock(&mut self) {
         let (pos, playing, at) = self.pushed_clock;
         if self.loading || self.current.is_none() || at.elapsed().as_secs_f64() < 1.0 { return; }
@@ -711,7 +711,7 @@ impl App {
         self.overlay.update(&st);
     }
 
-    // ---------- фоновая работа ----------
+    // ---------- background work ----------
     fn bg(&self, ctx: &egui::Context, f: impl FnOnce(&Sender<Bg>) -> Result<(), String> + Send + 'static) {
         let (tx, c) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
@@ -749,7 +749,7 @@ impl App {
                 let r = match self.settings().repeat.as_str() { "off" => "all", "all" => "one", _ => "off" };
                 self.store.lock().unwrap().patch_settings(&json!({"repeat": r}));
             }
-            Act::View(v) => { self.view = v; self.selected.clear(); self.filter.clear(); self.show_video = false; } // переход в раздел сворачивает видео
+            Act::View(v) => { self.view = v; self.selected.clear(); self.filter.clear(); self.show_video = false; } // switching sections collapses the video
             Act::ImportFiles | Act::ImportFolder => {
                 let pid = self.cur_playlist();
                 let dlg = rfd::FileDialog::new();
@@ -879,7 +879,7 @@ impl App {
                 s.save();
             }
             Act::Like(ids, on) => {
-                // лайк трека не из библиотеки (поиск, радио) — сначала добавить его в библиотеку
+                // liking a track not in the library (search, radio) — add it to the library first
                 let extra: Vec<Track> = ids.iter().filter(|i| !self.store.lock().unwrap().lib.tracks.contains_key(*i)).filter_map(|i| self.track(i)).collect();
                 let mut s = self.store.lock().unwrap();
                 if on && !extra.is_empty() { s.add_tracks(extra); }
@@ -912,7 +912,7 @@ impl App {
             }
             Act::MoveQueue(from, to) => {
                 if from < self.queue.len() && from != to {
-                    // двигаем номера позиций, чтобы играющий трек остался тем же (в очереди бывают повторы)
+                    // shift position indices so the playing track stays the same (the queue can have repeats)
                     let mut idx: Vec<usize> = (0..self.queue.len()).collect();
                     let x = idx.remove(from);
                     idx.insert(if to > from { to - 1 } else { to }.min(idx.len()), x);
@@ -934,7 +934,7 @@ impl App {
                 std::thread::spawn(move || {
                     let r = wavy_core::animethemes::fetch(mal).and_then(|themes| {
                         if themes.is_empty() { return Err(l!("у этого тайтла нет опенингов в базе", "this title has no openings in the database").into()); }
-                        // ищем параллельно, по 4 сразу — 10 песен находятся за пару секунд
+                        // search in parallel, 4 at a time — 10 songs are found in a couple of seconds
                         let mut found: Vec<Option<Track>> = vec![None; themes.len()];
                         for (chunk_i, chunk) in themes.chunks(4).enumerate() {
                             let hs: Vec<_> = chunk.iter().map(|t| { let (yt, t) = (yt.clone(), t.clone()); std::thread::spawn(move || {
@@ -962,7 +962,7 @@ impl App {
                 let s = self.settings();
                 wavy_core::i18n::set(&s.lang);
                 if let Some((t, _)) = &self.tray { t.relabel(); }
-                // сменили, откуда брать куки, — аккаунт переподключается с новыми
+                // the cookie source changed — the account reconnects with the new ones
                 if patch.get("ytCookies").is_some() && patch.get("ytAccount").is_none() && s.yt_account { if s.yt_cookies.is_empty() { self.acc = AccState::Off; } else { self.connect_account(ctx); } }
                 self.discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
                 self.overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
@@ -1018,21 +1018,21 @@ impl App {
             Act::Fullscreen(on) => {
                 if on == self.fullscreen { return; }
                 if on {
-                    // запоминаем окно: после выхода из полного экрана система ставит размер по умолчанию
+                    // remember the window: after leaving full screen the system applies the default size
                     self.pre_fullscreen = ctx.input(|i| {
                         let v = i.viewport();
                         Some((v.outer_rect?.min, v.inner_rect?.size(), v.maximized.unwrap_or(false)))
                     });
                     self.show_video = true;
                 } else if let Some((pos, size, max)) = self.pre_fullscreen.take() {
-                    self.restore_window = Some((pos, size, max, 3)); // применяем несколько кадров подряд, пока окно не «устаканится»
+                    self.restore_window = Some((pos, size, max, 3)); // apply it for several frames in a row until the window "settles"
                 }
                 self.fullscreen = on;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
             }
             Act::CheckUpdate => { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
             Act::Restart => {
-                // иначе «крестик в трей» спрячет старое окно, и оно продолжит играть рядом с новым
+                // otherwise "close to tray" would hide the old window and it would keep playing next to the new one
                 self.quitting = true;
                 self.audio.stop();
                 self.save_session();
@@ -1083,7 +1083,7 @@ impl App {
             Act::PlayAnime(id, ep) => {
                 let Some(a) = self.store.lock().unwrap().anime(&id).cloned() else { return };
                 if a.episodes.is_empty() { return; }
-                // продолжить: последняя серия (если досмотрена — следующая), с того же места
+                // continue: the last episode (if finished, the next one), from the same place
                 let start = match &ep {
                     Some(e) => a.episodes.iter().position(|x| x == e).unwrap_or(0),
                     None => match a.last.as_ref().and_then(|l| a.episodes.iter().position(|x| x == l)) {
@@ -1182,7 +1182,7 @@ impl App {
                 if self.acc != AccState::On { self.toast(l!("Сначала войди в YouTube в настройках", "Sign in to YouTube in Settings first"), true); return; }
                 self.wave_busy = true;
                 if !more { self.toast(l!("Собираю «Мою волну»…", "Building “My wave”…"), false); }
-                // стартовые треки докрутки — последние сыгранные из волны
+                // seed tracks for the top-up — the last ones played from the wave
                 let seeds: Vec<String> = if more {
                     let from = self.qi.saturating_sub(2);
                     self.queue.get(from..=self.qi.min(self.queue.len().saturating_sub(1))).unwrap_or(&[]).iter().filter_map(|id| self.track(id).and_then(|t| t.video_id)).collect()
@@ -1287,7 +1287,7 @@ impl App {
             }
             Act::Subs(sel) => {
                 self.sub_sel = sel;
-                self.video = None; // откроется заново с нужными субтитрами на той же позиции
+                self.video = None; // will reopen with the chosen subtitles at the same position
                 let key = match (sel, &self.media_info) { (Some(i), Some((_, info))) => info.subs.get(i).map(|s| s.key()), _ => Some("off".to_string()) };
                 if let Some(aid) = self.current.as_ref().and_then(|t| t.anime.clone()) {
                     let mut s = self.store.lock().unwrap();
@@ -1306,7 +1306,7 @@ impl App {
                 self.modal = Some(Modal::Shazam { state: ShazamState::Listening, to_openings: t.anime.is_some() });
                 let (tx, c) = (self.tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
-                    // берём чуть до текущего места и вперёд — нажимают обычно, когда опенинг уже идёт
+                    // take a little before the current spot and forward — people usually press it when the opening has already started
                     let r = player::sample_for_shazam(&path, (pos - 3.0).max(0.0), wavy_core::shazam::SECONDS as f64, track, ff.as_deref()).and_then(|s| wavy_core::shazam::recognize(&s));
                     if let Err(e) = &r { wavy_core::log(&format!("Shazam: {e}")); }
                     let _ = tx.send(Bg::Shazam(r));
@@ -1354,18 +1354,18 @@ impl App {
 
     fn cur_playlist(&self) -> Option<String> { if let View::Playlist(p) = &self.view { Some(p.clone()) } else { None } }
 
-    /// Сообщения фоновых потоков, конец трека, хоткеи, drag & drop.
+    /// Background thread messages, end of track, hotkeys, drag & drop.
     fn tick(&mut self, ctx: &egui::Context) {
         self.thumbs.poll(ctx);
         let st = self.settings();
         self.audio.fx.set(fx::Settings { speed: st.speed, eq_on: st.eq_on, eq: st.eq, normalize: st.normalize });
         if self.audio.tick() { ctx.request_repaint_after(Duration::from_millis(40)); }
-        // таймер сна
+        // sleep timer
         if let Some(Sleep::At(t)) = self.sleep {
             if Instant::now() >= t { self.sleep = None; if self.audio.is_playing() { self.audio.pause(); self.push_state(); } self.toast(l!("Таймер сна: спокойной ночи", "Sleep timer: good night"), false); }
             else { ctx.request_repaint_after(Duration::from_secs(1)); }
         }
-        // кроссфейд: за N секунд до конца запускаем следующий трек, этот плавно затихает
+        // crossfade: N seconds before the end start the next track while this one fades out
         if st.crossfade > 0.0 && !self.loading && self.audio.is_playing() && self.sleep != Some(Sleep::EndOfTrack) && st.repeat != "one" {
             if let Some(t) = self.current.clone() {
                 let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
@@ -1393,7 +1393,7 @@ impl App {
                         self.radio.extend(list);
                         let n = ids.len();
                         if self.current.as_ref().is_some_and(|c| c.id == id) {
-                            // играет этот трек — радио встаёт следующим в очереди вместо остального
+                            // this track is playing — the radio goes next in the queue instead of the rest
                             self.queue.truncate(self.qi + 1);
                             self.queue.extend(ids);
                         } else {
@@ -1478,7 +1478,7 @@ impl App {
                 }
                 Bg::CookiesFailed(e) => self.toast(lf!("Куки браузера не сработали: {}", "Browser cookies didn't work: {}", cookie_hint(&e)), true),
                 Bg::Replaced(t, age) => {
-                    // запоминаем новое видео в библиотеке (id тот же — плейлисты не трогаем)
+                    // remember the new video in the library (same id — playlists untouched)
                     let mut s = self.store.lock().unwrap();
                     if s.lib.tracks.contains_key(&t.id) { s.add_tracks(vec![t.clone()]); }
                     drop(s);
@@ -1547,11 +1547,11 @@ impl App {
                             if more { self.queue.extend(ids); } else { self.play_list(ids, 0, false, ctx); self.toast(lf!("Моя волна: {n} треков, дальше подберётся сама", "My wave: {n} tracks, more will come by itself"), false); }
                             self.wave_on = true;
                         }
-                        // ошибка — волна останавливается (иначе докрутка просилась бы каждый кадр)
+                        // error — the wave stops (otherwise it would ask for a top-up every frame)
                         Ok(_) => { self.wave_on = false; self.toast(l!("Волна не нашла новых треков", "The wave found no new tracks"), true); }
                         Err(e) => {
                             self.wave_on = false;
-                            // вход протух (YouTube меняет куки) — переподключаемся, чтобы следующая попытка прошла
+                            // sign-in expired (YouTube rotates cookies) — reconnect so the next attempt works
                             let low = e.to_lowercase();
                             if ["login", "auth", "401", "403", "cookie"].iter().any(|w| low.contains(w)) { self.connect_account(ctx); }
                             self.toast(lf!("Моя волна: {e}", "My wave: {e}"), true);
@@ -1629,7 +1629,7 @@ impl App {
             self.apply(act, ctx);
         }
         let mut dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        // wavy-export.json с телефона — это синхронизация, а не музыка
+        // wavy-export.json from the phone is sync, not music
         let exports: Vec<PathBuf> = dropped.iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))).cloned().collect();
         dropped.retain(|p| !exports.contains(p));
         for e in exports { self.apply(Act::SyncImport(Some(e)), ctx); }
@@ -1637,7 +1637,7 @@ impl App {
             if matches!(self.view, View::Anime | View::AnimeTitle(_)) { self.apply(Act::ImportAnime(dropped), ctx); }
             else { let pid = self.cur_playlist(); self.apply(Act::ImportPaths(dropped, pid), ctx); }
         }
-        // серия досмотрена (последние 10 % или титры) — отмечаем
+        // episode finished (last 10 % or credits) — mark it
         if let Some(t) = self.current.as_ref().filter(|t| t.anime.is_some()) {
             let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
             let pos = self.audio.position();
@@ -1653,7 +1653,7 @@ impl App {
         if let Some((_, _, at)) = &self.toast { if at.elapsed() > Duration::from_secs(4) { self.toast = None; } }
         self.audio.poll();
         if self.audio.buffering() { ctx.request_repaint_after(Duration::from_millis(200)); }
-        // загрузка видео: показываем проценты, по готовности — открываем
+        // video download: show percent, open when ready
         if let Some((id, dl)) = self.video_dl.clone() {
             if dl.done() {
                 self.video_dl = None;
@@ -1684,12 +1684,12 @@ impl App {
             }
             if left > 1 { self.restore_window = Some((pos, size, max, left - 1)); ctx.request_repaint_after(Duration::from_millis(60)); }
         }
-        // автообновление: через 5 с после запуска и потом раз в 6 часов
+        // auto-update: 5 s after launch and then every 6 hours
         if self.settings().auto_update && update::current_build().is_some() {
             let due = match self.upd_checked { None => self.started.elapsed() > Duration::from_secs(5), Some(t) => t.elapsed() > Duration::from_secs(6 * 3600) };
             let busy = matches!(self.upd, Some(UpdState::Checking | UpdState::Downloading(_) | UpdState::Ready(_)));
             if due && !busy { self.upd_checked = Some(Instant::now()); self.start_update(ctx); }
-            // окно может простаивать без перерисовок — просим разбудить к следующей проверке
+            // the window may idle without repaints — ask to be woken for the next check
             let next = match self.upd_checked { None => Duration::from_secs(5).saturating_sub(self.started.elapsed()), Some(t) => Duration::from_secs(6 * 3600).saturating_sub(t.elapsed()) };
             ctx.request_repaint_after(next + Duration::from_millis(100));
         }
@@ -1711,8 +1711,8 @@ impl App {
         });
     }
 
-    /// Японские/китайские/корейские названия: раз в пару секунд смотрим, не появились ли такие
-    /// (библиотека, плейлисты, поиск, аниме), и тогда один раз подгружаем системный шрифт.
+    /// Japanese/Chinese/Korean titles: every couple of seconds check whether any appeared
+    /// (library, playlists, search, anime), and if so load the system font once.
     fn cjk_tick(&mut self, ctx: &egui::Context) {
         if self.cjk_loaded || self.cjk_check.elapsed() < Duration::from_secs(2) { return; }
         self.cjk_check = Instant::now();
@@ -1733,7 +1733,7 @@ impl App {
         ctx.set_fonts(font_defs(&fonts));
     }
 
-    /// Декодер ffmpeg: качаем, если он понадобился, и повторяем то, что без него не открылось.
+    /// ffmpeg decoder: download it if needed and retry what didn't open without it.
     fn ffmpeg_tick(&mut self, ctx: &egui::Context) {
         use wavy_core::ffmpeg::{State, NEED};
         let need_video = self.video_error.as_ref().is_some_and(|e| e.1.starts_with(NEED));
@@ -1743,7 +1743,7 @@ impl App {
             State::Downloading(_) => ctx.request_repaint_after(Duration::from_millis(300)),
             State::Ready(p) => {
                 self.audio.ffmpeg = Some(p);
-                if need_video { self.video_error = None; self.video = None; } // video_tick откроет заново
+                if need_video { self.video_error = None; self.video = None; } // video_tick will reopen it
                 if std::mem::take(&mut self.reload_after_ff) {
                     let pos = self.audio.position();
                     if let (Some(t), None) = (self.current.clone(), &self.resume) { self.resume = Some((t.id, pos, true)); }
@@ -1757,7 +1757,7 @@ impl App {
         }
     }
 
-    /// Видео для текущего трека: открываем, когда открыт просмотр, и выгружаем, когда закрыт (память).
+    /// Video for the current track: open it while the viewer is open, unload it when closed (memory).
     fn video_tick(&mut self, ctx: &egui::Context) {
         let want = if self.show_video || self.fullscreen { self.current.clone().filter(|t| t.has_video()) } else { None };
         let want_id = want.as_ref().map(|t| t.id.clone());
@@ -1774,7 +1774,7 @@ impl App {
                 self.video_loading = Some(t.id.clone());
                 let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
                 std::thread::spawn(move || {
-                    // быстрый путь: прямая ссылка + загрузка кусками с процентами
+                    // fast path: direct URL + chunked download with percent
                     if let Some(vid) = t.video_id.clone() {
                         let path = cache.join(format!("{}.v.mp4", wavy_core::sha16(t.url.clone().unwrap_or_default().as_bytes())));
                         if wavy_core::stream::is_complete(&path) { let _ = tx.send(Bg::VideoReady { id: t.id.clone(), path }); c.request_repaint(); return; }
@@ -1806,7 +1806,7 @@ impl App {
 
 // ---------- UI ----------
 impl eframe::App for App {
-    fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] { [0.0; 4] } // прозрачность для оверлей-окна
+    fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] { [0.0; 4] } // transparency for the overlay window
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) { self.save_session(); }
 
@@ -1918,7 +1918,7 @@ impl App {
             let label = if self.wave_busy { l!("\u{E802}  Моя волна…", "\u{E802}  My wave…") } else { l!("\u{E802}  Моя волна", "\u{E802}  My wave") };
             if nav(ui, label, self.wave_on, None).on_hover_text(l!("Бесконечное радио YouTube Music по твоим лайкам и истории", "Endless YouTube Music radio from your likes and history")).clicked() { acts.push(Act::Wave(false)); }
         }
-        // умные плейлисты — собираются сами по истории прослушиваний
+        // smart playlists — built automatically from listening history
         let smart_open = matches!(self.view, View::Smart(_));
         egui::CollapsingHeader::new(RichText::new(l!("\u{E5FE}  Умные плейлисты", "\u{E5FE}  Smart playlists")).color(if smart_open { TEXT } else { MUTED })).id_salt("smart").default_open(smart_open).show(ui, |ui| {
             for (rule, name, hint) in wavy_core::store::SMART {
@@ -2086,7 +2086,7 @@ impl App {
             let fr = ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(l!("\u{E30C} Фильтр (Ctrl+F)…", "\u{E30C} Filter (Ctrl+F)…")).desired_width(fw).margin(egui::Margin::symmetric(12, 8)));
             if std::mem::take(&mut self.focus_filter) { fr.request_focus(); }
             if fr.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.filter.clear(); fr.surrender_focus(); }
-            // сортировка (своя для библиотеки и для каждого плейлиста)
+            // sorting (separate for the library and for each playlist)
             let (key, is_pl) = match &self.view { View::Playlist(id) => (id.clone(), true), View::Liked => ("liked".to_string(), true), _ => ("library".to_string(), false) };
             let cur = self.settings().sort.get(&key).cloned().unwrap_or_default();
             let opts: &[(&str, &str)] = if is_pl {
@@ -2106,7 +2106,7 @@ impl App {
                 }
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // узкое окно (открыт текст/очередь) — только значки
+                // narrow window (lyrics/queue open) — icons only
                 let narrow = ui.available_width() < 330.0;
                 let t = |icon: &str, text: &str| if narrow { icon.to_string() } else { format!("{icon}  {text}") };
                 if pill(ui, &t("\u{E2E2}", l!("По ссылке", "By link")), false).on_hover_text(l!("Добавить по ссылке", "Add by link")).clicked() { acts.push(Act::Modal(Modal::ImportUrl { url: String::new(), into: self.cur_playlist().is_some(), busy: false, err: None })); }
@@ -2136,7 +2136,7 @@ impl App {
         let pls: Vec<(String, String)> = self.store.lock().unwrap().lib.playlists.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
         let mods = ui.input(|i| i.modifiers);
         let liked: HashSet<String> = self.store.lock().unwrap().lib.liked.iter().cloned().collect();
-        // перетаскивать можно в плейлисте и «Любимом», если порядок свой (без сортировки и фильтра)
+        // dragging works in playlists and "Liked" when the order is custom (no sort and no filter)
         let key = match &self.view { View::Playlist(id) => Some(id.clone()), View::Liked => Some("liked".to_string()), _ => None };
         let can_drag = key.as_ref().is_some_and(|k| self.settings().sort.get(k).is_none_or(|v| v.is_empty())) && self.filter.trim().is_empty();
         let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -2234,7 +2234,7 @@ impl App {
         }
     }
 
-    /// Постер (2:3) с обрезкой по центру; без постера — заглушка.
+    /// Poster (2:3) center-cropped; without a poster — a placeholder.
     fn poster(&mut self, ui: &egui::Ui, a: &anime::Anime, r: Rect, px: u32) {
         let tex = a.poster.clone().and_then(|p| self.thumbs.poster(&p, px));
         match tex {
@@ -2294,7 +2294,7 @@ impl App {
                     let br = Rect::from_min_size(pr.right_top() + Vec2::new(-52.0, 8.0), Vec2::new(44.0, 20.0));
                     ui.painter().rect_filled(br, 99, Color32::from_black_alpha(190));
                     ui.painter().text(br.center(), Align2::CENTER_CENTER, badge, FontId::proportional(11.5), Color32::WHITE);
-                    // название — до двух строк с «…»
+                    // title — up to two lines with "…"
                     let mut job = egui::text::LayoutJob::simple(a.display().to_string(), FontId::new(13.5, semi()), TEXT, cw);
                     job.wrap.max_rows = 2;
                     let g = ui.fonts_mut(|f| f.layout_job(job));
@@ -2450,7 +2450,7 @@ impl App {
         let w = ui.available_width();
         let s = self.settings();
         ui.columns_const(|[left, mid, right]| {
-            // сейчас играет — клик открывает/закрывает просмотр видео (или большой обложки)
+            // now playing — a click opens/closes the video view (or the large cover)
             let np = left.horizontal(|ui| {
                 ui.set_max_width(w * 0.3);
                 match self.current.clone() {
@@ -2475,10 +2475,10 @@ impl App {
                 let hint = match (self.show_video, has_video) { (true, _) => l!("Скрыть", "Hide"), (false, true) => l!("Смотреть видео", "Watch video"), (false, false) => l!("Показать обложку", "Show cover") };
                 if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hint).clicked() { acts.push(Act::ToggleVideo); }
             }
-            // кнопки + перемотка
+            // buttons + seek bar
             mid.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
-                    // высота ряда — сразу по большой кнопке: иначе кнопки до неё центрируются по 34 px, а после — по 44
+                    // row height follows the big button from the start: otherwise buttons before it center on 34 px and after it on 44
                     ui.set_min_height(44.0);
                     let bw = 34.0 * 4.0 + 44.0 + 4.0 * 14.0;
                     ui.add_space(((ui.available_width() - bw) / 2.0).max(0.0));
@@ -2489,7 +2489,7 @@ impl App {
                     ui.painter().circle_filled(r.center(), 21.0, if resp.hovered() { Color32::WHITE } else { TEXT });
                     if self.loading || self.audio.buffering() {
                         ui.ctx().request_repaint_after(Duration::from_millis(33));
-                        // загрузка: три точки «бегут» по кругу вместо смещённого символа «…»
+                        // loading: three dots "run" in a circle instead of an off-center "…" glyph
                         let t = ui.input(|i| i.time) as f32;
                         for k in 0..3 {
                             let a = (k as f32 - 1.0) * 7.0;
@@ -2518,7 +2518,7 @@ impl App {
                     ui.label(RichText::new(fmt_time(dur)).size(12.0).color(MUTED));
                 });
             });
-            // громкость, очередь
+            // volume, queue
             right.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(4.0);
                 let (r, new) = bar(ui, s.volume, 110.0);
@@ -2527,13 +2527,13 @@ impl App {
                 if r.drag_stopped() || r.clicked() { acts.push(Act::SaveVolume); }
                 ui.label(RichText::new(if v == 0.0 { "\u{E45C}" } else { "\u{E44A}" }).color(MUTED));
                 if icon_btn(ui, "\u{E64C}", 34.0, s.mini).on_hover_text(l!("Мини-плеер поверх окон", "Mini player on top of windows")).clicked() { acts.push(Act::ToggleMini); }
-                // звук: скорость, кроссфейд, громкость, эквалайзер
+                // sound: speed, crossfade, volume, equalizer
                 let fx_on = (s.speed - 1.0).abs() > 0.01 || s.crossfade > 0.0 || s.normalize || s.eq_on;
                 let r = icon_btn(ui, "\u{E434}", 34.0, fx_on).on_hover_text(l!("Звук: скорость, кроссфейд, эквалайзер", "Sound: speed, crossfade, equalizer"));
-                // клик по кнопке — открыть/закрыть; из палитры Ctrl+K — открыть
+                // clicking the button opens/closes it; from the Ctrl+K palette it opens
                 let force = if std::mem::take(&mut self.sound_open) { Some(egui::SetOpenCommand::Bool(true)) } else { r.clicked().then_some(egui::SetOpenCommand::Toggle) };
                 egui::Popup::from_toggle_button_response(&r).open_memory(force).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.sound_ui(ui, &s, acts));
-                // таймер сна
+                // sleep timer
                 let r = icon_btn(ui, "\u{E330}", 34.0, self.sleep.is_some()).on_hover_text(match self.sleep {
                     Some(Sleep::At(t)) => lf!("Таймер сна: через {} мин", "Sleep timer: in {} min", (t.saturating_duration_since(Instant::now()).as_secs() + 59) / 60),
                     Some(Sleep::EndOfTrack) => l!("Таймер сна: после этого трека", "Sleep timer: after this track").into(),
@@ -2562,7 +2562,7 @@ impl App {
         });
     }
 
-    /// Просмотр: видео (клип с YouTube или локальный файл) либо большая обложка.
+    /// Viewer: video (a YouTube clip or a local file) or the large cover.
     fn video_view(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click());
@@ -2582,7 +2582,7 @@ impl App {
             let clock = self.audio.position();
             if let Some((_, v)) = &self.video { draw_subs(ui, &p, vr, &v.subs_at(clock)); }
         } else {
-            // большая обложка (пока видео грузится, при ошибке или если видео нет)
+            // large cover (while the video loads, on error, or if there's no video)
             let side = (area.height() * 0.62).min(area.width() * 0.6).max(80.0);
             let cr = Rect::from_center_size(area.center() - Vec2::new(0.0, 36.0), Vec2::splat(side));
             match t.cover.clone().and_then(|c| self.thumbs.get(&c, 512)) {
@@ -2611,11 +2611,11 @@ impl App {
                 if err.as_ref().is_none_or(|e| e.starts_with(wavy_core::ffmpeg::NEED)) { ui.ctx().request_repaint_after(Duration::from_millis(200)); }
             }
         }
-        // озвучка / субтитры / Shazam — в оконном режиме всегда, в полноэкранном — когда двигали мышью
+        // dub / subtitles / Shazam — always in windowed mode, in full screen only after the mouse moved
         let moved = ui.input(|i| i.pointer.time_since_last_movement()) < 2.5;
         if !self.fullscreen || moved { self.video_controls(ui, area, &t, acts); }
         if t.anime.is_some() { self.anime_overlay(ui, area, acts); }
-        // кнопка «во весь экран» и подсказка
+        // "full screen" button and hint
         let btn = Rect::from_min_size(area.right_top() + Vec2::new(-46.0, 12.0), Vec2::splat(34.0));
         let b = ui.interact(btn, Id::unique("fs-btn"), Sense::click());
         p.circle_filled(btn.center(), 17.0, Color32::from_black_alpha(if b.hovered() { 200 } else { 120 }));
@@ -2623,7 +2623,7 @@ impl App {
         if b.on_hover_text(if self.fullscreen { l!("Выйти из полноэкранного (Esc)", "Exit fullscreen (Esc)") } else { l!("Во весь экран (двойной клик)", "Fullscreen (double click)") }).clicked() {
             acts.push(Act::Fullscreen(!self.fullscreen));
         } else if resp.double_clicked() {
-            // первый клик двойного уже переключил паузу — возвращаем как было
+            // the first click of the double-click already toggled pause — restore it
             acts.push(Act::TogglePlay);
             acts.push(Act::Fullscreen(!self.fullscreen));
         } else if resp.clicked() {
@@ -2633,7 +2633,7 @@ impl App {
         let _ = resp;
         if self.fullscreen {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) { acts.push(Act::Fullscreen(false)); }
-            // название и прогресс — только когда двигали мышью
+            // title and progress — only after the mouse moved
             if ui.input(|i| i.pointer.time_since_last_movement()) < 2.5 {
                 let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
                 let pos = self.audio.position();
@@ -2648,7 +2648,7 @@ impl App {
         }
     }
 
-    /// Кнопки поверх видео: выбор озвучки и субтитров, Shazam.
+    /// Buttons over the video: dub and subtitle choice, Shazam.
     fn video_controls(&mut self, ui: &mut egui::Ui, area: Rect, t: &Track, acts: &mut Vec<Act>) {
         let info = self.media_info.as_ref().filter(|m| m.0 == t.id).map(|m| m.1.clone());
         let r = Rect::from_min_size(area.left_top() + Vec2::new(12.0, 12.0), Vec2::new((area.width() - 80.0).max(100.0), 34.0));
@@ -2688,7 +2688,7 @@ impl App {
         if ui.add(chip(l!("\u{E802}  Что за песня?", "\u{E802}  What's this song?").into())).on_hover_text(l!("Shazam: узнать опенинг/эндинг и добавить в библиотеку", "Shazam: recognize the opening/ending and add it to the library")).clicked() { acts.push(Act::Shazam); }
     }
 
-    /// Серия аниме: загрузить отрезки опенинга/эндинга, пропускать их, предлагать следующую серию.
+    /// Anime episode: load opening/ending segments, skip them, offer the next episode.
     fn anime_tick(&mut self, ctx: &egui::Context) {
         let Some(t) = self.current.clone().filter(|t| t.anime.is_some()) else { self.next_ep = None; return };
         if self.skips.as_ref().map(|s| &s.0) != Some(&t.id) {
@@ -2712,7 +2712,7 @@ impl App {
         let skips = self.skips.as_ref().map(|s| s.1.clone()).unwrap_or_default();
         for s in &skips {
             let inside = pos >= s.start && pos < s.end - 3.0;
-            // эндинг перед следующей серией — предложим её; иначе (опенинг и т.п.) сами пропускаем, если включено
+            // ending before the next episode — offer it; otherwise (opening etc.) skip automatically if enabled
             if s.is_ed() && has_next && st.anime_next {
                 if inside && self.next_ep.is_none() && self.stay_ep.as_deref() != Some(t.id.as_str()) && self.audio.is_playing() {
                     self.next_ep = Some((t.id.clone(), Instant::now() + Duration::from_secs(10)));
@@ -2729,7 +2729,7 @@ impl App {
         }
     }
 
-    /// Чат Twitch (заказы) и лимит кэша.
+    /// Twitch chat (requests) and the cache limit.
     fn stream_tick(&mut self, ctx: &egui::Context) {
         self.overlay_extra(ctx);
         self.backup_tick(false);
@@ -2751,7 +2751,7 @@ impl App {
         }
         let msgs: Vec<wavy_core::twitch::Msg> = self.sr_rx.try_iter().collect();
         for m in msgs { self.chat_message(m, ctx); }
-        // синхронизация с телефоном по Wi-Fi
+        // Wi-Fi sync with the phone
         let want = (st.wifi_sync && !st.wifi_pin.is_empty()).then(|| st.wifi_pin.clone());
         if self.wifi.as_ref().map(|w| &w.0) != want.as_ref() {
             self.wifi = None;
@@ -2765,7 +2765,7 @@ impl App {
                 }
             }
         }
-        // лимит кэша: проверяем раз в 10 минут
+        // cache limit: check every 10 minutes
         if st.cache_limit_gb > 0 && self.cache_trimmed.elapsed() > Duration::from_secs(600) {
             self.cache_trimmed = Instant::now();
             let keep: Vec<PathBuf> = [self.queue.get(self.qi), self.queue.get(self.qi + 1)].into_iter().flatten().filter_map(|id| self.track(id))
@@ -2775,14 +2775,14 @@ impl App {
         }
     }
 
-    /// Палитра команд (Ctrl+K): вбиваешь «эквалайзер», «мини», название трека или плейлиста — Enter.
+    /// Command palette (Ctrl+K): type "equalizer", "mini", a track or playlist name — Enter.
     fn palette_ui(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
         enum Cmd { Act(Act), Lyrics, Queue, Settings, Sound }
         let (mut q, mut sel) = self.palette.clone().unwrap_or_default();
         let ql = q.trim().to_lowercase();
         let words: Vec<&str> = ql.split_whitespace().collect();
         let fits = |label: &str, keys: &str| { let l = format!("{label} {keys}").to_lowercase(); words.iter().all(|w| l.contains(w)) };
-        // (иконка, название, подпись, что сделать)
+        // (icon, name, caption, what to do)
         let mut items: Vec<(&str, String, String, Cmd)> = Vec::new();
         let mut add = |icon: &'static str, label: &str, hint: &str, keys: &str, c: Cmd| { if fits(label, keys) { items.push((icon, label.to_string(), hint.to_string(), c)); } };
         let playing = self.audio.is_playing();
@@ -2872,15 +2872,15 @@ impl App {
         self.palette = if close { None } else { Some((q, sel)) };
     }
 
-    /// Автобэкап библиотеки раз в сутки (или сейчас, если `force`).
+    /// Library auto-backup once a day (or now, if `force`).
     fn backup_tick(&mut self, force: bool) {
         let st = self.settings();
         let now = wavy_core::now_ms();
         if !force && now.saturating_sub(st.last_backup) < 86_400_000 { return; }
-        if !force && self.started.elapsed() < Duration::from_secs(60) { return; } // не мешаем запуску
+        if !force && self.started.elapsed() < Duration::from_secs(60) { return; } // don't slow down startup
         self.store.lock().unwrap().patch_settings(&json!({"lastBackup": now}));
         let dir = if st.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&st.backup_dir) };
-        let d = fmt_date(now); // 21.11.2026 → 2026-11-21 (чтобы копии сортировались по дате)
+        let d = fmt_date(now); // 21.11.2026 → 2026-11-21 (so backups sort by date)
         let p: Vec<&str> = d.split('.').collect();
         let name = format!("wavy-backup-{}-{}-{}.json", p[2], p[1], p[0]);
         let (store, tx) = (self.store.clone(), self.tx.clone());
@@ -2893,7 +2893,7 @@ impl App {
         });
     }
 
-    /// Last.fm: «сейчас слушает» при старте трека, скроббл после половины (или 4 минут).
+    /// Last.fm: "now playing" when a track starts, scrobble after half (or 4 minutes).
     fn lastfm_tick(&mut self) {
         let acc = self.settings().lastfm;
         if !acc.ready() || !self.audio.is_playing() { return; }
@@ -2918,17 +2918,17 @@ impl App {
         }
     }
 
-    /// Написать в чат Twitch (если вошли).
+    /// Write to Twitch chat (if signed in).
     fn say(&self, text: &str) {
         if let Some((_, _, chat)) = &self.twitch { chat.say(text); }
     }
 
     fn track_name(t: &Track) -> String { if t.artist.is_empty() { t.title.clone() } else { format!("{} — {}", t.artist, t.title) } }
 
-    /// Сообщение из чата: заказ, !skip, !song, !queue, награда за баллы.
+    /// A chat message: request, !skip, !song, !queue, channel points reward.
     fn chat_message(&mut self, m: wavy_core::twitch::Msg, ctx: &egui::Context) {
         let st = self.settings();
-        // привязка награды: первая выкупленная награда с текстом становится «заказом трека»
+        // reward binding: the first redeemed reward with text becomes the "song request" one
         if let Some(r) = m.reward.as_ref().filter(|_| self.reward_bind) {
             self.reward_bind = false;
             self.store.lock().unwrap().patch_settings(&json!({"twitchReward": r}));
@@ -2939,7 +2939,7 @@ impl App {
         let query = if by_reward { Some(m.text.clone()) } else { m.command("!sr") };
         if let Some(q) = query {
             if q.is_empty() { self.say(&lf!("@{} напиши: !sr ссылка или название", "@{} type: !sr link or title", m.user)); return; }
-            // не чаще раза в 30 с от одного человека (за баллы — без лимита, их и так тратят)
+            // at most once per 30 s per person (channel points have no limit — they cost points anyway)
             if !by_reward && !m.is_mod && self.sr_last.get(&m.user).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) { return; }
             self.sr_last.insert(m.user.clone(), Instant::now());
             let (yt, tx, c, user) = (self.yt.clone(), self.tx.clone(), ctx.clone(), m.user.clone());
@@ -2977,7 +2977,7 @@ impl App {
         }
     }
 
-    /// Ждать, пока человек введёт код на twitch.tv/activate.
+    /// Wait for the user to enter the code at twitch.tv/activate.
     fn twitch_poll(&self, d: wavy_core::twitch::Device, ctx: &egui::Context) {
         let (tx, c, id) = (self.tx.clone(), ctx.clone(), self.settings().twitch_account.client_id);
         std::thread::spawn(move || {
@@ -3011,7 +3011,7 @@ impl App {
             self.play_list(vec![id], 0, false, ctx);
             return;
         }
-        // после текущего и уже заказанных — по очереди
+        // after the current one and those already requested — in order
         let mut at = self.qi + 1;
         while at < self.queue.len() && self.sr_by.contains_key(&self.queue[at]) { at += 1; }
         self.queue.insert(at, id);
@@ -3020,7 +3020,7 @@ impl App {
         self.say(&lf!("@{user} добавил: {name}{}", "@{user} added: {name}{}", if ahead == 0 { l!(" — играет следующим", " — plays next").to_string() } else { lf!(" — через {ahead}", " — in {ahead}") }));
     }
 
-    /// Отметить на Шикимори, сколько серий тайтла просмотрено.
+    /// Mark on Shikimori how many episodes of the title were watched.
     fn shiki_sync(&mut self, anime_id: String, ctx: &egui::Context) {
         let mut acc = self.settings().shiki;
         if !acc.logged_in() { return; }
@@ -3037,14 +3037,14 @@ impl App {
         });
     }
 
-    /// Кнопка «Пропустить опенинг» и карточка «Следующая серия через…» поверх видео.
+    /// "Skip opening" button and the "Next episode in…" card over the video.
     fn anime_overlay(&mut self, ui: &mut egui::Ui, area: Rect, acts: &mut Vec<Act>) {
         let pos = self.audio.position();
         let p = ui.painter().clone();
         let corner = area.right_bottom() - Vec2::new(24.0, 90.0);
         if let Some((_, at)) = &self.next_ep {
             let left = at.saturating_duration_since(Instant::now()).as_secs() + 1;
-            // сверху справа — внизу субтитры
+            // top right — subtitles are at the bottom
             let top = area.right_top() + Vec2::new(-24.0, 60.0);
             let card = Rect::from_min_max(Pos2::new(top.x - 300.0, top.y), Pos2::new(top.x, top.y + 80.0));
             p.rect_filled(card, 14, Color32::from_black_alpha(220));
@@ -3058,7 +3058,7 @@ impl App {
         let skip = self.skips.as_ref().and_then(|s| s.1.iter().find(|k| pos >= k.start - 0.5 && pos < k.end - 2.0).cloned());
         let (label, to) = match skip {
             Some(k) => (lf!("\u{E5A6}  Пропустить {}", "\u{E5A6}  Skip {}", k.label()), k.end),
-            // данных нет — обычный опенинг длится 1:30, даём прыжок в начале серии
+            // no data — a typical opening lasts 1:30, offer a jump at the start of the episode
             None if self.skips.as_ref().is_some_and(|s| s.1.is_empty()) && pos > 1.0 && pos < 240.0 => (l!("\u{E5A6}  +85 с", "\u{E5A6}  +85 s").to_string(), pos + 85.0),
             None => return,
         };
@@ -3107,7 +3107,7 @@ impl App {
             std::thread::spawn(move || {
                 let tmp = std::env::temp_dir().join("wavy-recap");
                 let _ = std::fs::create_dir_all(&tmp);
-                // обложки с YouTube — скачиваем на время
+                // covers from YouTube — download temporarily
                 let tracks = r.4.into_iter().enumerate().map(|(i, (title, sub, cover))| {
                     let cover = cover.and_then(|c| if c.starts_with("http") {
                         let p = tmp.join(format!("{i}.jpg"));
@@ -3154,7 +3154,7 @@ impl App {
         });
     }
 
-    /// Загрузить текст текущего трека (для панели «Текст» и оверлея), если ещё не загружен.
+    /// Load the current track's lyrics (for the "Lyrics" panel and the overlay) if not loaded yet.
     fn ensure_lyrics(&mut self, ctx: &egui::Context) {
         let Some(t) = self.current.clone() else { return };
         if self.lyrics.as_ref().map(|l| &l.0) == Some(&t.id) { return; }
@@ -3165,7 +3165,7 @@ impl App {
         std::thread::spawn(move || { let id = t.id.clone(); let _ = tx.send(Bg::Lyrics(id, wavy_core::lyrics::fetch(&t, &dir))); c.request_repaint(); });
     }
 
-    /// Оверлей: что дальше в очереди и текст песни.
+    /// Overlay: what's next in the queue and the lyrics.
     fn overlay_extra(&mut self, ctx: &egui::Context) {
         let ov = self.settings().overlay;
         let queue: Vec<serde_json::Value> = if ov.show_queue {
@@ -3179,7 +3179,7 @@ impl App {
         if self.wifi.is_some() { self.remote_tick(ctx); }
     }
 
-    /// Пульт с телефона: выполнить команды и обновить состояние, которое он видит.
+    /// Phone remote: run its commands and update the state it sees.
     fn remote_tick(&mut self, ctx: &egui::Context) {
         let cmds: Vec<(String, f64)> = self.remote.3.try_iter().collect();
         for (cmd, v) in cmds {
@@ -3313,7 +3313,7 @@ impl App {
                     if let Some(e) = err { ui.label(RichText::new(e.as_str()).color(BAD)); }
                     ui.add_space(10.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)); // Enter запускает импорт, даже если ссылку вставили без фокуса на поле
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)); // Enter starts the import even if the link was pasted without focus on the field
                         if ui.add_enabled(!*busy, pill_btn(l!("Импортировать", "Import"), true)).clicked() || (enter && !*busy) {
                             if url.trim().starts_with("http") { *busy = true; *err = None; acts.push(Act::ImportUrl(url.clone(), if *into { cur_pl.clone() } else { None })); }
                             else { *err = Some(l!("Нужна ссылка, начинающаяся с https://", "A link starting with https:// is needed").into()); }
@@ -3607,8 +3607,8 @@ impl App {
                         if ui.checkbox(&mut en, l!("Показывать, что я слушаю, в профиле Discord", "Show what I'm listening to in my Discord profile")).changed() { acts.push(Act::Settings(json!({"discord": {"enabled": en}}))); }
                         ui.label(RichText::new("APPLICATION ID").size(11.0).color(MUTED));
                         let r = ui.add(egui::TextEdit::singleline(client_id).hint_text(l!("например 1234567890123456789", "e.g. 1234567890123456789")).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 7)));
-                        if r.changed() { client_id.retain(|c| c.is_ascii_digit()); } // вставили с пробелами/мусором — оставляем цифры
-                        // сохраняем, когда ID похож на полный (Discord ID — 17–20 цифр) или при уходе из поля
+                        if r.changed() { client_id.retain(|c| c.is_ascii_digit()); } // pasted with spaces/junk — keep the digits
+                        // save when the ID looks complete (Discord IDs are 17–20 digits) or when leaving the field
                         let full = (17..=20).contains(&client_id.len());
                         if (r.changed() && full) || r.lost_focus() { acts.push(Act::Settings(json!({"discord": {"clientId": client_id.as_str()}}))); }
                         ui.horizontal_wrapped(|ui| {
@@ -3719,7 +3719,7 @@ impl App {
                                 if pill(ui, l!("Отвязать", "Unlink"), false).clicked() { acts.push(Act::Settings(json!({"twitchReward": ""}))); }
                             }
                         });
-                        // вход: чтобы Wavy отвечал в чат
+                        // sign-in: so Wavy can reply in chat
                         let acc = s.twitch_account.clone();
                         ui.horizontal(|ui| {
                             if acc.logged_in() {
@@ -3954,7 +3954,7 @@ impl App {
                         if ui.checkbox(&mut mini, l!("Мини-плеер поверх всех окон", "Mini player on top of all windows")).changed() { acts.push(Act::ToggleMini); }
                         ui.add_space(6.0);
                         ui.label(RichText::new(l!("Горячие клавиши везде (и в игре)", "Global hotkeys (work in games too)")).family(semi()));
-                        // запись сочетания: следующее нажатие с Ctrl/Alt/Shift
+                        // recording a combination: the next key press with Ctrl/Alt/Shift
                         if let Some(action) = self.hk_capture.clone() {
                             let ev = ui.ctx().input(|i| i.events.iter().find_map(|e| match e { egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)), _ => None }));
                             if let Some((key, m)) = ev {
@@ -3975,7 +3975,7 @@ impl App {
                                 let r = ui.add(egui::Button::new(RichText::new(shown).color(if busy { BAD } else { TEXT })).min_size(Vec2::new(150.0, 24.0)));
                                 if r.clicked() { self.hk_capture = Some(action.to_string()); }
                                 if busy { r.on_hover_text(l!("Это сочетание занято другой программой", "This combination is taken by another program")); }
-                                // настройки сливаются, а не заменяются — поэтому «по умолчанию» записываем явно
+                                // settings are merged, not replaced — so "default" is written explicitly
                                 let def = hotkeys::ACTIONS.iter().find(|a| a.0 == *action).map(|a| a.2).unwrap_or("");
                                 if c != def && pill(ui, l!("по умолчанию", "default"), false).clicked() {
                                     acts.push(Act::Settings(json!({"hotkeys": {*action: def}})));
@@ -4043,7 +4043,7 @@ impl App {
         });
     }
 
-    /// Игровой оверлей: отдельное прозрачное окно поверх всего.
+    /// In-game overlay: a separate transparent window on top of everything.
     fn sound_ui(&mut self, ui: &mut egui::Ui, s: &wavy_core::store::Settings, acts: &mut Vec<Act>) {
         ui.set_width(330.0);
         ui.label(RichText::new(l!("Скорость", "Speed")).family(semi()));
@@ -4092,7 +4092,7 @@ impl App {
         });
     }
 
-    /// Мини-плеер: маленькое окно поверх всех, тянется мышкой.
+    /// Mini player: a small always-on-top window, draggable with the mouse.
     fn mini_window(&mut self, ctx: &egui::Context, acts: &mut Vec<Act>) {
         let s = self.settings();
         let pos = s.mini_pos.unwrap_or([60.0, 60.0]);
@@ -4105,7 +4105,7 @@ impl App {
             p.rect_filled(rect, 0, BG2);
             p.rect_stroke(rect, 0, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
             if ctx.input(|i| i.viewport().close_requested()) { acts.push(Act::ToggleMini); }
-            // перетаскивание за любое пустое место
+            // drag by any empty spot
             let drag = ui.interact(rect, Id::unique("mini-drag"), Sense::click_and_drag());
             if drag.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag); }
             if drag.double_clicked() { acts.push(Act::ShowWindow); }
@@ -4126,7 +4126,7 @@ impl App {
                     let pc = p.with_clip_rect(clip);
                     pc.text(Pos2::new(tx, cr.top() + 12.0), Align2::LEFT_CENTER, &t.title, FontId::new(14.0, semi()), TEXT);
                     pc.text(Pos2::new(tx, cr.top() + 32.0), Align2::LEFT_CENTER, wavy_core::i18n::tr(&t.artist), FontId::proportional(12.0), MUTED);
-                    // прогресс
+                    // progress
                     let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
                     let f = if dur > 0.0 { (self.audio.position() / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
                     let bar = Rect::from_min_size(Pos2::new(tx, cr.bottom() - 6.0), Vec2::new(w, 3.0));
@@ -4135,7 +4135,7 @@ impl App {
                 }
                 None => { p.text(Pos2::new(cr.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, l!("Ничего не играет", "Nothing is playing"), FontId::proportional(13.0), MUTED); }
             }
-            // кнопки
+            // buttons
             let mut x = rect.right() - 120.0;
             let cy = rect.center().y;
             for (icon, act, big) in [("\u{E5A4}", 0, false), (if self.audio.is_playing() { "\u{E39E}" } else { "\u{E3D0}" }, 1, true), ("\u{E5A6}", 2, false)] {
@@ -4149,7 +4149,7 @@ impl App {
                 if resp.clicked() { acts.push([Act::Prev, Act::TogglePlay, Act::Next].into_iter().nth(act).unwrap()); }
                 x += sz + 2.0;
             }
-            // закрыть
+            // close
             let xr = Rect::from_min_size(Pos2::new(rect.right() - 18.0, rect.top() + 2.0), Vec2::splat(16.0));
             let xresp = ui.interact(xr, Id::unique("mini-x"), Sense::click());
             p.text(xr.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), if xresp.hovered() { TEXT } else { MUTED });
@@ -4182,7 +4182,7 @@ impl App {
                     let at = ctx.input(|i| i.pointer.press_origin()).unwrap_or_default();
                     ctx.send_viewport_cmd(if grip.contains(at) { egui::ViewportCommand::BeginResize(egui::ResizeDirection::SouthEast) } else { egui::ViewportCommand::StartDrag });
                 }
-                // запоминаем положение
+                // remember the position
                 if let (Some(o), Some(i)) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect)) {
                     let b = [o.min.x, o.min.y, i.width(), i.height()];
                     if b != s.overlay_window.bounds.unwrap_or_default() && !ctx.input(|i| i.pointer.any_down()) {
@@ -4194,7 +4194,7 @@ impl App {
             let Some(t) = self.current.clone() else { return };
             let fade = if hide_after > 0 && locked { let e = self.shown_at.elapsed().as_secs_f32() - hide_after as f32; (1.0 - e.max(0.0) / 0.5).clamp(0.0, 1.0) } else { 1.0 };
             if fade <= 0.0 { return; }
-            // в окне-оверлее свои три вида: новые стили OBS показываем ближайшим
+            // the overlay window has its own three styles: the newer OBS styles show as the closest one
             let theme = match s.overlay.theme.as_str() { "text" => "minimal", "compact" | "vertical" => "card", t => t };
             let playing = self.audio.is_playing();
             let card = rect.shrink2(Vec2::new(8.0, 8.0)).with_min_y(rect.min.y + if locked { 8.0 } else { 20.0 });
@@ -4222,7 +4222,7 @@ impl App {
             }
             let tw = card.right() - tx - 14.0;
             let mut yy = if minimal { card.center().y - 38.0 } else { cr.top() + 2.0 };
-            // в минимале текст прямо поверх игры — даём ему тень
+            // in minimal the text sits right over the game — give it a shadow
             let text = |pos: Pos2, align: Align2, txt: String, font: FontId, c: Color32| {
                 if minimal { p.text(pos + Vec2::new(1.0, 1.5), align, &txt, font.clone(), Color32::from_black_alpha((200.0 * fade) as u8)); }
                 p.text(pos, align, txt, font, c);
@@ -4250,15 +4250,15 @@ impl App {
 
 enum AudioSrc { File(PathBuf), Stream(wavy_core::stream::Download) }
 
-/// Ошибка «видео больше нет»: удалено, закрыто, заблокировано в стране или по жалобе.
-/// YouTube просит войти, чтобы подтвердить возраст (видео 18+). Проверку «не бот» сюда не относим:
-/// она касается всех видео, и замена не поможет.
+/// "Video is gone" error: deleted, private, blocked in the country or after a complaint.
+/// YouTube asks to sign in to confirm age (18+ video). The "not a bot" check doesn't count here:
+/// it affects all videos, and a replacement won't help.
 fn age_restricted(err: &str) -> bool {
     let e = err.to_lowercase();
     ["confirm your age", "age-restricted", "age restricted", "inappropriate for some users"].iter().any(|m| e.contains(m))
 }
 
-/// Видео 18+ с куками из настроек: только поток через yt-dlp (rustypipe кук не умеет).
+/// 18+ video with cookies from settings: only streaming through yt-dlp (rustypipe can't do cookies).
 fn fetch_with_cookies(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
     let key = t.url.clone().unwrap_or_default();
     let path = cache.join(format!("{}.s.m4a", wavy_core::sha16(key.as_bytes())));
@@ -4269,7 +4269,7 @@ fn fetch_with_cookies(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc,
     Err(e)
 }
 
-/// Понятная причина, почему куки не подошли.
+/// A readable reason why the cookies didn't work.
 fn cookie_hint(err: &str) -> String {
     let e = err.to_lowercase();
     if e.contains("could not copy") || e.contains("database is locked") { l!("браузер держит файл кук — закрой его полностью и попробуй ещё раз", "the browser holds the cookie file — close it completely and try again").into() }
@@ -4285,7 +4285,7 @@ fn gone_from_youtube(err: &str) -> bool {
     ["video unavailable", "not available", "private video", "has been removed", "been terminated", "copyright", "unavailable"].iter().any(|m| e.contains(m))
 }
 
-/// Звук YouTube-трека: готовый файл из кэша → поток через rustypipe (играет с первых КБ) → yt-dlp.
+/// Audio for a YouTube track: finished file from the cache → stream through rustypipe (plays from the first KB) → yt-dlp.
 fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String> {
     let _ = std::fs::create_dir_all(cache);
     let key = t.url.clone().unwrap_or_default();
@@ -4295,7 +4295,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
         match yt.direct(vid, false) {
             Ok(d) => {
                 let dl = wavy_core::stream::Download::start(d.url, path.clone(), d.size);
-                // ~200 КБ хватает декодеру, чтобы начать
+                // ~200 KB is enough for the decoder to start
                 if dl.wait_for(200 * 1024, Duration::from_secs(20)) { return Ok(AudioSrc::Stream(dl)); }
                 wavy_core::log(&format!("поток «{}» не пошёл: {:?} — пробую yt-dlp", t.title, dl.error()));
                 dl.cancel();
@@ -4303,7 +4303,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
             }
             Err(e) => wavy_core::log(&format!("rustypipe «{}»: {e} — пробую yt-dlp", t.title)),
         }
-        // yt-dlp потоком: играем, пока он качает (с 2025 года ссылки rustypipe YouTube часто отклоняет — 403)
+        // streaming through yt-dlp: play while it downloads (since 2025 YouTube often rejects rustypipe URLs — 403)
         let t0 = std::time::Instant::now();
         match yt.stream_audio(t, &path, false) {
             Ok(dl) => {
@@ -4313,7 +4313,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
                 }
                 let e = dl.error().unwrap_or_else(|| l!("долго нет данных", "no data for a long time").into());
                 dl.cancel();
-                // видео пропало — дальше качать бессмысленно, пусть ищется замена
+                // the video is gone — no point downloading further; let a replacement be found
                 if gone_from_youtube(&e) || age_restricted(&e) { return Err(e); }
                 wavy_core::log(&format!("поток yt-dlp «{}» не пошёл: {e} — качаю целиком", t.title));
             }
@@ -4323,7 +4323,7 @@ fn fetch_audio(yt: &YouTube, t: &Track, cache: &Path) -> Result<AudioSrc, String
     yt.download_audio(t, cache).map(AudioSrc::File)
 }
 
-/// Плейлист из YouTube Music → библиотека: тот же плейлист (по `source`) обновляется, иначе создаётся.
+/// Playlist from YouTube Music → library: the same playlist (by `source`) is updated, otherwise created.
 fn save_ytm_playlist(store: &Arc<Mutex<Store>>, source: &str, name: &str, tracks: Vec<Track>) -> String {
     let ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
     let mut s = store.lock().unwrap();
@@ -4334,8 +4334,8 @@ fn save_ytm_playlist(store: &Arc<Mutex<Store>>, source: &str, name: &str, tracks
     } else { s.create_playlist(name, ids, Some(source.to_string())).id }
 }
 
-/// Ссылка → треки: Spotify (через поиск на YouTube) или всё, что умеет yt-dlp.
-/// Возвращает (название плейлиста, источник, треки, примечание для пользователя).
+/// Link → tracks: Spotify (through YouTube search) or anything yt-dlp supports.
+/// Returns (playlist name, source, tracks, note for the user).
 fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>) -> Result<(Option<String>, String, Vec<Track>, String, Vec<wavy_core::spotify::SpTrack>), String> {
     let t2 = tx.clone();
     let status = move |m: &str| { let _ = t2.send(Bg::Status(m.into())); };
@@ -4352,7 +4352,7 @@ fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>
     }
 }
 
-// ---------- мелкие виджеты ----------
+// ---------- small widgets ----------
 fn track_menu(ui: &mut egui::Ui, ids: &[String], t: &Track, pid: Option<&str>, pls: &[(String, String)], acts: &mut Vec<Act>) {
     let ids = ids.to_vec();
     if ui.button(l!("Играть далее", "Play next")).clicked() { acts.push(Act::PlayNext(ids.clone())); ui.close(); }
@@ -4383,7 +4383,7 @@ fn track_menu(ui: &mut egui::Ui, ids: &[String], t: &Track, pid: Option<&str>, p
     if ui.button(RichText::new(label).color(BAD)).clicked() { acts.push(Act::RemoveTracks(ids)); ui.close(); }
 }
 
-/// Тонкая полоска-слайдер (перемотка, громкость): белое заполнение, ручка при наведении.
+/// Thin slider bar (seek, volume): white fill, handle on hover.
 fn bar(ui: &mut egui::Ui, frac: f32, width: f32) -> (egui::Response, Option<f32>) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 16.0), Sense::click_and_drag());
     let new = if resp.dragged() || resp.clicked() {
@@ -4412,14 +4412,14 @@ fn icon_btn(ui: &mut egui::Ui, icon: &str, size: f32, on: bool) -> egui::Respons
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     if resp.hovered() { ui.painter().circle_filled(r.center(), size / 2.0, BG3); }
     let c = if on { ACCENT } else if resp.hovered() { TEXT } else { MUTED };
-    // с точкой-индикатором иконка чуть приподнята, чтобы пара «иконка + точка» стояла по центру
+    // with an indicator dot the icon is raised a bit so the "icon + dot" pair is centered
     glyph(ui.painter(), r.center() - Vec2::new(0.0, if on { 2.0 } else { 0.0 }), icon, FontId::proportional(size * 0.5), c);
     if on { ui.painter().circle_filled(r.center_bottom() - Vec2::new(0.0, 2.0), 2.0, ACCENT); }
     resp
 }
 
-/// Иконка точно по центру: по контуру самого значка, а не по высоте строки шрифта
-/// (у шрифта иконок значки сидят в строке по-разному — отсюда «чутка оффсетнутые» кнопки).
+/// Icon exactly centered: by the glyph's own outline, not the font's line height
+/// (in the icon font glyphs sit differently in the line — hence the "slightly off-center" buttons).
 fn glyph(p: &egui::Painter, center: Pos2, icon: &str, font: FontId, color: Color32) {
     let g = p.layout_no_wrap(icon.to_string(), font, color);
     let b = g.mesh_bounds;
@@ -4441,7 +4441,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
-/// Пластинка: обложка натягивается на круг (меш-веер) и крутится.
+/// Vinyl: the cover is stretched over a circle (fan mesh) and spins.
 fn vinyl(p: &egui::Painter, tex: Option<egui::TextureId>, c: Pos2, r: f32, rot: f32, fade: f32) {
     let a = |col: Color32| col.gamma_multiply(fade);
     p.circle_filled(c, r, a(Color32::from_rgb(12, 12, 14)));
@@ -4465,12 +4465,12 @@ fn vinyl(p: &egui::Painter, tex: Option<egui::TextureId>, c: Pos2, r: f32, rot: 
     for k in [0.55f32, 0.75] { p.circle_stroke(c, r * k, Stroke::new(1.0, a(Color32::from_black_alpha(60)))); }
     p.circle_filled(c, r * 0.16, a(Color32::from_rgb(12, 12, 14)));
     p.circle_stroke(c, r * 0.16, Stroke::new(1.5, a(Color32::from_white_alpha(60))));
-    // блик
+    // highlight
     let (sn, cs) = rot.sin_cos();
     p.circle_filled(c + Vec2::new(cs, sn) * r * 0.62, r * 0.05, a(Color32::from_white_alpha(70)));
 }
 
-/// Субтитры: белый текст с чёрной обводкой, снизу кадра (надписи \an8 — сверху).
+/// Subtitles: white text with a black outline at the bottom of the frame (\an8 lines at the top).
 fn draw_subs(ui: &egui::Ui, p: &egui::Painter, vr: Rect, cues: &[wavy_core::media::Cue]) {
     if cues.is_empty() { return; }
     let size = (vr.height() * 0.052).clamp(15.0, 54.0);
@@ -4488,7 +4488,7 @@ fn draw_subs(ui: &egui::Ui, p: &egui::Painter, vr: Rect, cues: &[wavy_core::medi
         p.galley(pos, g, Color32::WHITE);
         h
     };
-    // каждую строку отдельно — так все строки по центру
+    // each line separately — that way all lines are centered
     let mut y = vr.bottom() - vr.height() * 0.06;
     for c in cues.iter().filter(|c| !c.top).rev() {
         for line in c.text.lines().rev() { y -= draw(line, y, true); }
@@ -4526,13 +4526,13 @@ fn shuffle_vec<T>(v: &mut [T]) {
 fn semi() -> egui::FontFamily { egui::FontFamily::Name("semi".into()) }
 fn bold() -> egui::FontFamily { egui::FontFamily::Name("bold".into()) }
 
-/// Есть ли в тексте японские/китайские/корейские символы (Inter их не рисует — были бы квадратики).
+/// Whether the text has Japanese/Chinese/Korean characters (Inter doesn't draw them — they'd be boxes).
 fn has_cjk(s: &str) -> bool {
     s.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0xAC00..=0xD7AF | 0x1100..=0x11FF | 0x3130..=0x318F))
 }
 
-/// Системный шрифт с иероглифами: в exe его не вшиваем (+10 МБ), а берём из Windows,
-/// и только когда такие символы реально встретились. Корейский — отдельным шрифтом, если есть.
+/// System CJK font: not embedded in the exe (+10 MB) but taken from Windows,
+/// and only once such characters actually appear. Korean uses a separate font, if available.
 fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
     let dirs: Vec<PathBuf> = if cfg!(windows) {
         vec![PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts")]
@@ -4549,12 +4549,12 @@ fn load_cjk_fonts() -> Vec<(String, Vec<u8>)> {
 }
 
 fn font_defs(extra: &[(String, Vec<u8>)]) -> egui::FontDefinitions {
-    // Inter (OFL) — основной шрифт; иконки Phosphor (MIT) — запасной, плюс «fill»-вариант для кнопки play
+    // Inter (OFL) is the main font; Phosphor icons (MIT) are the fallback, plus the "fill" variant for the play button
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter-Regular.otf"))));
     fonts.font_data.insert("inter-semi".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter-SemiBold.otf"))));
     fonts.font_data.insert("inter-bold".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter-Bold.otf"))));
-    // из Inter вырезаны его глифы в Private Use Area (assets/README), чтобы не перекрывать иконки
+    // Inter's Private Use Area glyphs are cut out (assets/README) so they don't shadow the icons
     fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().splice(0..0, ["inter".to_string(), "phosphor".to_string()]);
     fonts.font_data.insert("phosphor".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Phosphor.ttf"))));
     fonts.font_data.insert("phosphor-fill".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Phosphor-Fill.ttf"))));
@@ -4566,7 +4566,7 @@ fn font_defs(extra: &[(String, Vec<u8>)]) -> egui::FontDefinitions {
         f[0] = font.into(); // [inter-…, phosphor, …]
         fonts.families.insert(egui::FontFamily::Name(name.into()), f);
     }
-    // иероглифы — последними: берутся только для символов, которых нет в Inter
+    // CJK last: used only for characters Inter doesn't have
     for (name, bytes) in extra {
         fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes.clone())));
         for fam in fonts.families.values_mut() { fam.push(name.clone()); }
@@ -4620,8 +4620,8 @@ fn reveal(path: &str) {
     #[cfg(all(unix, not(target_os = "macos")))] { if let Some(d) = Path::new(path).parent() { let _ = std::process::Command::new("xdg-open").arg(d).spawn(); } }
 }
 
-/// Своя обложка плейлиста: квадрат по центру, до 600 px, JPEG в папке обложек
-/// (новое имя каждый раз — чтобы не показалась старая картинка из кэша миниатюр).
+/// Custom playlist cover: center square, up to 600 px, JPEG in the covers folder
+/// (a new name every time — so the old image from the thumbnail cache doesn't show).
 fn playlist_cover(src: &Path, covers: &Path, id: &str) -> Result<PathBuf, String> {
     let img = image::open(src).map_err(|e| lf!("не открылась картинка: {e}", "couldn't open the image: {e}"))?;
     let (w, h) = (img.width(), img.height());
@@ -4650,15 +4650,15 @@ fn open_url(url: &str) {
 }
 
 fn main() -> eframe::Result {
-    // один Wavy за раз: после обновления старый процесс закрывается, повторный запуск показывает окно
+    // one Wavy at a time: after an update the old process quits; a repeated launch shows the window
     let restarted = std::env::args().any(|a| a == "--restarted");
     let listener = match instance::start(restarted) {
         instance::Start::First(l) => l,
         instance::Start::AlreadyRunning => return Ok(()),
     };
-    // даём старому процессу отпустить порт оверлея и файлы
+    // give the old process time to release the overlay port and files
     if restarted { std::thread::sleep(Duration::from_millis(500)); }
-    // паника → в лог (в Windows-сборке нет консоли)
+    // panic → log (the Windows build has no console)
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         wavy_core::log(&format!("ПАДЕНИЕ: {info}\n{}", std::backtrace::Backtrace::force_capture()));
@@ -4678,9 +4678,9 @@ fn main() -> eframe::Result {
     }))
 }
 
-/// Миллисекунды Unix → «21.11.2026».
+/// Unix milliseconds → "21.11.2026".
 fn fmt_date(ms: u64) -> String {
-    // дни с 1970-01-01 → дата (алгоритм Говарда Хиннанта)
+    // days since 1970-01-01 → date (Howard Hinnant's algorithm)
     let z = (ms / 86_400_000) as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -4706,7 +4706,7 @@ mod tests {
         let age = "ERROR: [youtube] pLT99PuEOmY: Sign in to confirm your age. This video may be inappropriate for some users.";
         assert!(age_restricted(age));
         assert!(age_restricted("ERROR: [youtube] x: Sign in to confirm your age. This video is age-restricted and only available on YouTube."));
-        // проверка «не бот» — не про возраст: замена тут не поможет
+        // the "not a bot" check isn't about age: a replacement won't help here
         assert!(!age_restricted("ERROR: [youtube] x: Sign in to confirm you’re not a bot."));
         assert!(!gone_from_youtube(age));
         assert!(cookie_hint("ERROR: could not find firefox cookies database in '/root/.mozilla/firefox'").contains("профиль"));

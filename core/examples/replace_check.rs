@@ -1,5 +1,5 @@
-//! Проверка подбора замены для пропавшего с YouTube видео:
-//! cargo run -p wavy-core --example replace_check -- <videoId> <название> [исполнитель] [длительность]
+//! Check finding a replacement for a video gone from YouTube:
+//! cargo run -p wavy-core --example replace_check -- <videoId> <title> [artist] [duration]
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let t = wavy_core::Track {

@@ -1,6 +1,6 @@
-//! YouTube / YouTube Music / SoundCloud / … через yt-dlp.
-//! yt-dlp ищется в PATH, иначе один раз скачивается в data_dir/bin.
-//! Все функции блокирующие — вызывай из фонового потока.
+//! YouTube / YouTube Music / SoundCloud / … through yt-dlp.
+//! yt-dlp is looked up in PATH, otherwise downloaded once into data_dir/bin.
+//! All functions block — call them from a background thread.
 use crate::{now_ms, sha16, Track};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -16,29 +16,29 @@ pub struct YouTube {
     streams: Mutex<HashMap<String, (String, u64)>>, // url -> (stream, expires_ms)
     deno: Arc<Mutex<Deno>>,
     rp: std::sync::OnceLock<Option<rustypipe::client::RustyPipe>>,
-    /// куки для видео 18+ (браузер или файл cookies.txt) — только для повторной попытки такого видео
+    /// cookies for 18+ videos (browser or cookies.txt file) — only for retrying such a video
     cookies: Mutex<String>,
-    /// вошедший аккаунт YouTube Music (отдельный клиент rustypipe с куками), см. ytaccount.rs
+    /// signed-in YouTube Music account (a separate rustypipe client with cookies), see ytaccount.rs
     pub(crate) acc: Mutex<Option<rustypipe::client::RustyPipe>>,
 }
 
-/// Браузеры, из которых yt-dlp умеет брать куки.
+/// Browsers yt-dlp can take cookies from.
 pub const COOKIE_BROWSERS: &[(&str, &str)] = &[("firefox", "Firefox"), ("chrome", "Chrome"), ("edge", "Edge"), ("brave", "Brave"), ("opera", "Opera"), ("vivaldi", "Vivaldi"), ("chromium", "Chromium")];
 
-/// Прямая ссылка на поток (без скачивания): адрес и размер, если известен.
+/// Direct stream URL (no download): address and size, if known.
 #[derive(Clone, Debug)]
 pub struct Direct {
     pub url: String,
     pub size: Option<u64>,
 }
 
-/// Общий tokio-рантайм для rustypipe (один рабочий поток — экономим память).
+/// Shared tokio runtime for rustypipe (one worker thread — saves memory).
 pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(1).thread_name("rustypipe").enable_all().build().expect("tokio"))
 }
 
-/// JS-движок для yt-dlp: без него YouTube постепенно перестаёт отдавать форматы.
+/// JS engine for yt-dlp: without it YouTube gradually stops serving formats.
 #[derive(Clone, Debug)]
 pub enum Deno {
     Unknown,
@@ -60,7 +60,7 @@ impl YouTube {
 
     pub fn deno_status(&self) -> Deno { self.deno.lock().unwrap().clone() }
 
-    /// Куки YouTube: имя браузера или путь к cookies.txt (пусто — без кук).
+    /// YouTube cookies: browser name or path to cookies.txt (empty — no cookies).
     pub fn set_cookies(&self, v: &str) { *self.cookies.lock().unwrap() = v.trim().to_string(); }
     pub fn has_cookies(&self) -> bool { !self.cookies.lock().unwrap().is_empty() }
 
@@ -81,8 +81,8 @@ impl YouTube {
         }).as_ref().ok_or_else(|| l!("rustypipe недоступен", "rustypipe is unavailable").to_string())
     }
 
-    /// Быстрый путь без yt-dlp: прямая ссылка через rustypipe (0.2–1 с).
-    /// video=false — звук m4a (AAC), video=true — видео без звука H.264 до 720p.
+    /// Fast path without yt-dlp: direct URL through rustypipe (0.2–1 s).
+    /// video=false — m4a (AAC) audio, video=true — muted H.264 video up to 720p.
     pub fn direct(&self, video_id: &str, video: bool) -> Result<Direct, String> {
         use rustypipe::model::{AudioFormat, VideoCodec, VideoFormat};
         use rustypipe::param::StreamFilter;
@@ -110,14 +110,14 @@ impl YouTube {
         Ok(d)
     }
 
-    /// Забыть закэшированные ссылки трека (протухли / 403).
+    /// Forget a track's cached URLs (expired / 403).
     pub fn forget(&self, video_id: &str) {
         let mut s = self.streams.lock().unwrap();
         s.remove(&format!("a:{video_id}"));
         s.remove(&format!("v:{video_id}"));
     }
 
-    /// Найти deno (PATH или data_dir/bin); если нет — скачать в фоне. Не блокирует.
+    /// Find deno (PATH or data_dir/bin); if missing, download it in the background. Non-blocking.
     pub fn ensure_deno_background(&self) {
         let mut st = self.deno.lock().unwrap();
         if !matches!(*st, Deno::Unknown | Deno::Failed(_)) { return; }
@@ -145,7 +145,7 @@ impl YouTube {
         match &*self.deno.lock().unwrap() { Deno::Ready(p) => Some(p.clone()), _ => None }
     }
 
-    /// Подождать, пока deno докачается (если качается). true — если в итоге готов.
+    /// Wait until deno finishes downloading (if it is). true — if it's ready in the end.
     fn wait_deno(&self, max: std::time::Duration) -> bool {
         let t = std::time::Instant::now();
         while matches!(*self.deno.lock().unwrap(), Deno::Installing) && t.elapsed() < max {
@@ -194,7 +194,7 @@ impl YouTube {
         self.ensure_deno_background();
         let had_deno = self.deno_path().is_some();
         match self.run_once(&bin, args) {
-            // deno ещё качался — дождёмся и попробуем ещё раз уже с ним
+            // deno was still downloading — wait for it and try again with it
             Err(e) if !had_deno && args != ["--version"] && self.wait_deno(std::time::Duration::from_secs(180)) => self.run_once(&bin, args).map_err(|e2| if e2.is_empty() { e } else { e2 }),
             r => r,
         }
@@ -224,7 +224,7 @@ impl YouTube {
         Ok(self.run(&["-U"])?.trim().to_string())
     }
 
-    /// Плейлист / альбом / одиночное видео по ссылке.
+    /// Playlist / album / single video by link.
     pub fn import_url(&self, url: &str, status: &dyn Fn(&str)) -> Result<UrlImport, String> {
         self.ensure_binary(status)?;
         status(l!("Читаю плейлист...", "Reading the playlist..."));
@@ -253,8 +253,8 @@ impl YouTube {
         Ok(json.get("entries").and_then(Value::as_array).map(|a| a.iter().filter(|e| !e.is_null() && !is_live(e)).map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
     }
 
-    /// Поиск по каталогу YouTube Music (песни: официальные аудио с альбомом и точной длительностью).
-    /// Без yt-dlp, через rustypipe; при сбое сети — ещё две попытки.
+    /// Search the YouTube Music catalog (songs: official audio with album and exact duration).
+    /// Without yt-dlp, through rustypipe; on network failure, two more attempts.
     pub fn search_music(&self, query: &str, limit: usize) -> Result<Vec<Track>, String> {
         let rp = self.rustypipe()?;
         let mut last = String::new();
@@ -263,7 +263,7 @@ impl YouTube {
             let res = rt().block_on(async {
                 let r = rp.query().music_search_tracks(query).await?.items.items;
                 if !r.is_empty() { return Ok(r); }
-                // фильтр «Песни» иногда пустой — берём песни из общей выдачи
+                // the "Songs" filter is sometimes empty — take songs from the general results
                 Ok::<_, rustypipe::error::Error>(rp.query().music_search_main(query).await?.items.items.into_iter()
                     .filter_map(|i| if let rustypipe::model::MusicItem::Track(t) = i { Some(t) } else { None }).collect())
             });
@@ -275,7 +275,7 @@ impl YouTube {
         Err(format!("YouTube Music: {last}"))
     }
 
-    /// Один трек по ссылке или по названию (первый результат поиска) — для заказов из чата.
+    /// A single track by link or by name (first search result) — for chat requests.
     pub fn lookup(&self, query: &str) -> Result<Track, String> {
         if query.starts_with("http") {
             let json: Value = serde_json::from_str(&self.run(&["--flat-playlist", "-J", "--no-warnings", "--playlist-end", "1", query])?).map_err(|e| e.to_string())?;
@@ -286,7 +286,7 @@ impl YouTube {
         self.search(query, 1)?.into_iter().next().ok_or_else(|| l!("ничего не нашлось", "nothing found").into())
     }
 
-    /// Радио по треку: микс YouTube (похожие песни), без самого трека.
+    /// Track radio: a YouTube mix (similar songs), without the track itself.
     pub fn radio(&self, video_id: &str, limit: u32) -> Result<Vec<Track>, String> {
         let url = format!("https://www.youtube.com/watch?v={video_id}&list=RD{video_id}");
         let end = (limit + 1).to_string();
@@ -296,7 +296,7 @@ impl YouTube {
             .map(|e| to_track(e, &json, false)).collect()).unwrap_or_default())
     }
 
-    /// Прямая ссылка на аудиопоток (для webview-плеера).
+    /// Direct audio stream URL (for the webview player).
     pub fn resolve_stream(&self, track: &Track) -> Result<String, String> {
         let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         if let Some((u, exp)) = self.streams.lock().unwrap().get(&key) {
@@ -312,15 +312,15 @@ impl YouTube {
         Ok(stream)
     }
 
-    /// Звук потоком через yt-dlp (-o -): он сам проходит защиту YouTube (deno), а мы играем с первых
-    /// килобайт, пока остальное докачивается в `path`. Только m4a (AAC) — его декодирует symphonia.
-    /// `auth` — с куками (для видео 18+, если они заданы в настройках).
+    /// Streamed audio through yt-dlp (-o -): it gets past YouTube's protection itself (deno), and we play from the first
+    /// kilobytes while the rest downloads into `path`. m4a (AAC) only — symphonia decodes it.
+    /// `auth` — with cookies (for 18+ videos, if set in settings).
     pub fn stream_audio(&self, track: &Track, path: &Path, auth: bool) -> Result<crate::stream::Download, String> {
         use std::process::Stdio;
         let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let bin = self.ensure_binary(&|_| {})?;
         self.ensure_deno_background();
-        // deno нужен для подписи ссылок; если он ещё качается — подождём немного
+        // deno is needed to sign the URLs; if it's still downloading, wait a bit
         self.wait_deno(std::time::Duration::from_secs(60));
         let mut c = cmd(&bin);
         if let Some(d) = self.deno_path() { c.arg("--js-runtimes").arg(format!("deno:{d}")); }
@@ -332,15 +332,15 @@ impl YouTube {
         Ok(crate::stream::Download::pipe(child, path.to_path_buf()))
     }
 
-    /// Один трек не качаем двумя yt-dlp сразу (предзагрузка + воспроизведение): в Windows второй
-    /// не может переименовать .part, пока его держит первый («WinError 32»). Второй ждёт первого.
+    /// Don't download one track with two yt-dlp processes at once (preload + playback): on Windows the second
+    /// can't rename the .part file while the first holds it ("WinError 32"). The second waits for the first.
     fn key_lock(&self, key: &str) -> Arc<Mutex<()>> {
         static LOCKS: std::sync::OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = std::sync::OnceLock::new();
         LOCKS.get_or_init(Default::default).lock().unwrap().entry(key.to_string()).or_default().clone()
     }
 
-    /// Скачать аудио в кэш (для нативного плеера). Возвращает путь к файлу.
-    /// Берём m4a (AAC) — его умеет декодировать symphonia.
+    /// Download audio into the cache (for the native player). Returns the file path.
+    /// We take m4a (AAC) — symphonia can decode it.
     pub fn download_audio(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
         let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let lock = self.key_lock(&format!("a:{key}"));
@@ -362,14 +362,14 @@ impl YouTube {
     }
 }
 
-/// Прямые эфиры и премьеры пропускаем: их нельзя скачать целиком.
+/// Skip live streams and premieres: they can't be downloaded in full.
 fn is_live(e: &Value) -> bool {
     matches!(e.get("live_status").and_then(Value::as_str), Some("is_live" | "is_upcoming"))
 }
 
 impl YouTube {
-    /// Скачать видеодорожку (без звука) для показа клипа. H.264 в MP4 до 720p —
-    /// его умеет встроенный декодер, и он не грузит процессор.
+    /// Download the video track (no audio) to show the clip. H.264 in MP4 up to 720p —
+    /// the built-in decoder handles it, and it's light on the CPU.
     pub fn download_video(&self, track: &Track, cache: &Path) -> Result<PathBuf, String> {
         let key = track.url.clone().ok_or(l!("У трека нет ссылки", "The track has no link"))?;
         let lock = self.key_lock(&format!("v:{key}"));
@@ -464,12 +464,12 @@ fn cmd(bin: &str) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — без мигающей консоли
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no flashing console
     }
     c
 }
 
-/// Песня YouTube Music → трек библиотеки.
+/// YouTube Music song → library track.
 pub(crate) fn ytm_track(t: rustypipe::model::TrackItem) -> Track {
     let cover = t.cover.iter().max_by_key(|c| c.width).map(|c| c.url.clone()).unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", t.id));
     Track {

@@ -52,7 +52,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** Пульт: телефон управляет Wavy на ПК по Wi-Fi (адрес и PIN — те же, что для синхронизации). */
+/** Remote: the phone controls Wavy on the PC over Wi-Fi (address and PIN are the same as for sync). */
 object Remote {
     @Serializable data class Track(val id: String = "", val title: String = "", val artist: String = "", val cover: String? = null)
     @Serializable data class Item(val i: Int = 0, val title: String = "", val artist: String = "", val current: Boolean = false)
@@ -87,7 +87,7 @@ fun RemoteScreen(addr: String, pin: String, back: () -> Unit, initial: Remote.St
     fun send(c: String, v: Double = 0.0) = scope.launch {
         try { st = withContext(Dispatchers.IO) { Remote.cmd(addr, pin, c, v) }; err = null } catch (e: Exception) { err = e.message ?: L("ПК не отвечает", "The PC isn't responding") }
     }
-    // раз в секунду спрашиваем ПК, что играет
+    // once a second, ask the PC what's playing
     if (initial == null) LaunchedEffect(addr, pin) {
         while (true) {
             try { st = withContext(Dispatchers.IO) { Remote.get(addr, pin) }; err = null } catch (e: Exception) { err = L("ПК не отвечает: ${e.message ?: ""}. Включена ли синхронизация по Wi-Fi на ПК, и в одной ли вы сети?", "The PC isn't responding: ${e.message ?: ""}. Is Wi-Fi sync on in the PC app, and are you on the same network?") }

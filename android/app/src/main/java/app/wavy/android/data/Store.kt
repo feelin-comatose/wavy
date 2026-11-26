@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 
-/** Библиотека: треки, плейлисты, настройки. Хранится в files/library.json. */
+/** Library: tracks, playlists, settings. Stored in files/library.json. */
 object Store {
     private lateinit var file: File
     private val _lib = MutableStateFlow(Library())
@@ -27,7 +27,7 @@ object Store {
         Lang.set(_lib.value.settings.lang)
     }
 
-    /** Для тестов: хранилище во временной папке. */
+    /** For tests: storage in a temporary folder. */
     fun initForTest(dir: File) { file = File(dir, "library.json"); _lib.value = Library() }
 
     private fun save() {
@@ -47,7 +47,7 @@ object Store {
 
     private fun edit(f: (Library) -> Library) { _lib.update(f); save() }
 
-    /** Треки из поиска, которые ещё не в библиотеке (живут до закрытия приложения). */
+    /** Tracks from search that aren't in the library yet (live until the app closes). */
     private val temp = java.util.concurrent.ConcurrentHashMap<String, Track>()
     fun remember(list: List<Track>) { list.forEach { temp[it.id] = it } }
 
@@ -63,18 +63,18 @@ object Store {
         l.copy(tracks = l.tracks - ids, playlists = l.playlists.map { p -> p.copy(trackIds = p.trackIds.filterNot { it in ids }) }, liked = l.liked.filterNot { it in ids })
     }
 
-    // ---- лайки и прослушивания ----
+    // ---- likes and plays ----
     fun isLiked(id: String, l: Library = _lib.value) = id in l.liked
     fun setLiked(ids: List<String>, on: Boolean) = edit { l ->
         val rest = l.liked.filterNot { it in ids }
         l.copy(liked = if (on) ids + rest else rest)
     }
-    /** Трек играл дольше 30 секунд. */
+    /** The track played for longer than 30 seconds. */
     fun countPlay(id: String, now: Long = System.currentTimeMillis()) = edit { l ->
         l.copy(plays = l.plays + (id to (l.plays[id] ?: 0) + 1), history = (l.history + Play(id, now)).takeLast(20_000))
     }
 
-    /** Умные плейлисты: (правило, название, пояснение) — как на ПК. */
+    /** Smart playlists: (rule, name, description) — same as on the PC. */
     fun smartRules() = listOf(
         Triple("week", L("Топ недели", "Top of the week"), L("Чаще всего за 7 дней", "Most played in 7 days")),
         Triple("month", L("Топ месяца", "Top of the month"), L("Чаще всего за 30 дней", "Most played in 30 days")),
@@ -84,7 +84,7 @@ object Store {
         Triple("never", L("Ни разу не слушал", "Never played"), L("Всё, что ещё ни разу не играло", "Everything that has never been played")),
     )
 
-    /** Треки умного плейлиста (без серий аниме). */
+    /** Tracks of a smart playlist (without anime episodes). */
     fun smart(rule: String, l: Library = _lib.value, now: Long = System.currentTimeMillis()): List<String> {
         val day = 86_400_000L
         val music = libraryIds(l)
@@ -121,7 +121,7 @@ object Store {
     fun settings(f: (Settings) -> Settings) { edit { it.copy(settings = f(it.settings)) }; Lang.set(_lib.value.settings.lang) }
     fun session(s: Session) = edit { it.copy(session = s) }
 
-    /** Треки библиотеки, новые сверху (серии аниме живут в своём разделе). */
+    /** Library tracks, newest first (anime episodes live in their own section). */
     fun libraryIds(l: Library = _lib.value): List<String> {
         val episodes = l.anime.flatMapTo(HashSet()) { it.episodes }
         return l.tracks.values.filter { it.id !in episodes }.sortedWith(compareByDescending<Track> { it.addedAt }.thenBy { it.title }).map { it.id }
@@ -132,8 +132,8 @@ object Store {
     fun deleteAnime(id: String) = edit { l -> l.copy(anime = l.anime.filterNot { it.id == id }) }
 
     /**
-     * Видео с телефона → тайтлы аниме: имя файла и папка разбираются как на ПК, серии собираются по названию.
-     * `names` — id трека → (имя файла без расширения, папка). Возвращает тайтлы, которые ещё не искали на Шикимори.
+     * Phone videos → anime titles: file name and folder are parsed as on the PC, episodes are grouped by title.
+     * `names` — track id → (file name without extension, folder). Returns titles not yet looked up on Shikimori.
      */
     fun addEpisodes(names: Map<String, Pair<String, String?>>): List<Anime> {
         val now = System.currentTimeMillis()
@@ -150,7 +150,7 @@ object Store {
                 if (tid !in a.episodes) list[i] = a.copy(episodes = a.episodes + tid)
                 tracks[tid]?.let { t -> tracks[tid] = t.copy(title = AnimeParse.episodeTitle(p, t.title), artist = a.display, album = "") }
             }
-            // серии по номеру
+            // episodes by number
             val num = parsed.mapValues { it.value.episode ?: 0.0 }
             l.copy(anime = list.map { a -> a.copy(episodes = a.episodes.sortedBy { num[it] ?: Double.MAX_VALUE }) }, tracks = tracks)
         }

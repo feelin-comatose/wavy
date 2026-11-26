@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.SubcomposeAsyncImage
 
-// та же монохромная палитра, что и на ПК
+// the same monochrome palette as on the PC
 val Bg = Color(0xFF0A0A0C)
 val Bg2 = Color(0xFF101013)
 val Bg3 = Color(0xFF18181C)
@@ -43,12 +43,12 @@ fun WavyTheme(content: @Composable () -> Unit) {
             secondaryContainer = Bg3, onSecondaryContainer = TextC, error = Bad,
         ),
     ) {
-        // цвет текста по умолчанию — светлый везде (а не только внутри Scaffold): иначе текст чёрный на чёрном
+        // default text color is light everywhere (not only inside Scaffold): otherwise it's black text on black
         CompositionLocalProvider(LocalContentColor provides TextC, content = content)
     }
 }
 
-/** Обложка с заглушкой-нотой и красной меткой у YouTube-треков. */
+/** Cover with a placeholder note and a red badge on YouTube tracks. */
 @Composable
 fun Cover(url: String?, size: Dp, radius: Dp = 8.dp, youtube: Boolean = false, modifier: Modifier = Modifier) {
     Box(modifier.size(size)) {

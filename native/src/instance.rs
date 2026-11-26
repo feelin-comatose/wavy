@@ -1,6 +1,6 @@
-//! Один Wavy за раз. Первый запуск слушает 127.0.0.1:PORT. Второй запуск
-//! (например, ярлык, пока старый сидит в трее) просит его показать окно и выходит сам.
-//! Перезапуск после обновления (--restarted) просит старый процесс закрыться и ждёт, пока порт освободится.
+//! One Wavy at a time. The first launch listens on 127.0.0.1:PORT. A second launch
+//! (e.g. a shortcut while the old one sits in the tray) asks it to show its window and exits.
+//! A restart after an update (--restarted) asks the old process to quit and waits for the port to free up.
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver};
@@ -10,11 +10,11 @@ const ADDR: &str = "127.0.0.1:37391";
 
 pub enum Cmd { Show, Quit }
 
-/// Что делать с этим запуском.
+/// What to do with this launch.
 pub enum Start {
-    /// мы — единственный Wavy: команды от следующих запусков придут сюда
+    /// we're the only Wavy: commands from later launches will come here
     First(TcpListener),
-    /// Wavy уже открыт и показал своё окно — этот процесс должен выйти
+    /// Wavy is already open and has shown its window — this process should exit
     AlreadyRunning,
 }
 
@@ -27,10 +27,10 @@ fn send(cmd: &str) -> bool {
 pub fn start(restarted: bool) -> Start {
     if let Ok(l) = TcpListener::bind(ADDR) { return Start::First(l); }
     if !restarted {
-        // порт занят: если там Wavy — он покажет окно; если что-то чужое, запускаемся как обычно
+        // port is taken: if it's Wavy it will show its window; if it's something else, start as usual
         return if send("show") { Start::AlreadyRunning } else { Start::First(TcpListener::bind("127.0.0.1:0").expect("порт")) };
     }
-    // после обновления: старый процесс должен уйти (а с ним и его музыка)
+    // after an update: the old process must go (and its music with it)
     send("quit");
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(10) {
@@ -41,7 +41,7 @@ pub fn start(restarted: bool) -> Start {
     Start::First(TcpListener::bind("127.0.0.1:0").expect("порт"))
 }
 
-/// Слушать команды от следующих запусков; `wake` будит интерфейс.
+/// Listen for commands from later launches; `wake` wakes the UI.
 pub fn listen(l: TcpListener, wake: impl Fn() + Send + 'static) -> Receiver<Cmd> {
     let (tx, rx) = channel();
     std::thread::Builder::new().name("instance".into()).spawn(move || {
@@ -66,7 +66,7 @@ mod tests {
         let rx = listen(l, || {});
         assert!(matches!(start(false), Start::AlreadyRunning));
         assert!(matches!(rx.recv_timeout(Duration::from_secs(2)), Ok(Cmd::Show)));
-        // перезапуск: старый получает quit; порт он не отпускает — новый через 10 с запустится на запасном
+        // restart: the old one gets quit; it doesn't release the port — the new one starts on the fallback after 10 s
         let h = std::thread::spawn(|| start(true));
         assert!(matches!(rx.recv_timeout(Duration::from_secs(2)), Ok(Cmd::Quit)));
         drop(rx);

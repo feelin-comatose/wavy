@@ -33,7 +33,7 @@ html.edit .edit-hint { display: block; }
 .paused .eq i { animation-play-state: paused; height: 30%; }
 @keyframes eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
 
-/* ---- очередь и текст песни ---- */
+/* ---- queue and lyrics ---- */
 .lyric { display: none; margin-top: 8px; font-size: 15px; font-weight: 600; min-height: 1.3em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 4px rgba(0,0,0,.6); }
 .lyric.in { animation: lyric .35s ease; }
 @keyframes lyric { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -56,7 +56,7 @@ html.edit .edit-hint { display: block; }
 .grip { display: none; position: fixed; right: 2px; bottom: 2px; width: 14px; height: 14px; border-right: 3px solid #f4f4f5; border-bottom: 3px solid #f4f4f5; cursor: se-resize; -webkit-app-region: no-drag; }
 html.edit .grip { display: block; }
 
-/* ---- compact: маленькая плашка в одну строку ---- */
+/* ---- compact: a small one-line bar ---- */
 .t-compact .ov { max-width: 380px; padding: 6px 14px 6px 6px; gap: 10px; border-radius: 99px; }
 .t-compact .cover { width: 40px; height: 40px; border-radius: 50%; }
 .t-compact .label, .t-compact .times { display: none; }
@@ -64,13 +64,13 @@ html.edit .grip { display: block; }
 .t-compact .artist { font-size: 12px; }
 .t-compact .bar { margin-top: 4px; height: 2px; }
 
-/* ---- vertical: обложка сверху, текст по центру ---- */
+/* ---- vertical: cover on top, text centered ---- */
 .t-vertical .ov { flex-direction: column; max-width: 240px; text-align: center; padding: 14px; }
 .t-vertical .cover { width: 200px; height: 200px; border-radius: 14px; }
 .t-vertical .info { width: 100%; }
 .t-vertical .label { justify-content: center; }
 
-/* ---- text: только «Исполнитель — Название», без фона ---- */
+/* ---- text: just "Artist — Title", no background ---- */
 .t-text .ov { background: none; border: 0; box-shadow: none; backdrop-filter: none; padding: 0; gap: 0; }
 .t-text .cover, .t-text .label, .t-text .bar, .t-text .times { display: none; }
 .t-text .info { display: flex; gap: 8px; align-items: baseline; }

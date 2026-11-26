@@ -3,13 +3,13 @@ package app.wavy.android.data
 import kotlinx.serialization.Serializable
 
 /**
- * Обмен плейлистами между ПК и телефоном: файл wavy-export.json (одинаковый формат в обеих версиях).
- * Переносятся YouTube/Spotify/стрим-треки и плейлисты; локальные файлы — нет (их пути у каждого устройства свои).
+ * Playlist exchange between PC and phone: the wavy-export.json file (same format in both versions).
+ * YouTube/Spotify/stream tracks and playlists are transferred; local files are not (each device has its own paths).
  */
 object Sync {
     @Serializable data class ExportPlaylist(val name: String, val source: String? = null, val tracks: List<Track>)
     @Serializable data class Export(val wavyExport: Int = 1, val app: String = "android", val exportedAt: Long = 0, val playlists: List<ExportPlaylist> = emptyList(), val tracks: List<Track> = emptyList(),
-        /** лайки (id переносимых треков), новые первыми; при импорте объединяются */
+        /** likes (ids of transferable tracks), newest first; merged on import */
         val liked: List<String> = emptyList())
     data class Summary(val tracks: Int, val newPlaylists: Int, val updatedPlaylists: Int, val skippedLocal: Int)
 

@@ -1,6 +1,6 @@
-// Иконка и сведения о программе в exe для Windows (работает и при кросс-сборке с Linux через mingw windres).
-// Сведения (автор, лицензия, версия) и манифест — не украшение: Защитник Windows с подозрением смотрит
-// на неподписанные exe «без паспорта», которые качают и запускают программы (yt-dlp, ffmpeg) и обновляют сами себя.
+// Icon and program info in the exe for Windows (also works when cross-compiling from Linux with mingw windres).
+// The info (author, license, version) and the manifest aren't decoration: Windows Defender is suspicious
+// of unsigned exes "without a passport" that download and run programs (yt-dlp, ffmpeg) and update themselves.
 fn main() {
     println!("cargo:rerun-if-env-changed=WAVY_BUILD");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

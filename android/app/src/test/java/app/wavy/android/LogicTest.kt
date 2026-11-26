@@ -35,7 +35,7 @@ class LogicTest {
         val m = Spotify.match(sp) { cands }
         assertNotNull(m)
         assertEquals("yt_bbbbbbbbbbb", m!!.id)
-        assertEquals("Pitbull, Christina Aguilera", m.artist) // имя из Spotify
+        assertEquals("Pitbull, Christina Aguilera", m.artist) // name from Spotify
         assertTrue(m.url!!.startsWith("https://music.youtube.com/"))
     }
 
@@ -51,15 +51,15 @@ class LogicTest {
         val text = Sync.export()
         assertTrue(Sync.isExport(text))
         assertTrue("локальные треки не уходят", !text.contains("content://x"))
-        // на «другом устройстве»
+        // on "another device"
         Store.initForTest(Files.createTempDirectory("wavy2").toFile())
         val r = Sync.import(text)
         assertEquals(1, r.tracks); assertEquals(1, r.newPlaylists)
         assertEquals(listOf("yt_aaaaaaaaaaa"), Store.lib.value.playlists.single().trackIds)
-        // повторный импорт не плодит дубликаты
+        // importing again doesn't create duplicates
         val r2 = Sync.import(text)
         assertEquals(0, r2.newPlaylists); assertEquals(1, Store.lib.value.playlists.size)
-        // файл с ПК: лишние поля игнорируются
+        // file from the PC: extra fields are ignored
         val desktop = """{"wavyExport":1,"app":"desktop","playlists":[{"name":"Desk","tracks":[{"id":"yt_bbbbbbbbbbb","type":"youtube","videoId":"bbbbbbbbbbb","title":"B","artist":"Y","duration":5.0,"addedAt":1,"futureField":true}]}],"tracks":[]}"""
         Sync.import(desktop)
         assertNotNull(Store.track("yt_bbbbbbbbbbb"))
@@ -67,7 +67,7 @@ class LogicTest {
 
     private fun p(s: String) = AnimeParse.parseName(s).let { Triple(it.title, it.episode, it.season) }
 
-    /** Те же случаи, что в тестах версии для ПК (core/src/anime.rs). */
+    /** The same cases as in the PC version's tests (core/src/anime.rs). */
     @Test fun animeFansubNames() {
         assertEquals(Triple("Sousou no Frieren", 1.0, null), p("[SubsPlease] Sousou no Frieren - 01 (1080p) [ABCD1234]"))
         assertEquals(Triple("Kimetsu no Yaiba - Hashira Geiko-hen", 8.0, null), p("[Erai-raws] Kimetsu no Yaiba - Hashira Geiko-hen - 08 [1080p][Multiple Subtitle][F2A7C0D1]"))
@@ -86,7 +86,7 @@ class LogicTest {
         assertEquals(Triple("Атака титанов", 7.0, null), p("07. Атака титанов"))
         assertEquals(Triple("Kimi no Na wa", null, null), p("Kimi no Na wa (2016) [BDRip 1080p]"))
         assertEquals("Dr. Stone", p("Dr. Stone - 05 [1080p]").first)
-        // название из папки, если в имени файла только номер
+        // title from the folder if the file name is just a number
         assertEquals("Тетрадь смерти", AnimeParse.parse("05", "Тетрадь смерти").title)
         assertEquals(AnimeParse.key(AnimeParse.parseName("[A] Mushoku Tensei S2 - 01")), AnimeParse.key(AnimeParse.parseName("[B] Mushoku Tensei Season 2 - 02")))
         assertEquals("Mushoku Tensei 2", AnimeParse.searchQuery(AnimeParse.parseName("[SubsPlease] Mushoku Tensei S2 - 13 (1080p)")))
@@ -100,7 +100,7 @@ class LogicTest {
         assertNull(Shikimori.bestMatch("Совсем другое", null, 3, list))
     }
 
-    /** Отпечаток Shazam совпадает с версией для ПК (core/src/shazam.rs, тест vector::dump). */
+    /** The Shazam fingerprint matches the PC version (core/src/shazam.rs, test vector::dump). */
     @Test fun shazamMatchesDesktop() {
         var x = 12345
         val sig = FloatArray(Shazam.RATE * 4) { i ->
@@ -115,13 +115,13 @@ class LogicTest {
         val desktop = ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
         assertEquals(desktop.size, ours.size)
         val diff = desktop.indices.count { desktop[it] != ours[it] }
-        // заголовок (кроме CRC) — один в один; в пиках допускаем редкие расхождения в последнем бите округления
+        // header (except the CRC) is identical; in the peaks we allow rare differences in the last rounding bit
         assertTrue("различий: $diff", diff < desktop.size / 50 + 8)
         assertEquals(desktop.copyOfRange(8, 48).toList(), ours.copyOfRange(8, 48).toList())
     }
 
     @Test fun offlineChunks() {
-        // сервер с Range, как googlevideo: файл 10 000 байт, качаем кусками по 3000
+        // a server with Range, like googlevideo: a 10,000-byte file downloaded in 3000-byte chunks
         val data = ByteArray(10_000) { (it % 251).toByte() }
         val srv = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
         val th = Thread {
@@ -161,7 +161,7 @@ class LogicTest {
         Store.initForTest(Files.createTempDirectory("likes2").toFile())
         Sync.import(text)
         assertEquals(listOf("yt_bbbbbbbbbbb", "yt_aaaaaaaaaaa"), Store.lib.value.liked)
-        // лайки с ПК: неизвестный трек пропускается
+        // likes from the PC: an unknown track is skipped
         Sync.import("""{"wavyExport":1,"app":"desktop","liked":["yt_ccccccccccc","yt_gone"],"tracks":[]}""")
         assertTrue(Store.isLiked("yt_ccccccccccc") && !Store.isLiked("yt_gone"))
         Store.removeTracks(setOf("yt_ccccccccccc"))

@@ -1,13 +1,13 @@
-//! Распознавание музыки через Shazam (как в приложении): из ~12 секунд звука строится «отпечаток»
-//! (пики спектра), он уходит на сервер Shazam, в ответ — название, исполнитель, обложка.
+//! Music recognition through Shazam (like the app): a "fingerprint" (spectrum peaks) is built from ~12 seconds of audio
+//! and sent to the Shazam server, which returns the title, artist and cover.
 //!
-//! Алгоритм отпечатка перенесён из SongRec (https://github.com/marin-m/SongRec, GPL-3.0 — как и Wavy),
-//! FFT и CRC32 написаны здесь, чтобы не тащить лишние библиотеки.
+//! The fingerprint algorithm is ported from SongRec (https://github.com/marin-m/SongRec, GPL-3.0 — like Wavy),
+//! FFT and CRC32 are written here to avoid pulling in extra libraries.
 use base64::Engine;
 use serde_json::{json, Value};
 
 pub const RATE: usize = 16_000;
-/// Сколько звука отправлять (столько же берёт SongRec и приложение Shazam).
+/// How much audio to send (the same as SongRec and the Shazam app use).
 pub const SECONDS: usize = 12;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,7 +24,7 @@ struct Peak {
     bin: u16,
 }
 
-/// Отпечаток из моно-звука 16 кГц (значения −1..1).
+/// Fingerprint from 16 kHz mono audio (values −1..1).
 pub fn signature(samples: &[f32]) -> Vec<u8> {
     let mut g = Gen::new();
     let s16: Vec<i16> = samples.iter().map(|&x| (x * 32768.0).clamp(-32768.0, 32767.0) as i16).collect();
@@ -52,7 +52,7 @@ struct Gen {
 
 impl Gen {
     fn new() -> Self {
-        // окно Ханна 2048 без нулей по краям (как в таблице SongRec)
+        // 2048-sample Hann window without zeros at the edges (like SongRec's table)
         let window = (0..2048).map(|i| 0.5 * (1.0 - (2.0 * std::f64::consts::PI * (i + 1) as f64 / 2049.0).cos()) as f32).collect();
         Self {
             ring: vec![0; 2048], ring_i: 0, window, fft: Fft::new(2048),
@@ -113,16 +113,16 @@ impl Gen {
     }
 }
 
-/// Двоичный формат отпечатка Shazam (см. SongRec signature_format.rs).
+/// Shazam fingerprint binary format (see SongRec signature_format.rs).
 fn encode(peaks: &[Vec<Peak>; 4], samples: u32) -> Vec<u8> {
     let mut b: Vec<u8> = Vec::new();
     let w = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
     w(&mut b, 0xcafe2580);
-    w(&mut b, 0); // crc32 — позже
-    w(&mut b, 0); // размер без заголовка — позже
+    w(&mut b, 0); // crc32 — later
+    w(&mut b, 0); // size without the header — later
     w(&mut b, 0x94119c00);
     for _ in 0..3 { w(&mut b, 0); }
-    w(&mut b, 3 << 27); // 16000 Гц
+    w(&mut b, 3 << 27); // 16000 Hz
     for _ in 0..2 { w(&mut b, 0); }
     w(&mut b, samples + (16000.0 * 0.24) as u32);
     w(&mut b, (15 << 19) + 0x40000);
@@ -166,7 +166,7 @@ fn crc32(data: &[u8]) -> u32 {
     !c
 }
 
-/// Комплексное БПФ (radix-2) для размера 2^n.
+/// Complex FFT (radix-2) for size 2^n.
 struct Fft { n: usize, cos: Vec<f32>, sin: Vec<f32>, rev: Vec<usize> }
 
 impl Fft {
@@ -209,7 +209,7 @@ fn uuid4() -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
-/// Отправить звук (моно 16 кГц) в Shazam. Ok(None) — не узнал.
+/// Send audio (16 kHz mono) to Shazam. Ok(None) — not recognized.
 pub fn recognize(samples: &[f32]) -> Result<Option<Found>, String> {
     let sig = signature(samples);
     let now = crate::now_ms();
@@ -250,13 +250,13 @@ pub fn parse_response(v: &Value) -> Option<Found> {
     })
 }
 
-/// Звук → моно 16 кГц: сведение каналов, сглаживание (чтобы не было наложения частот) и пересчёт частоты.
+/// Audio → 16 kHz mono: mix down channels, smooth (to avoid aliasing) and resample.
 pub fn to_mono_16k(interleaved: &[f32], channels: usize, rate: u32) -> Vec<f32> {
     let ch = channels.max(1);
     let mono: Vec<f32> = interleaved.chunks(ch).map(|c| c.iter().sum::<f32>() / c.len() as f32).collect();
     if rate as usize == RATE { return mono; }
     let ratio = rate as f64 / RATE as f64;
-    // скользящее среднее шириной ≈ ratio — простой фильтр нижних частот перед прореживанием
+    // moving average about `ratio` wide — a simple low-pass filter before decimation
     let win = ratio.round().max(1.0) as usize;
     let smooth: Vec<f32> = if win > 1 {
         let mut acc = 0f32;
@@ -291,7 +291,7 @@ mod tests {
         let mut im = vec![0.0; 8];
         f.run(&mut re, &mut im);
         assert!(re.iter().all(|x| (x - 1.0).abs() < 1e-6));
-        // синус на 4-м бине
+        // sine on the 4th bin
         let mut re: Vec<f32> = (0..64).map(|i| (2.0 * std::f32::consts::PI * 4.0 * i as f32 / 64.0).cos()).collect();
         let mut im = vec![0.0; 64];
         Fft::new(64).run(&mut re, &mut im);
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn signature_of_tones_has_peaks() {
-        // аккорд, меняющийся каждые полсекунды — пики должны найтись
+        // a chord that changes every half second — peaks should be found
         let mut s = Vec::new();
         for k in 0..(SECONDS * 2) {
             let f = [440.0, 660.0, 990.0, 1320.0, 2200.0, 3700.0][k % 6];
@@ -315,26 +315,26 @@ mod tests {
 
     #[test]
     fn resample() {
-        let x: Vec<f32> = (0..48000 * 2).map(|i| (i % 2) as f32).collect(); // стерео 48 кГц, 1 с
+        let x: Vec<f32> = (0..48000 * 2).map(|i| (i % 2) as f32).collect(); // stereo 48 kHz, 1 s
         assert_eq!(to_mono_16k(&x, 2, 48000).len(), 16000);
     }
 }
 
 #[cfg(test)]
 mod vector {
-    /// Детерминированный сигнал (целочисленный, чтобы совпадал до бита в Kotlin-версии).
+    /// Deterministic signal (integer-based, so it matches the Kotlin version bit for bit).
     pub fn test_signal() -> Vec<f32> {
         let mut x: u32 = 12345;
         (0..super::RATE * 4).map(|i| {
             x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
             let noise = ((x >> 16) & 0x7ff) as i32 - 1024;
-            let period = 16 + (i / 4000) % 40; // «мелодия»: меняющийся период прямоугольной волны
+            let period = 16 + (i / 4000) % 40; // "melody": a square wave with a changing period
             let sq = if (i / period) % 2 == 0 { 6000 } else { -6000 };
             (sq + noise) as f32 / 32768.0
         }).collect()
     }
 
-    /// Печатает отпечаток для сверки с Android (LogicTest.shazamMatchesDesktop).
+    /// Prints the fingerprint for comparison with Android (LogicTest.shazamMatchesDesktop).
     #[test]
     #[ignore]
     fn dump() {

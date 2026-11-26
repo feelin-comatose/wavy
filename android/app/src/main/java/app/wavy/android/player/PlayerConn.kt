@@ -11,7 +11,7 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Связь интерфейса с PlaybackService через MediaController. */
+/** Connects the UI to PlaybackService through a MediaController. */
 object PlayerConn {
     data class State(
         val currentId: String? = null,
@@ -59,7 +59,7 @@ object PlayerConn {
         )
     }
 
-    /** Очередь с прошлого раза — на паузе, с той же позиции. */
+    /** Queue from last time — paused, at the same position. */
     private fun restore(c: MediaController) {
         if (c.mediaItemCount > 0) return
         val s = Store.lib.value.session
@@ -76,7 +76,7 @@ object PlayerConn {
         Store.session(Session((0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }, c.currentMediaItemIndex, c.currentPosition))
     }
 
-    /** Для скриншот-тестов: подставить состояние без настоящего плеера. */
+    /** For screenshot tests: inject state without a real player. */
     fun fakeState(s: State) { _state.value = s }
 
     fun position() = controller?.currentPosition ?: 0L

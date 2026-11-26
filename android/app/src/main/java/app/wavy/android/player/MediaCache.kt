@@ -13,9 +13,9 @@ import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
 /**
- * Кэш YouTube-треков на диске (512 МБ, старое вытесняется): переслушанное играет мгновенно.
- * Ключ кэша — адрес wavy://yt/<id>, а не временная ссылка googlevideo, поэтому кэш переживает её протухание.
- * Локальные файлы не кэшируются — они и так на телефоне.
+ * Disk cache for YouTube tracks (512 MB, oldest evicted): replayed tracks start instantly.
+ * The cache key is the wavy://yt/<id> address, not the temporary googlevideo link, so the cache survives the link expiring.
+ * Local files aren't cached — they're already on the phone.
  */
 @UnstableApi
 object MediaCache {
@@ -25,7 +25,7 @@ object MediaCache {
         cache ?: SimpleCache(File(ctx.cacheDir, "media"), LeastRecentlyUsedCacheEvictor(512L * 1024 * 1024), StandaloneDatabaseProvider(ctx)).also { cache = it }
     }
 
-    /** wavy://… — через кэш, остальное — напрямую. */
+    /** wavy://… goes through the cache, everything else directly. */
     class Factory(ctx: Context, private val direct: DataSource.Factory, upstream: DataSource.Factory) : DataSource.Factory {
         private val cached = CacheDataSource.Factory().setCache(get(ctx)).setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)

@@ -1,11 +1,11 @@
-//! Шикимори: поиск тайтла (GraphQL API, без ключа) и постер.
+//! Shikimori: title search (GraphQL API, no key) and poster.
 use crate::anime::Anime;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// Основной домен и запасные (Шикимори периодически переезжает).
+/// Main domain and fallbacks (Shikimori moves from time to time).
 const HOSTS: &[&str] = &["https://shikimori.io", "https://shikimori.one"];
-/// Шикимори просит представляться в User-Agent.
+/// Shikimori asks clients to identify themselves in the User-Agent.
 const UA: &str = "Wavy (desktop music & anime player)";
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -35,7 +35,7 @@ fn query(q: &str, limit: u32) -> Value {
     })
 }
 
-/// Поиск тайтлов по названию (любой язык).
+/// Search titles by name (any language).
 pub fn search(q: &str, limit: u32) -> Result<Vec<ShikiAnime>, String> {
     let mut last = String::new();
     for host in HOSTS {
@@ -76,7 +76,7 @@ fn norm(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
-/// Похожесть строк: доля общих биграмм (Дайс). 1.0 — совпадение.
+/// String similarity: share of common bigrams (Dice). 1.0 is a match.
 fn similarity(a: &str, b: &str) -> f32 {
     let (a, b) = (norm(a), norm(b));
     if a.is_empty() || b.is_empty() { return 0.0; }
@@ -90,13 +90,13 @@ fn similarity(a: &str, b: &str) -> f32 {
     2.0 * common as f32 / total
 }
 
-/// Выбрать тайтл для серий: по похожести названия, с учётом сезона и числа серий.
+/// Pick a title for episodes: by name similarity, taking season and episode count into account.
 pub fn best_match<'a>(title: &str, season: Option<u32>, episodes: usize, list: &'a [ShikiAnime]) -> Option<&'a ShikiAnime> {
     let want_season = season.unwrap_or(1);
     list.iter().map(|a| {
         let names = [&a.name, &a.russian, &a.english, &a.japanese].into_iter().chain(a.synonyms.iter());
         let mut score = names.map(|n| similarity(title, n)).fold(0.0f32, f32::max);
-        // сезон: «2nd Season», «Season 2», « 2» в названии
+        // season: "2nd Season", "Season 2", " 2" in the title
         let has_season = |n: u32| {
             let l = a.name.to_lowercase();
             l.contains(&format!("season {n}")) || l.contains(&format!("{n}{} season", match n { 2 => "nd", 3 => "rd", _ => "th" })) || l.ends_with(&format!(" {n}"))
@@ -104,21 +104,21 @@ pub fn best_match<'a>(title: &str, season: Option<u32>, episodes: usize, list: &
         };
         if want_season > 1 { if has_season(want_season) { score += 0.3; } else { score -= 0.15; } }
         else if (2..=6).any(has_season) { score -= 0.2; }
-        // одна серия — скорее фильм; много — сериал
+        // one episode — probably a movie; many — a series
         match (episodes, a.kind.as_str()) {
             (1, "movie") => score += 0.1,
             (n, "tv") if n > 1 => score += 0.1,
             (n, "movie") if n > 2 => score -= 0.3,
             _ => {}
         }
-        // реклама, клипы и промо почти никогда не то, что смотрят
+        // ads, music videos and promos are almost never what people watch
         if matches!(a.kind.as_str(), "cm" | "pv" | "music") { score -= 0.35; }
         if a.episodes > 0 && episodes as u32 > a.episodes + 2 { score -= 0.1; }
         (score, a)
     }).filter(|(s, _)| *s > 0.35).max_by(|x, y| x.0.total_cmp(&y.0)).map(|(_, a)| a)
 }
 
-/// Скачать постер в папку обложек (чтобы работало без интернета).
+/// Download the poster into the covers folder (so it works offline).
 pub fn download_poster(url: &str, covers: &Path, id: u64) -> Result<PathBuf, String> {
     let _ = std::fs::create_dir_all(covers);
     let ext = if url.ends_with(".webp") { "webp" } else if url.ends_with(".png") { "png" } else { "jpg" };
@@ -130,7 +130,7 @@ pub fn download_poster(url: &str, covers: &Path, id: u64) -> Result<PathBuf, Str
     Ok(path)
 }
 
-/// Перенести данные Шикимори в тайтл (с постером).
+/// Copy Shikimori data into the title (with the poster).
 pub fn apply(a: &mut Anime, s: &ShikiAnime, covers: &Path) {
     a.shiki_id = Some(s.id);
     a.name = s.name.clone();
@@ -169,11 +169,11 @@ mod tests {
     }
 }
 
-// ---------- аккаунт: отмечать просмотренные серии в списке на Шикимори ----------
+// ---------- account: mark watched episodes in the Shikimori list ----------
 //
-// Шикимори пускает только зарегистрированные приложения: человек создаёт своё на
-// shikimori.io/oauth/applications (Redirect URI: urn:ietf:wg:oauth:2.0:oob) и вставляет в Wavy
-// его Client ID и Client Secret. Вход — код со страницы Шикимори, дальше токены обновляются сами.
+// Shikimori only lets registered apps in: the user creates their own at
+// shikimori.io/oauth/applications (Redirect URI: urn:ietf:wg:oauth:2.0:oob) and pastes its
+// Client ID and Client Secret into Wavy. Sign-in uses a code from the Shikimori page; tokens refresh on their own after that.
 
 pub const OOB: &str = "urn:ietf:wg:oauth:2.0:oob";
 
@@ -184,7 +184,7 @@ pub struct Account {
     pub client_secret: String,
     pub access: String,
     pub refresh: String,
-    /// когда истекает access, мс
+    /// when the access token expires, ms
     pub expires: u64,
     pub user_id: u64,
     pub nickname: String,
@@ -194,7 +194,7 @@ impl Account {
     pub fn logged_in(&self) -> bool { !self.refresh.is_empty() && self.user_id > 0 }
 }
 
-/// Страница входа на Шикимори (там человек нажимает «Разрешить» и получает код).
+/// Shikimori sign-in page (the user presses "Allow" there and gets a code).
 pub fn authorize_url(client_id: &str) -> String {
     format!("{}/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope=user_rates", HOSTS[0],
         url::form_urlencoded::byte_serialize(client_id.as_bytes()).collect::<String>(), url::form_urlencoded::byte_serialize(OOB.as_bytes()).collect::<String>())
@@ -211,10 +211,10 @@ fn token(acc: &mut Account, form: &[(&str, &str)]) -> Result<(), String> {
     Ok(())
 }
 
-/// Шикимори требует, чтобы User-Agent совпадал с названием приложения — просим назвать его «Wavy».
+/// Shikimori requires the User-Agent to match the app name — so we ask users to name it "Wavy".
 const UA_APP: &str = "Wavy";
 
-/// Обменять код со страницы входа на токены и узнать, кто вошёл.
+/// Exchange the code from the sign-in page for tokens and find out who signed in.
 pub fn login(acc: &mut Account, code: &str) -> Result<(), String> {
     let (id, secret) = (acc.client_id.clone(), acc.client_secret.clone());
     token(acc, &[("grant_type", "authorization_code"), ("client_id", &id), ("client_secret", &secret), ("code", code.trim()), ("redirect_uri", OOB)])?;
@@ -243,14 +243,14 @@ fn api(acc: &mut Account, method: &str, path: &str, body: Option<Value>) -> Resu
     Ok(serde_json::from_str(&t).unwrap_or(Value::Null))
 }
 
-/// Записать в список на Шикимори: просмотрено `episodes` серий (все — «просмотрено», иначе «смотрю»).
+/// Write to the Shikimori list: `episodes` episodes watched (all of them — "completed", otherwise "watching").
 pub fn set_progress(acc: &mut Account, anime_id: u64, episodes: u32, total: u32) -> Result<(), String> {
     let status = if total > 0 && episodes >= total { "completed" } else { "watching" };
     let existing = api(acc, "GET", &format!("/api/v2/user_rates?user_id={}&target_id={anime_id}&target_type=Anime", acc.user_id), None)?;
     let rate = existing.as_array().and_then(|a| a.first()).cloned();
     match rate {
         Some(r) => {
-            // не откатываем назад, если на сайте уже больше
+            // don't roll back if the site already has more
             if r["episodes"].as_u64().unwrap_or(0) as u32 >= episodes && r["status"] != "planned" { return Ok(()); }
             let id = r["id"].as_u64().ok_or("непонятный ответ Шикимори")?;
             api(acc, "PATCH", &format!("/api/v2/user_rates/{id}"), Some(json!({ "user_rate": { "episodes": episodes, "status": status } })))?;

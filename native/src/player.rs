@@ -1,4 +1,4 @@
-//! Аудио на rodio (symphonia): mp3, flac, wav, ogg/vorbis, m4a/aac, alac.
+//! Audio on rodio (symphonia): mp3, flac, wav, ogg/vorbis, m4a/aac, alac.
 use std::path::Path;
 use std::time::Duration;
 
@@ -8,17 +8,17 @@ pub struct Audio {
     pub duration: f64,
     pub loaded: bool,
     pub error: Option<String>,
-    /// играем из потока, который ещё догружается: (загрузка, отложенная перемотка)
+    /// playing from a stream that's still downloading: (download, pending seek)
     stream: Option<(wavy_core::stream::Download, Option<f64>)>,
     volume: f32,
-    /// перемотка в недокачанное: звук на паузе, пока кусок не докачается, потом снова играть
+    /// seek into an undownloaded part: audio pauses until the chunk arrives, then plays again
     play_after: bool,
-    /// ffmpeg для звука, который не умеет symphonia (Opus, AC3, DTS…)
+    /// ffmpeg for audio symphonia can't handle (Opus, AC3, DTS…)
     pub ffmpeg: Option<std::path::PathBuf>,
-    /// эффекты (скорость, эквалайзер, громкость) и позиция в треке
+    /// effects (speed, equalizer, volume) and position in the track
     pub fx: crate::fx::Shared,
     pos: crate::fx::Pos,
-    /// кроссфейд: уходящие треки (плеер, его громкость, начало, длительность, их загрузка) и нарастание нового
+    /// crossfade: outgoing tracks (player, its volume, start, duration, their download) and the new one fading in
     fading: Vec<(rodio::Player, f32, std::time::Instant, f32, Option<wavy_core::stream::Download>)>,
     fade_in: Option<(std::time::Instant, f32)>,
 }
@@ -30,7 +30,7 @@ impl Audio {
         a
     }
 
-    /// Открыть устройство вывода (повторно — если его не было при запуске).
+    /// Open the output device (again, if there wasn't one at startup).
     fn open(&mut self) {
         match rodio::DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
@@ -43,11 +43,11 @@ impl Audio {
         }
     }
 
-    /// Есть ли куда выводить звук.
+    /// Whether there's somewhere to output audio.
     pub fn has_device(&self) -> bool { self.player.is_some() }
 
-    /// Играть, пока файл ещё качается: декодер читает фрагменты по порядку (без перемотки),
-    /// звук начинается с первых килобайт. Перемотка — когда нужный кусок докачается.
+    /// Play while the file is still downloading: the decoder reads fragments in order (no seeking),
+    /// audio starts from the first kilobytes. Seeking happens once the needed chunk arrives.
     pub fn load_stream(&mut self, dl: wavy_core::stream::Download, volume: f32) -> Result<(), String> {
         if self.player.is_none() { self.open(); }
         let p = self.player.as_ref().ok_or_else(|| self.error.clone().unwrap_or_default())?;
@@ -57,7 +57,7 @@ impl Audio {
         let reader = dl.reader().map_err(|e| e.to_string())?;
         let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint("m4a")
             .build().map_err(|e| lf!("не удалось декодировать поток: {e}", "couldn't decode the stream: {e}"))?;
-        self.duration = 0.0; // у потока длительность неизвестна — берём из трека
+        self.duration = 0.0; // the stream's duration is unknown — take it from the track
         p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
         p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
         p.play();
@@ -66,10 +66,10 @@ impl Audio {
         Ok(())
     }
 
-    /// Перемотка, ждущая докачки (для индикации «буферизация…»).
+    /// A seek waiting for the download (for the "buffering…" indicator).
     pub fn buffering(&self) -> bool { self.stream.as_ref().is_some_and(|s| s.1.is_some()) }
 
-    /// Вызывать каждый кадр: когда поток докачался, выполнить отложенную перемотку.
+    /// Call every frame: once the stream has downloaded, perform the pending seek.
     pub fn poll(&mut self) {
         let ready = match &self.stream { Some((dl, Some(_))) => dl.done(), _ => false };
         if ready {
@@ -81,8 +81,8 @@ impl Audio {
         }
     }
 
-    /// Открыть докачанный файл (уже с перемоткой) и встать на позицию, сохранив паузу/игру.
-    /// Переоткрыть тот же файл с другой звуковой дорожкой, оставшись на той же позиции.
+    /// Open the downloaded file (now seekable) and go to the position, keeping pause/play.
+    /// Reopen the same file with a different audio track, staying at the same position.
     pub fn switch_track(&mut self, path: &Path, audio: usize) -> Result<(), String> {
         let (pos, playing, vol) = (self.position(), self.is_playing(), self.volume);
         self.load_track(path, vol, audio)?;
@@ -100,7 +100,7 @@ impl Audio {
 
     pub fn load(&mut self, path: &Path, volume: f32) -> Result<(), String> { self.load_track(path, volume, 0) }
 
-    /// Открыть файл; для видео — с выбранной звуковой дорожкой (номер среди звуковых).
+    /// Open a file; for video — with the chosen audio track (index among audio tracks).
     pub fn load_track(&mut self, path: &Path, volume: f32, audio: usize) -> Result<(), String> {
         if self.player.is_none() { self.open(); }
         self.stream = None;
@@ -110,7 +110,7 @@ impl Audio {
         self.loaded = false;
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         if wavy_core::local::VIDEO_EXT.contains(&ext.as_str()) {
-            // видеофайл: rodio взял бы первую дорожку (видео), поэтому выбираем звуковую сами
+            // video file: rodio would take the first track (video), so we pick the audio one ourselves
             match AudioOfVideo::open(path, audio) {
                 Ok(src) => { self.duration = src.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0); p.append(crate::fx::Fx::new(src, self.fx.clone(), self.pos.clone())); }
                 Err(e) if e.starts_with(wavy_core::ffmpeg::NEED) => {
@@ -132,7 +132,7 @@ impl Audio {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) { b = b.with_hint(ext); }
         let dec = match b.build() {
             Ok(d) => d,
-            // формат, которого нет в symphonia (Opus, AC3, DTS…) — через ffmpeg, если он есть
+            // a format symphonia lacks (Opus, AC3, DTS…) — through ffmpeg, if available
             Err(e) => {
                 let Some(ff) = self.ffmpeg.clone() else { return Err(lf!("{}не удалось декодировать: {e}", "{}couldn't decode: {e}", wavy_core::ffmpeg::NEED)) };
                 let src = FfAudio::open(ff, path, 0, 0.0)?;
@@ -156,27 +156,27 @@ impl Audio {
         self.play_after = false;
         if let Some(p) = &self.player { p.clear(); }
         self.loaded = false;
-        // недокачанный поток прошлого трека больше не нужен
+        // the previous track's unfinished stream isn't needed anymore
         if let Some((dl, _)) = self.stream.take() { if !dl.done() { dl.cancel(); } }
     }
     pub fn play(&mut self) {
-        if self.buffering() { self.play_after = true; return; } // заиграет с нужного места, когда докачается
+        if self.buffering() { self.play_after = true; return; } // will play from the right place once downloaded
         if let Some(p) = &self.player { p.play() }
     }
     pub fn pause(&mut self) {
         self.play_after = false;
-        for (p, ..) in self.fading.drain(..) { p.stop(); } // пауза посреди кроссфейда — тишина сразу
+        for (p, ..) in self.fading.drain(..) { p.stop(); } // pause in the middle of a crossfade — silence immediately
         if let Some(p) = &self.player { p.pause() }
     }
     pub fn is_playing(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| !p.is_paused() && !p.empty()) }
-    /// Позиция в треке (время трека, с учётом скорости).
+    /// Position in the track (track time, taking speed into account).
     pub fn position(&self) -> f64 { if self.player.is_some() { self.pos.get() } else { 0.0 } }
     pub fn set_volume(&mut self, v: f32) {
-        self.volume = v * v; // квадратичная кривая — естественнее на слух
+        self.volume = v * v; // quadratic curve — sounds more natural
         if self.fade_in.is_none() { if let Some(p) = &self.player { p.set_volume(v * v) } }
     }
 
-    /// Кроссфейд: текущий трек уходит на отдельный плеер и затихает за `secs`, следующий будет нарастать.
+    /// Crossfade: the current track moves to a separate player and fades out over `secs`; the next one will fade in.
     pub fn begin_crossfade(&mut self, secs: f32) {
         let Some(sink) = &self._sink else { return };
         let Some(old) = self.player.take() else { return };
@@ -191,7 +191,7 @@ impl Audio {
         self.play_after = false;
     }
 
-    /// Вызывать каждый кадр: громкость уходящего и приходящего треков при кроссфейде.
+    /// Call every frame: volumes of the outgoing and incoming tracks during a crossfade.
     pub fn tick(&mut self) -> bool {
         self.fading.retain(|(p, v0, t0, d, _)| {
             let t = (t0.elapsed().as_secs_f32() / d.max(0.1)).min(1.0);
@@ -199,7 +199,7 @@ impl Audio {
             if t >= 1.0 || p.empty() { p.stop(); false } else { true }
         });
         if let Some((t0, d)) = self.fade_in {
-            // нарастание начинается, когда новый трек реально заиграл
+            // the fade-in starts when the new track actually starts playing
             if self.is_playing() {
                 let t = (t0.elapsed().as_secs_f32() / d.max(0.1)).min(1.0);
                 if let Some(p) = &self.player { p.set_volume(self.volume * t.sqrt()); }
@@ -215,19 +215,19 @@ impl Audio {
                 self.stream = None;
                 self.reopen_at(&path, sec);
             } else {
-                *pending = Some(sec); // перемотаем, когда докачается
-                // а пока молчим: иначе играло бы старое место (после обрыва — песня заново с начала)
+                *pending = Some(sec); // will seek once downloaded
+                // stay silent meanwhile: otherwise the old position would play (after a drop — the song from the start)
                 if let Some(p) = &self.player { if !p.is_paused() { p.pause(); self.play_after = true; } }
             }
             return;
         }
         if let Some(p) = &self.player { let _ = p.try_seek(Duration::from_secs_f64(sec.max(0.0))); }
     }
-    /// Трек доиграл до конца.
+    /// The track played to the end.
     pub fn finished(&self) -> bool { self.loaded && self.player.as_ref().is_some_and(|p| p.empty()) }
 }
 
-/// Звуковая дорожка из видеофайла (MP4/MOV) через symphonia — с явным выбором аудиодорожки.
+/// Audio track from a video file (MP4/MOV) through symphonia — with an explicit audio track choice.
 pub struct AudioOfVideo {
     format: Box<dyn symphonia::core::formats::FormatReader>,
     decoder: Box<dyn symphonia::core::codecs::Decoder>,
@@ -252,7 +252,7 @@ impl AudioOfVideo {
         let format = probed.format;
         let codecs = symphonia::default::get_codecs();
         let audio: Vec<_> = format.tracks().iter().filter(|t| t.codec_params.sample_rate.is_some()).collect();
-        // выбранная дорожка в формате, которого нет в symphonia (Opus, AC3, DTS…) — это работа для ffmpeg
+        // the chosen track is in a format symphonia lacks (Opus, AC3, DTS…) — that's a job for ffmpeg
         let track = match audio.get(nth) {
             Some(t) if codecs.get_codec(t.codec_params.codec).is_some() => *t,
             Some(_) => return Err(lf!("{}звук в формате, который нужен ffmpeg", "{}the audio is in a format that needs ffmpeg", wavy_core::ffmpeg::NEED)),
@@ -279,7 +279,7 @@ impl AudioOfVideo {
             if packet.track_id() != self.track { continue; }
             match self.decoder.decode(&packet) {
                 Ok(audio) => {
-                    // число каналов и частоту берём из декодированного звука: в MP4 их часто не указывают
+                    // channel count and sample rate come from the decoded audio: MP4 often doesn't specify them
                     let spec = *audio.spec();
                     if let Some(c) = std::num::NonZero::new(spec.channels.count() as u16) { self.channels = c; }
                     if let Some(r) = std::num::NonZero::new(spec.rate) { self.rate = r; }
@@ -323,8 +323,8 @@ impl rodio::Source for AudioOfVideo {
     }
 }
 
-/// Кусок звука из файла (любого: музыка, MP4, MKV) для Shazam: `secs` секунд с позиции `start`, моно 16 кГц.
-/// `audio` — номер звуковой дорожки (для видео с несколькими озвучками).
+/// A chunk of audio from a file (any: music, MP4, MKV) for Shazam: `secs` seconds from `start`, 16 kHz mono.
+/// `audio` — audio track index (for videos with several dubs).
 pub fn sample_for_shazam(path: &Path, start: f64, secs: f64, audio: usize, ffmpeg: Option<&Path>) -> Result<Vec<f32>, String> {
     match sample_symphonia(path, start, secs, audio) {
         Err(e) if e.starts_with(wavy_core::ffmpeg::NEED) => {
@@ -383,7 +383,7 @@ fn sample_symphonia(path: &Path, start: f64, secs: f64, audio: usize) -> Result<
     Ok(wavy_core::shazam::to_mono_16k(&pcm, ch, rate))
 }
 
-/// Звук через ffmpeg (Opus, AC3/E-AC3, DTS, TrueHD…): f32 стерео 48 кГц по трубе. Перемотка — перезапуск с -ss.
+/// Audio through ffmpeg (Opus, AC3/E-AC3, DTS, TrueHD…): f32 stereo 48 kHz over a pipe. Seeking restarts with -ss.
 pub struct FfAudio {
     ff: std::path::PathBuf,
     path: std::path::PathBuf,

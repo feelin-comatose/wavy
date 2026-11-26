@@ -7,12 +7,12 @@ import okhttp3.Request
 import java.io.File
 
 /**
- * Треки YouTube для прослушивания без интернета: звук скачивается в память приложения
- * (files/offline/<videoId>.m4a) и дальше играет из файла.
+ * YouTube tracks for offline listening: the audio is downloaded into the app's storage
+ * (files/offline/<videoId>.m4a) and then plays from the file.
  */
 object Offline {
     private var dir: File? = null
-    /** id скачанных видео — чтобы экран сразу видел изменения */
+    /** ids of downloaded videos — so the screen sees changes immediately */
     val saved = MutableStateFlow<Set<String>>(emptySet())
 
     fun init(filesDir: File) {
@@ -28,7 +28,7 @@ object Offline {
 
     fun has(t: Track) = t.videoId != null && t.videoId in saved.value
 
-    /** Скачать звук трека. Кусками по 4 МБ: целиком googlevideo отдаёт очень медленно. */
+    /** Download a track's audio. In 4 MB chunks: googlevideo serves the whole file very slowly. */
     fun download(t: Track) {
         val id = t.videoId ?: return
         if (file(id) != null) return
@@ -38,7 +38,7 @@ object Offline {
         refresh()
     }
 
-    /** Скачать адрес в файл кусками (Range). */
+    /** Download a URL to a file in chunks (Range). */
     fun fetch(url: String, part: File, chunk: Long = 4L * 1024 * 1024) {
         part.outputStream().use { out ->
             var pos = 0L
@@ -49,7 +49,7 @@ object Offline {
                     val body = r.body ?: throw java.io.IOException(L("пустой ответ", "empty response"))
                     val n = body.byteStream().copyTo(out)
                     pos += n
-                    // 200 — сервер отдал всё сразу; иначе общий размер из Content-Range
+                    // 200 — the server sent everything at once; otherwise the total size comes from Content-Range
                     if (r.code == 200) pos else r.header("Content-Range")?.substringAfter('/')?.toLongOrNull() ?: pos
                 }
                 if (pos >= total) break

@@ -2,11 +2,11 @@ package app.wavy.android.data
 
 import kotlinx.serialization.Serializable
 
-/** Тайтл аниме: серии — видео с телефона, название и постер — с Шикимори (как в версии для ПК). */
+/** An anime title: episodes are videos on the phone, name and poster come from Shikimori (same as the PC version). */
 @Serializable
 data class Anime(
     val id: String,
-    /** нормализованное название из имён файлов — по нему серии собираются в тайтл */
+    /** normalized name from file names — episodes are grouped into a title by it */
     val key: String,
     val title: String,
     val shikiId: Long? = null,
@@ -18,7 +18,7 @@ data class Anime(
     val year: Int = 0,
     val poster: String? = null,
     val url: String? = null,
-    /** серии (id треков) по порядку */
+    /** episodes (track ids) in order */
     val episodes: List<String> = emptyList(),
     val watched: List<String> = emptyList(),
     val last: String? = null,
@@ -38,7 +38,7 @@ data class Anime(
     }
 }
 
-/** Разбор имён файлов серий — тот же алгоритм, что в Wavy для ПК (core/src/anime.rs). */
+/** Parsing episode file names — the same algorithm as Wavy for PC (core/src/anime.rs). */
 object AnimeParse {
     data class Parsed(val title: String, val episode: Double?, val season: Int?)
 
@@ -82,7 +82,7 @@ object AnimeParse {
         return w.joinToString(" ")
     }
 
-    // \b в Java не видит кириллицу — граница слова явно: не буква и не цифра рядом
+    // \b in Java doesn't see Cyrillic — explicit word boundary: no letter or digit next to it
     private const val B = "(?<![\\p{L}\\p{N}])"
     private const val E = "(?![\\p{L}\\p{N}])"
     private val SEASON = Regex("(?i)${B}(?:season|[Сс]езон|СЕЗОН)\\s*(\\d{1,2})$E|$B(\\d{1,2})(?:st|nd|rd|th)\\s+season$E|${B}s(\\d{1,2})$E")
@@ -122,7 +122,7 @@ object AnimeParse {
             || l.startsWith("season") || l.startsWith("сезон")
     }
 
-    /** Имя файла (без расширения) + папка. Если в имени нет названия («01.mkv») — берём папку. */
+    /** File name (without extension) + folder. If the name has no title ("01.mkv"), use the folder. */
     fun parse(stem: String, folder: String?): Parsed {
         var p = parseName(stem)
         if ((p.title.count { it.isLetter() } < 2 || isGeneric(p.title)) && folder != null) {

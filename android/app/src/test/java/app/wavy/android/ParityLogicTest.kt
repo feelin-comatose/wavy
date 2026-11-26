@@ -22,13 +22,13 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Общие примеры с версией для ПК (файлы testdata/parity, их же читает core/tests/parity.rs).
- * Алгоритмы продублированы на Kotlin и Rust — эти тесты ловят, когда одна сторона разошлась с другой.
- * В имени есть «LogicTest», чтобы CI запускал их вместе с остальными.
+ * Cases shared with the PC version (files in testdata/parity, also read by core/tests/parity.rs).
+ * The algorithms are duplicated in Kotlin and Rust — these tests catch one side drifting from the other.
+ * The name contains "LogicTest" so CI runs them with the rest.
  */
 class ParityLogicTest {
     private fun cases(name: String): List<JsonObject> {
-        // Gradle запускает тесты из android/app; ищем testdata вверх по дереву
+        // Gradle runs tests from android/app; search upward for testdata
         var dir: File? = File("").absoluteFile
         while (dir != null && !File(dir, "testdata/parity").isDirectory) dir = dir.parentFile
         val f = File(dir ?: error("не нашёл testdata/parity"), "testdata/parity/$name.json")

@@ -1,33 +1,33 @@
-//! Язык интерфейса: русский (по умолчанию) или английский.
-//! Переводы лежат прямо в коде рядом с русским текстом: `l!("Настройки", "Settings")`,
-//! для строк с подстановками — `lf!("Добавлено {n}", "Added {n}")` (как `format!`).
+//! Interface language: Russian (default) or English.
+//! Translations live in the code next to the Russian text: `l!("Настройки", "Settings")`,
+//! and for strings with arguments `lf!("Добавлено {n}", "Added {n}")` (like `format!`).
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static EN: AtomicBool = AtomicBool::new(false);
 
-/// Включён английский.
+/// English is on.
 pub fn en() -> bool { EN.load(Ordering::Relaxed) }
 
-/// "en" — английский, всё остальное — русский.
+/// "en" is English, anything else is Russian.
 pub fn set(lang: &str) { EN.store(lang == "en", Ordering::Relaxed); }
 
-/// Языки для выбора в настройках: (код, название).
+/// Languages offered in settings: (code, name).
 pub const LANGS: &[(&str, &str)] = &[("ru", "Русский"), ("en", "English")];
 
-/// Строка на текущем языке.
+/// String in the current language.
 #[macro_export]
 macro_rules! l {
     ($ru:literal, $en:literal) => { if $crate::i18n::en() { $en } else { $ru } };
 }
 
-/// `format!` на текущем языке.
+/// `format!` in the current language.
 #[macro_export]
 macro_rules! lf {
     ($ru:literal, $en:literal $(, $a:expr)* $(,)?) => { if $crate::i18n::en() { format!($en $(, $a)*) } else { format!($ru $(, $a)*) } };
 }
 
-/// Перевод строк из таблиц-констант (пресеты эквалайзера, хоткеи, умные плейлисты),
-/// где `l!` не подходит, потому что он не const.
+/// Translation of strings from constant tables (EQ presets, hotkeys, smart playlists),
+/// where `l!` doesn't work because it isn't const.
 pub fn tr(ru: &str) -> &str {
     if !en() { return ru; }
     match ru {
@@ -60,7 +60,7 @@ pub fn tr(ru: &str) -> &str {
         "Добавлено за две недели, ещё не слушал" => "Added in the last two weeks, not played yet",
         "Ни разу не слушал" => "Never played",
         "Всё, что ещё ни разу не играло" => "Everything that has never been played",
-        // сохранённое в библиотеке при импорте файлов без тегов
+        // stored in the library when importing files without tags
         "Неизвестный исполнитель" => "Unknown artist",
         _ => ru,
     }
@@ -68,8 +68,8 @@ pub fn tr(ru: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    // Язык — глобальный, а тесты идут параллельно (и сверяют русские тексты), поэтому здесь его не переключаем;
-    // английский проверяется скриншотом интерфейса.
+    // The language is global and tests run in parallel (and check Russian text), so it isn't switched here;
+    // English is checked with a screenshot of the interface.
     #[test]
     fn russian_by_default() {
         let n = 2;

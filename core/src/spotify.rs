@@ -1,6 +1,6 @@
-//! Импорт из Spotify: плейлист / альбом / трек → поиск каждого трека на YouTube.
-//! Без настроек читаем публичную embed-страницу (до 100 треков). С ключом Spotify API
-//! (Client ID + Secret в настройках) — весь плейлист любого размера.
+//! Spotify import: playlist / album / track → look up each track on YouTube.
+//! Without setup we read the public embed page (up to 100 tracks). With a Spotify API key
+//! (Client ID + Secret in settings) — the whole playlist of any size.
 use crate::{now_ms, youtube::YouTube, Track};
 use serde_json::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,11 +17,11 @@ pub struct SpTrack {
 pub struct SpList {
     pub name: String,
     pub tracks: Vec<SpTrack>,
-    /// embed-страница отдаёт не больше 100 треков — плейлист мог обрезаться
+    /// the embed page returns at most 100 tracks — the playlist may have been cut off
     pub maybe_truncated: bool,
 }
 
-/// open.spotify.com/(intl-xx/)playlist/ID, album/ID, track/ID или spotify:playlist:ID
+/// open.spotify.com/(intl-xx/)playlist/ID, album/ID, track/ID or spotify:playlist:ID
 pub fn parse_url(url: &str) -> Option<(String, String)> {
     let u = url.trim();
     if let Some(rest) = u.strip_prefix("spotify:") {
@@ -47,7 +47,7 @@ fn get(url: &str) -> Result<String, String> {
     r.body_mut().with_config().limit(20 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
 }
 
-/// Публичная embed-страница: без ключей, до 100 треков.
+/// Public embed page: no keys, up to 100 tracks.
 pub fn fetch_embed(kind: &str, id: &str) -> Result<SpList, String> {
     let html = get(&format!("https://open.spotify.com/embed/{kind}/{id}"))?;
     let start = html.find(r#"<script id="__NEXT_DATA__" type="application/json">"#).ok_or(l!("Spotify изменил страницу — не нашёл данные плейлиста", "Spotify changed the page — couldn't find the playlist data"))?;
@@ -78,7 +78,7 @@ pub fn fetch_embed(kind: &str, id: &str) -> Result<SpList, String> {
     Ok(SpList { name, tracks: list, maybe_truncated })
 }
 
-/// Официальный Web API (Client Credentials): весь плейлист любого размера.
+/// Official Web API (Client Credentials): the whole playlist of any size.
 pub fn fetch_api(kind: &str, id: &str, client_id: &str, secret: &str) -> Result<SpList, String> {
     use std::io::Write;
     let mut basic = Vec::new();
@@ -127,24 +127,24 @@ pub fn fetch_api(kind: &str, id: &str, client_id: &str, secret: &str) -> Result<
     }
 }
 
-/// Найти трек на YouTube: из 5 результатов берём лучший по длительности и «официальности».
+/// Find a track on YouTube: out of 5 results take the best by duration and "officialness".
 pub fn match_on_youtube(yt: &YouTube, t: &SpTrack) -> Result<Option<Track>, String> { Ok(ranked(yt, t, None)?.into_iter().next()) }
 
-/// Видео трека пропало с YouTube (удалено, закрыто, недоступно в стране) — найти такой же трек в другом видео.
-/// Возвращает трек с тем же id (плейлисты не ломаются), но с новым видео.
-/// Лучшая замена трека, чьё видео пропало.
+/// The track's video is gone from YouTube (deleted, private, unavailable in the country) — find the same track in another video.
+/// Returns a track with the same id (playlists don't break) but with a new video.
+/// Best replacement for a track whose video is gone.
 pub fn find_replacement(yt: &YouTube, old: &Track) -> Result<Option<Track>, String> { Ok(find_replacements(yt, old)?.into_iter().next()) }
 
-/// Кандидаты на замену (лучшие первыми): если первый тоже не играет (например, тоже 18+), пробуем следующий.
+/// Replacement candidates (best first): if the first doesn't play either (e.g. also 18+), try the next.
 pub fn find_replacements(yt: &YouTube, old: &Track) -> Result<Vec<Track>, String> {
-    // «Artist - Title» в названии видео без исполнителя (часто у загрузок с обычных каналов)
+    // "Artist - Title" in the video title with no artist (common for uploads from ordinary channels)
     let (artist, title) = match old.title.split_once(" - ") {
         Some((a, t)) if old.artist.is_empty() || old.artist == "YouTube" => (a.trim().to_string(), t.trim().to_string()),
         _ => (old.artist.trim_end_matches(" - Topic").to_string(), old.title.clone()),
     };
     let sp = SpTrack { title, artists: artist, album: old.album.clone(), duration: old.duration };
     let mut list = ranked(yt, &sp, old.video_id.as_deref())?;
-    // исполнитель часто — просто канал загрузившего («ThePajiloyStalker»): с ним поиск находит мало, ищем ещё по названию
+    // the artist is often just the uploader's channel ("ThePajiloyStalker"): search finds little with it, so also search by title
     if list.len() < 3 && !sp.artists.is_empty() {
         let only_title = SpTrack { artists: String::new(), ..sp };
         for c in ranked(yt, &only_title, old.video_id.as_deref()).unwrap_or_default() {
@@ -160,7 +160,7 @@ pub fn find_replacements(yt: &YouTube, old: &Track) -> Result<Vec<Track>, String
     }).collect())
 }
 
-/// Название без хвостов, которых нет в названии видео: «(feat. X)», «- Remastered 2011», «- Radio Edit».
+/// Title without tails the video title doesn't have: "(feat. X)", "- Remastered 2011", "- Radio Edit".
 pub fn clean_title(s: &str) -> String {
     let mut t = s.to_lowercase();
     for (open, close) in [('(', ')'), ('[', ']')] {
@@ -177,8 +177,8 @@ pub fn clean_title(s: &str) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Кандидаты по запросу: сначала каталог YouTube Music (официальные аудио), потом обычный поиск YouTube.
-/// Сбои сети повторяем — иначе при импорте в 6 потоков трек молча записывался в «не нашлось».
+/// Candidates for a query: YouTube Music's catalog first (official audio), then regular YouTube search.
+/// Network failures are retried — otherwise, with 6 import threads, a track was silently marked "not found".
 pub fn candidates(yt: &YouTube, q: &str) -> Result<Vec<Track>, String> {
     let mut out = yt.search_music(q, 8).unwrap_or_else(|e| { crate::log(&format!("поиск YT Music «{q}»: {e}")); Vec::new() });
     if out.len() < 3 {
@@ -203,8 +203,8 @@ fn ranked(yt: &YouTube, t: &SpTrack, exclude: Option<&str>) -> Result<Vec<Track>
     Ok(rank(t, cands))
 }
 
-/// Оценка кандидатов без сети: лучшие первыми, явный мусор отброшен.
-/// Та же формула, что `Spotify.match` на телефоне — проверяется общими примерами в testdata/parity.
+/// Offline scoring of candidates: best first, obvious junk dropped.
+/// The same formula as `Spotify.match` on the phone — checked by the shared cases in testdata/parity.
 pub fn rank(t: &SpTrack, cands: Vec<Track>) -> Vec<Track> {
     let main_artist = t.artists.split(',').next().unwrap_or("").trim().to_string();
     let title_l = clean_title(&t.title);
@@ -218,24 +218,24 @@ pub fn rank(t: &SpTrack, cands: Vec<Track>) -> Vec<Track> {
         if artist_ok { score += 5.0; }
         if t.duration > 0.0 && c.duration > 0.0 {
             let d = (c.duration - t.duration).abs();
-            // клипы бывают длиннее трека (вступление), поэтому при совпавших названии и исполнителе штрафуем мягче
+            // music videos can be longer than the track (an intro), so when title and artist match the penalty is softer
             score -= d.min(120.0) / if title_ok && artist_ok { 10.0 } else { 4.0 };
             if d > 30.0 && !(title_ok && artist_ok) { score -= 20.0; }
         }
         for bad in ["live", "cover", "remix", "karaoke", "8d", "slowed", "sped up", "nightcore", "reaction", "instrumental"] {
-            // и наоборот: в Spotify «(Live)»/«Remix», а у видео нет — это студийная версия
+            // and the reverse: Spotify says "(Live)"/"Remix" but the video doesn't — it's the studio version
             if ct.contains(bad) != title_l.contains(bad) { score -= 8.0; }
         }
-        if c.url.as_deref().is_some_and(|u| u.contains("music.youtube")) && !c.album.is_empty() { score += 3.0; } // песня из каталога YT Music
+        if c.url.as_deref().is_some_and(|u| u.contains("music.youtube")) && !c.album.is_empty() { score += 3.0; } // a song from the YT Music catalog
         if ct.contains("official audio") || ct.contains("audio") { score += 2.0; }
-        score -= i as f64 * 0.3; // при равенстве — порядок поиска
+        score -= i as f64 * 0.3; // on a tie — search order
         (score, c)
     }).filter(|(s, _)| *s > -25.0).collect::<Vec<_>>();
     best.sort_by(|a, b| b.0.total_cmp(&a.0));
     best.into_iter().map(|(_, c)| from_candidate(&c, t)).collect()
 }
 
-/// Трек библиотеки из найденного видео: название, исполнитель и альбом — из Spotify.
+/// Library track from the found video: title, artist and album come from Spotify.
 pub fn from_candidate(c: &Track, t: &SpTrack) -> Track {
     let vid = c.video_id.clone().unwrap_or_default();
     Track {
@@ -258,12 +258,12 @@ pub struct SpImport {
     pub name: String,
     pub source: String,
     pub tracks: Vec<Track>,
-    /// треки, которых не нашлось — их можно найти вручную
+    /// tracks that weren't found — they can be found by hand
     pub not_found: Vec<SpTrack>,
     pub truncated: bool,
 }
 
-/// Полный импорт: список из Spotify → поиск на YouTube в несколько потоков.
+/// Full import: list from Spotify → YouTube search on several threads.
 pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dyn Fn(&str) + Sync)) -> Result<SpImport, String> {
     let (kind, id) = parse_url(url).ok_or(l!("это не ссылка на Spotify", "this isn't a Spotify link"))?;
     status(l!("Spotify: читаю список…", "Spotify: reading the list…"));
@@ -282,7 +282,7 @@ pub fn import(url: &str, yt: &YouTube, creds: Option<(&str, &str)>, status: &(dy
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 if i >= n { break; }
-                // сбой поиска — ещё одна попытка чуть позже (YouTube притормаживает частые запросы)
+                // search failed — one more try a bit later (YouTube throttles frequent requests)
                 let found = match match_on_youtube(yt, &list.tracks[i]) {
                     Ok(f) => f,
                     Err(e) => { crate::log(&format!("Spotify → YouTube «{}»: {e}", list.tracks[i].title)); std::thread::sleep(std::time::Duration::from_secs(2)); match_on_youtube(yt, &list.tracks[i]).unwrap_or(None) }

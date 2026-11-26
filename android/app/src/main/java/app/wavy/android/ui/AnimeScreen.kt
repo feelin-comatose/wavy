@@ -55,7 +55,7 @@ import app.wavy.android.data.fmtTime
 import app.wavy.android.player.PlayerConn
 import coil3.compose.AsyncImage
 
-/** Раздел «Аниме»: тайтлы из видео на телефоне, постеры и названия с Шикимори. */
+/** "Anime" section: titles from videos on the phone, posters and names from Shikimori. */
 @Composable
 fun AnimeScreen(openId: String?, onOpen: (String?) -> Unit, onScan: () -> Unit, onWatch: () -> Unit, onShazam: () -> Unit) {
     val lib by Store.lib.collectAsState()
@@ -131,7 +131,7 @@ private fun AnimeTitle(a: Anime, back: () -> Unit, onWatch: () -> Unit) {
     }
 }
 
-/** Окно Shazam: слушаем микрофон, показываем, что нашлось, добавляем в «Опенинги». */
+/** Shazam dialog: listen to the microphone, show what was found, add it to "Openings". */
 @Composable
 fun ShazamDialog(dismiss: () -> Unit) {
     val s by AppState.shazam.collectAsState()

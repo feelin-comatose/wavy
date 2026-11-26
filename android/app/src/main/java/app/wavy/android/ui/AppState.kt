@@ -22,11 +22,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Фоновые операции и состояние экрана, которое переживает пересоздание Activity. */
+/** Background operations and screen state that survives Activity recreation. */
 object AppState {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    /** Всплывающее сообщение внизу экрана. */
+    /** Pop-up message at the bottom of the screen. */
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow<String?>(null)
 
@@ -42,7 +42,7 @@ object AppState {
 
     fun say(m: String) { message.value = m }
 
-    // ---- раз в секунду: счёт прослушиваний и таймер сна ----
+    // ---- once a second: play counting and sleep timer ----
     sealed interface Sleep { data class At(val ms: Long) : Sleep; data class EndOf(val id: String) : Sleep }
     val sleep = MutableStateFlow<Sleep?>(null)
     private var ticking = false
@@ -60,7 +60,7 @@ object AppState {
                 if (id != lastId) {
                     val prev = lastId
                     lastId = id; counted = null
-                    // «после этого трека»: доиграл — следующий ставим на паузу
+                    // "after this track": once it finishes, pause before the next one
                     if ((sleep.value as? Sleep.EndOf)?.id == prev && prev != null) { PlayerConn.pause(); sleep.value = null; say(L("Таймер сна: трек доиграл, спокойной ночи", "Sleep timer: the track finished, good night")) }
                 }
                 if (st.isPlaying && id != null && counted != id && PlayerConn.position() > 30_000 && Store.lib.value.tracks.containsKey(id)) { Store.countPlay(id); counted = id }
@@ -78,7 +78,7 @@ object AppState {
         }
     }
 
-    // ---- радио по треку ----
+    // ---- track radio ----
     fun radio(id: String) {
         val t = Store.track(id) ?: return
         val vid = t.videoId ?: return say(L("Радио работает для треков с YouTube", "Radio works for YouTube tracks"))
@@ -92,7 +92,7 @@ object AppState {
         }
     }
 
-    // ---- текст песни ----
+    // ---- lyrics ----
     data class LyricsState(val id: String, val text: app.wavy.android.data.Lyrics.Text? = null, val error: String? = null)
     val lyrics = MutableStateFlow<LyricsState?>(null)
     fun loadLyrics(id: String) {
@@ -105,8 +105,8 @@ object AppState {
         }
     }
 
-    // ---- ручной выбор видео ----
-    /** replace — id трека, у которого меняем видео; иначе добавляем трек Spotify `sp` (в плейлист `pid`); rest — ещё не найденные. */
+    // ---- manual video choice ----
+    /** replace — id of the track whose video is being changed; otherwise add Spotify track `sp` (to playlist `pid`); rest — the ones not found yet. */
     data class Pick(val query: String, val results: List<Track> = emptyList(), val busy: Boolean = true, val error: String? = null,
                     val replace: String? = null, val sp: Spotify.SpTrack? = null, val pid: String? = null, val rest: List<Spotify.SpTrack> = emptyList())
     data class NotFound(val pid: String?, val items: List<Spotify.SpTrack>)
@@ -135,7 +135,7 @@ object AppState {
         pickSearch(Pick("${sp.artists.split(',').first().trim()} ${sp.title}".trim(), sp = sp, pid = nf.pid, rest = nf.items.filterIndexed { j, _ -> j != i }))
     }
 
-    /** Отмена выбора: вернуться к списку ненайденных, если он был. */
+    /** Cancel the choice: go back to the list of tracks not found, if there was one. */
     fun pickCancel() {
         val p = pick.value ?: return
         pick.value = null
@@ -169,14 +169,14 @@ object AppState {
     fun scanLocal(ctx: Context) = bg(L("Ищу музыку и видео на телефоне…", "Looking for music and videos on the phone…")) {
         val found = withContext(Dispatchers.IO) { LocalScanner.scan(ctx) }
         Store.addTracks(found)
-        // серии аниме: видео с номером серии в имени → тайтлы, обложки и названия с Шикимори
+        // anime episodes: videos with an episode number in the name → titles, covers and names from Shikimori
         val ids = found.filter { it.video }.map { it.id }.toSet()
         val pending = Store.addEpisodes(LocalScanner.videoNames.filterKeys { it in ids })
         say(if (found.isEmpty()) L("На телефоне не нашлось музыки", "No music found on the phone") else L("Найдено: ${found.count { !it.video }} треков, ${found.count { it.video }} видео", "Found: ${found.count { !it.video }} tracks, ${found.count { it.video }} videos"))
         if (pending.isNotEmpty()) matchAnime(pending)
     }
 
-    /** Найти тайтлы на Шикимори. Видео с одной «серией», которых там нет, — не аниме: возвращаем в библиотеку. */
+    /** Look up titles on Shikimori. Single-"episode" videos that aren't there aren't anime: return them to the library. */
     fun matchAnime(list: List<app.wavy.android.data.Anime>) = bg(L("Ищу аниме на Шикимори…", "Looking up anime on Shikimori…")) {
         for (a in list) {
             val p = AnimeParse.Parsed(a.title, null, if ("#s" in a.key) a.key.substringAfter("#s").toIntOrNull() else null)
@@ -191,7 +191,7 @@ object AppState {
         }
     }
 
-    /** Смотреть тайтл: с последней недосмотренной серии (или с выбранной). */
+    /** Watch a title: from the last unfinished episode (or the chosen one). */
     fun playAnime(id: String, episode: String? = null) {
         val a = Store.anime(id) ?: return
         if (a.episodes.isEmpty()) return
@@ -201,8 +201,8 @@ object AppState {
         app.wavy.android.player.PlayerConn.play(a.episodes, start)
     }
 
-    // ---------- синхронизация с ПК по Wi-Fi ----------
-    /** Скачать треки для прослушивания без интернета. */
+    // ---------- Wi-Fi sync with the PC ----------
+    /** Download tracks for offline listening. */
     fun downloadOffline(ids: List<String>) = bg(L("Скачиваю для офлайна…", "Downloading for offline…")) {
         val tracks = ids.mapNotNull { Store.track(it) }.filter { it.videoId != null && !app.wavy.android.data.Offline.has(it) }
         if (tracks.isEmpty()) { say(L("Всё уже скачано", "Everything is already downloaded")); return@bg }
@@ -215,7 +215,7 @@ object AppState {
         say(L("Скачано для офлайна: $ok", "Downloaded for offline: $ok") + if (failed > 0) L(", не вышло: $failed", ", failed: $failed") else "")
     }
 
-    /** Открыт ли пульт ПК. */
+    /** Whether the PC remote is open. */
     val remoteOpen = MutableStateFlow(false)
 
     fun wifiSync(addr: String, pin: String) = bg(L("Синхронизация с ПК…", "Syncing with the PC…")) {
@@ -234,11 +234,11 @@ object AppState {
     sealed interface Shz { data object Idle : Shz; data object Listening : Shz; data class Found(val f: Shazam.Found) : Shz; data object NotFound : Shz; data class Error(val msg: String) : Shz; data object Adding : Shz }
     val shazam = MutableStateFlow<Shz>(Shz.Idle)
     val shazamOpen = MutableStateFlow(false)
-    /** Activity спрашивает разрешение на микрофон и запускает listen(). */
+    /** The Activity asks for microphone permission and calls listen(). */
     var micRequest: (() -> Unit)? = null
     fun startShazam() { shazamOpen.value = true; micRequest?.invoke() ?: listen() }
 
-    /** Слушать микрофон 12 секунд и спросить Shazam. Разрешение на микрофон проверяет Activity. */
+    /** Listen to the microphone for 12 seconds and ask Shazam. The Activity checks the microphone permission. */
     @android.annotation.SuppressLint("MissingPermission")
     fun listen() = scope.launch {
         shazam.value = Shz.Listening
@@ -263,7 +263,7 @@ object AppState {
         return FloatArray(buf.size) { buf[it] / 32768f }
     }
 
-    /** Добавить найденное: трек ищется на YouTube, попадает в библиотеку и плейлист «Опенинги». */
+    /** Add what was found: the track is looked up on YouTube and goes into the library and the "Openings" playlist. */
     fun addFound(f: Shazam.Found) = scope.launch {
         shazam.value = Shz.Adding
         try {
@@ -276,7 +276,7 @@ object AppState {
         } catch (e: Throwable) { shazam.value = Shz.Error(e.message ?: L("не получилось добавить", "couldn't add it")) }
     }
 
-    /** Ссылка → треки (Spotify / YouTube / YouTube Music / SoundCloud…). onDone(playlistId). */
+    /** Link → tracks (Spotify / YouTube / YouTube Music / SoundCloud…). onDone(playlistId). */
     fun importUrl(url: String, intoPlaylist: String? = null, onDone: (String?) -> Unit = {}) = bg(L("Импорт…", "Importing…")) {
         val progress: (String) -> Unit = { m -> scope.launch { busy.value = m } }
         val s = Store.lib.value.settings

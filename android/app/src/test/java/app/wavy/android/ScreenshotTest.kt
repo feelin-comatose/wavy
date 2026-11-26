@@ -35,7 +35,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.nio.file.Files
 
-/** Скриншоты экранов без телефона — PNG в build/outputs/roborazzi */
+/** Screen screenshots without a phone — PNGs in build/outputs/roborazzi */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34], qualifiers = "w400dp-h860dp-xxhdpi")

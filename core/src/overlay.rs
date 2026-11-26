@@ -1,5 +1,5 @@
-//! Локальный HTTP-сервер оверлея (OBS Browser Source + игровое окно в Tauri).
-//! SSE на /events, текущее состояние на /state, обложка на /cover.
+//! Local HTTP server for the overlay (OBS Browser Source + in-game window in Tauri).
+//! SSE on /events, current state on /state, cover on /cover.
 use crate::{now_ms, PlayerState};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -14,7 +14,7 @@ struct Shared {
     state: PlayerState,
     at: u64,
     config: Value,
-    /// что дальше в очереди и текст песни со временем (если включены в настройках)
+    /// what's next in the queue and timed lyrics (if enabled in settings)
     queue: Value,
     lyrics: Value,
     clients: Vec<Box<dyn Write + Send>>,
@@ -108,7 +108,7 @@ impl OverlayServer {
         Self::broadcast(&mut sh);
     }
 
-    /// Следующие треки: [{title, artist, by}] (by — кто заказал из чата).
+    /// Upcoming tracks: [{title, artist, by}] (by — who requested it from chat).
     pub fn set_queue(&self, queue: Value) {
         let mut sh = self.shared.lock().unwrap();
         if sh.queue == queue { return; }
@@ -116,7 +116,7 @@ impl OverlayServer {
         Self::broadcast(&mut sh);
     }
 
-    /// Текст песни со временем: [[секунды, строка], …] или null.
+    /// Timed lyrics: [[seconds, line], …] or null.
     pub fn set_lyrics(&self, lyrics: Value) {
         let mut sh = self.shared.lock().unwrap();
         if sh.lyrics == lyrics { return; }
@@ -129,7 +129,7 @@ impl OverlayServer {
         sh.clients.retain_mut(|c| c.write_all(msg.as_bytes()).and_then(|_| c.flush()).is_ok());
     }
 
-    /// Снимок для нативного оверлей-окна.
+    /// Snapshot for the native overlay window.
     pub fn snapshot(&self) -> (PlayerState, u64) {
         let sh = self.shared.lock().unwrap();
         (sh.state.clone(), sh.at)

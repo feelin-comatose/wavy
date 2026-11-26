@@ -1,8 +1,8 @@
-//! Звуковые эффекты поверх любого источника: скорость (nightcore/slowed), 10-полосный эквалайзер,
-//! выравнивание громкости и мягкий ограничитель. Плюс честная позиция в треке: встроенная в rodio
-//! считает реальное время, и при скорости ≠ 1 полоска перемотки врала бы.
+//! Audio effects on top of any source: speed (nightcore/slowed), 10-band equalizer,
+//! volume normalization and a soft limiter. Plus an honest position in the track: rodio's built-in one
+//! counts real time, so at speed ≠ 1 the seek bar would be wrong.
 //!
-//! Настройки меняются на лету: эффект перечитывает их каждые ~2048 кадров (≈40 мс).
+//! Settings change on the fly: the effect rereads them every ~2048 frames (≈40 ms).
 use rodio::Source;
 use std::f32::consts::PI;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +15,7 @@ pub const BANDS: [f32; 10] = [31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4
 pub struct Settings {
     pub speed: f32,
     pub eq_on: bool,
-    /// усиление полос, дБ (−12…+12)
+    /// band gains, dB (−12…+12)
     pub eq: [f32; 10],
     pub normalize: bool,
 }
@@ -24,7 +24,7 @@ impl Default for Settings {
     fn default() -> Self { Self { speed: 1.0, eq_on: false, eq: [0.0; 10], normalize: false } }
 }
 
-/// Общие для всех треков настройки (меняются из интерфейса).
+/// Settings shared by all tracks (changed from the UI).
 #[derive(Clone, Default)]
 pub struct Shared {
     settings: Arc<Mutex<(Settings, u64)>>,
@@ -38,7 +38,7 @@ impl Shared {
     fn snapshot(&self) -> (Settings, u64) { self.settings.lock().unwrap().clone() }
 }
 
-/// Позиция в треке (секунды исходника), обновляется эффектом.
+/// Position in the track (source seconds), updated by the effect.
 #[derive(Clone, Default)]
 pub struct Pos(Arc<AtomicU64>);
 impl Pos {
@@ -50,7 +50,7 @@ impl Pos {
 struct Biquad { b0: f32, b1: f32, b2: f32, a1: f32, a2: f32 }
 
 impl Biquad {
-    /// Пиковый фильтр (RBJ cookbook).
+    /// Peaking filter (RBJ cookbook).
     fn peaking(f: f32, q: f32, db: f32, fs: f32) -> Self {
         let a = 10f32.powf(db / 40.0);
         let w = 2.0 * PI * f / fs;
@@ -70,15 +70,15 @@ pub struct Fx<S: Source> {
     pos: Pos,
     version: u64,
     settings: Settings,
-    // текущий кусок
+    // current chunk
     ch: usize,
     rate: u32,
-    left: usize, // сэмплов до конца куска
+    left: usize, // samples until the end of the chunk
     frame_i: usize,
-    // эквалайзер: активные полосы и их состояние по каналам (x1, x2, y1, y2)
+    // equalizer: active bands and their per-channel state (x1, x2, y1, y2)
     filters: Vec<Biquad>,
     state: Vec<[[f32; 4]; MAX_CH]>,
-    // выравнивание громкости
+    // volume normalization
     ms: f32,
     gain: f32,
     heard: f32,
@@ -109,7 +109,7 @@ impl<S: Source> Fx<S> {
         if self.filters.len() != old.len() { self.state = vec![[[0.0; 4]; MAX_CH]; self.filters.len()]; }
     }
 
-    /// Начало нового куска: перечитать настройки и формат.
+    /// Start of a new chunk: reread settings and format.
     fn new_span(&mut self) {
         let (ch, rate) = (self.inner.channels().get() as usize, self.inner.sample_rate().get());
         let (s, v) = self.shared.snapshot();
@@ -134,7 +134,7 @@ impl<S: Source> Fx<S> {
         for c in 0..ch {
             match self.inner.next() { Some(x) => self.frame[c] = x, None => return false }
         }
-        // эквалайзер
+        // equalizer
         for (bi, f) in self.filters.iter().enumerate() {
             let st = &mut self.state[bi];
             for c in 0..ch {
@@ -145,7 +145,7 @@ impl<S: Source> Fx<S> {
                 self.frame[c] = y;
             }
         }
-        // выравнивание: средняя мощность за ~3 с → усиление к целевому уровню (плавно, в пределах ×0.3…×3)
+        // normalization: average power over ~3 s → gain toward the target level (smoothly, within ×0.3…×3)
         let dt = 1.0 / self.rate as f32;
         if self.settings.normalize {
             let p = self.frame[..ch].iter().map(|x| x * x).sum::<f32>() / ch as f32;
@@ -161,7 +161,7 @@ impl<S: Source> Fx<S> {
         let needs_limit = self.gain > 1.0 || !self.filters.is_empty();
         for c in 0..ch {
             let mut y = self.frame[c] * self.gain;
-            // мягкое ограничение: громче 0.9 — плавно прижимаем к 1.0 (без хрипа)
+            // soft limiting: louder than 0.9 is smoothly pressed toward 1.0 (no crackle)
             if needs_limit && y.abs() > 0.9 { y = y.signum() * (0.9 + 0.1 * ((y.abs() - 0.9) / 0.1).tanh()); }
             self.frame[c] = y;
         }
@@ -189,7 +189,7 @@ impl<S: Source> Iterator for Fx<S> {
 impl<S: Source> Source for Fx<S> {
     fn current_span_len(&self) -> Option<usize> { Some(if self.left == 0 { SPAN * self.ch } else { self.left }) }
     fn channels(&self) -> rodio::ChannelCount { std::num::NonZero::new(self.ch as u16).unwrap_or(std::num::NonZero::<u16>::MIN) }
-    /// скорость = частота дискретизации, умноженная на коэффициент (тон меняется вместе со скоростью)
+    /// speed = sample rate times the factor (pitch changes along with speed)
     fn sample_rate(&self) -> rodio::SampleRate {
         let r = (self.rate as f32 * self.settings.speed.clamp(0.5, 2.0)).round() as u32;
         std::num::NonZero::new(r.max(1000)).unwrap_or(std::num::NonZero::<u32>::MIN)
@@ -206,7 +206,7 @@ impl<S: Source> Source for Fx<S> {
     }
 }
 
-/// Пресеты эквалайзера.
+/// Equalizer presets.
 pub const PRESETS: &[(&str, [f32; 10])] = &[
     ("Ровно", [0.0; 10]),
     ("Бас", [6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -246,7 +246,7 @@ mod tests {
         let sh = Shared::default();
         let mut s = Settings::default();
         s.eq_on = true;
-        s.eq[2] = 12.0; // 125 Гц
+        s.eq[2] = 12.0; // 125 Hz
         sh.set(s);
         let out: Vec<f32> = Fx::new(tone(125.0, 1.0), sh.clone(), Pos::default()).collect();
         let hi: Vec<f32> = Fx::new(tone(4000.0, 1.0), sh, Pos::default()).collect();
@@ -264,7 +264,7 @@ mod tests {
         let _ = fx.next();
         assert_eq!(fx.sample_rate().get(), 55125);
         let _: Vec<f32> = fx.collect();
-        assert!((pos.get() - 2.0).abs() < 0.01); // позиция — время трека, а не реальное
+        assert!((pos.get() - 2.0).abs() < 0.01); // position is track time, not real time
     }
 
     #[test]

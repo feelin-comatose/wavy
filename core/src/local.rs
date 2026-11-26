@@ -1,10 +1,10 @@
-//! Импорт локальных файлов: папки, m3u, теги и обложки.
+//! Local file import: folders, m3u, tags and covers.
 use crate::{now_ms, sha16, Track};
 use lofty::prelude::*;
 use std::path::{Path, PathBuf};
 
 pub const AUDIO_EXT: &[&str] = &["mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "webm", "weba", "wma", "aiff", "alac", "mp4", "m4v", "mov", "mkv"];
-/// Видео, которое умеет показывать плеер (MP4/MOV/MKV, кодек H.264).
+/// Video the player can show (MP4/MOV/MKV, H.264 codec).
 pub const VIDEO_EXT: &[&str] = &["mp4", "m4v", "mov", "mkv"];
 pub const PLAYLIST_EXT: &[&str] = &["m3u", "m3u8"];
 
@@ -86,7 +86,7 @@ pub struct ImportResult {
     pub playlists: Vec<(String, Vec<String>)>,
 }
 
-/// Файлы, папки и m3u → треки. `progress(i, n)` вызывается по ходу.
+/// Files, folders and m3u → tracks. `progress(i, n)` is called along the way.
 pub fn import_paths(paths: &[PathBuf], covers: &Path, mut progress: impl FnMut(usize, usize)) -> ImportResult {
     let _ = std::fs::create_dir_all(covers);
     let mut files = Vec::new();
@@ -109,7 +109,7 @@ pub fn import_paths(paths: &[PathBuf], covers: &Path, mut progress: impl FnMut(u
     let base = now_ms();
     let tracks = files.iter().enumerate().map(|(i, f)| {
         let mut t = read_track(f, covers);
-        t.added_at = base + (n - i) as u64; // сохраняем порядок файлов в «новые сверху»
+        t.added_at = base + (n - i) as u64; // keep file order under "newest first"
         progress(i + 1, n);
         t
     }).collect();

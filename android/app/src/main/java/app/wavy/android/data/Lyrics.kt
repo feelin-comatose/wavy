@@ -14,20 +14,20 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 
 /**
- * Тексты песен с LRCLIB (открытая база, без ключа): синхронные (построчно со временем) или простые.
- * Ответы кэшируются на диске — второй раз без интернета. Тот же разбор, что на ПК (core/src/lyrics.rs).
+ * Lyrics from LRCLIB (open database, no key): synced (line by line with timestamps) or plain.
+ * Responses are cached on disk — the second time works offline. Same parsing as on the PC (core/src/lyrics.rs).
  */
 object Lyrics {
     data class Text(val synced: List<Pair<Double, String>> = emptyList(), val plain: String = "", val instrumental: Boolean = false) {
         val isEmpty get() = synced.isEmpty() && plain.isBlank() && !instrumental
-        /** Номер текущей строки (секунды → индекс), -1 — ещё не началась. */
+        /** Index of the current line (seconds → index), -1 if it hasn't started yet. */
         fun lineAt(t: Double): Int = synced.indexOfLast { it.first <= t + 0.15 }
     }
 
     private var dir: File? = null
     fun init(filesDir: File) { dir = File(filesDir, "lyrics").apply { mkdirs() } }
 
-    /** «[01:23.45] текст» → (83.45, «текст»). Несколько меток на строке — несколько строк. */
+    /** "[01:23.45] text" → (83.45, "text"). Several timestamps on a line give several lines. */
     fun parseLrc(s: String): List<Pair<Double, String>> {
         val out = ArrayList<Pair<Double, String>>()
         for (line in s.lines()) {
@@ -51,7 +51,7 @@ object Lyrics {
     private val jp = Regex("""^(.*?)\s*「(.+?)」""")
     private val feat = Regex("""(?i)\s+(feat\.?|ft\.?)\s.*$""")
 
-    /** Название без мусора YouTube: «(Official Video)», «[MV]», «feat.»; «Артист - Песня» → разделить. */
+    /** Title without YouTube junk: "(Official Video)", "[MV]", "feat."; "Artist - Song" → split. */
     fun clean(t: Track): Pair<String, String> {
         var artist = t.artist.removeSuffix(" - Topic").trim()
         var title = tail.replace(junk.replace(t.title, ""), "")
@@ -83,7 +83,7 @@ object Lyrics {
 
     private fun key(id: String) = MessageDigest.getInstance("SHA-1").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 
-    /** Найти текст трека (сначала в кэше). Блокирующая — вызывай не из главного потока. */
+    /** Find a track's lyrics (cache first). Blocking — don't call from the main thread. */
     fun fetch(t: Track): Text {
         val file = dir?.let { File(it, key(t.id) + ".json") }
         file?.takeIf { it.exists() }?.let { f -> runCatching { return fromJson(json.parseToJsonElement(f.readText())) } }

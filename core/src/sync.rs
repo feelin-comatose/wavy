@@ -1,5 +1,5 @@
-//! Обмен плейлистами ПК ↔ телефон: файл wavy-export.json (тот же формат, что в Android-версии).
-//! Переносятся YouTube/Spotify/стрим-треки и плейлисты; локальные файлы — нет.
+//! Playlist exchange PC ↔ phone: the wavy-export.json file (same format as the Android version).
+//! YouTube/Spotify/stream tracks and playlists are transferred; local files are not.
 use crate::{now_ms, store::Store, Track};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub struct Export {
     pub playlists: Vec<ExportPlaylist>,
     #[serde(default)]
     pub tracks: Vec<Track>,
-    /// лайки (id переносимых треков), новые первыми; при импорте объединяются
+    /// likes (ids of transferable tracks), newest first; merged on import
     #[serde(default)]
     pub liked: Vec<String>,
 }
@@ -91,14 +91,14 @@ mod tests {
         s.create_playlist("Mix", vec!["yt_aaaaaaaaaaa".into(), "loc_1".into()], None);
         let text = export(&s);
         assert!(is_export(&text) && !text.contains("C:/m.mp3"));
-        // файл с телефона (поля Android-версии, лишние игнорируются)
+        // file from the phone (Android version fields, extras are ignored)
         let android = r#"{"wavyExport":1,"app":"android","exportedAt":5,"liked":["yt_bbbbbbbbbbb","yt_gone"],"playlists":[{"name":"Phone","source":"https://open.spotify.com/album/x","tracks":[{"id":"yt_bbbbbbbbbbb","type":"youtube","videoId":"bbbbbbbbbbb","title":"B","artist":"Y","album":"","duration":5.0,"addedAt":1,"video":false}]}],"tracks":[{"id":"and_a_7","type":"local","path":"content://media/7","title":"L"}]}"#;
         let r = import(&mut s, android).unwrap();
         assert_eq!((r.tracks, r.new_playlists, r.skipped_local), (1, 1, 1));
         let r2 = import(&mut s, android).unwrap();
         assert_eq!(r2.new_playlists, 0);
         assert!(s.lib.tracks.contains_key("yt_bbbbbbbbbbb") && !s.lib.tracks.contains_key("and_a_7"));
-        // лайки переносятся, неизвестные треки пропускаются
+        // likes carry over, unknown tracks are skipped
         assert!(s.is_liked("yt_bbbbbbbbbbb") && !s.is_liked("yt_gone"));
         s.set_liked(&["yt_aaaaaaaaaaa".into()], true);
         assert!(export(&s).contains("\"liked\""));

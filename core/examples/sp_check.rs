@@ -1,4 +1,4 @@
-//! Проверка импорта из Spotify: cargo run -p wavy-core --example sp_check -- <data_dir> <spotify_url>
+//! Check Spotify import: cargo run -p wavy-core --example sp_check -- <data_dir> <spotify_url>
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).expect("data dir"));
     let url = std::env::args().nth(2).expect("url");

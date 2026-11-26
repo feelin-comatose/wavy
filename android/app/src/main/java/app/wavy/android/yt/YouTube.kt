@@ -17,7 +17,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
-/** YouTube / YouTube Music / SoundCloud … через NewPipeExtractor. Всё блокирующее — звать не из UI-потока. */
+/** YouTube / YouTube Music / SoundCloud … through NewPipeExtractor. Everything blocks — don't call from the UI thread. */
 object YouTube {
     @Volatile private var ready = false
     fun init() { if (!ready) synchronized(this) { if (!ready) { NewPipe.init(NewPipeDownloader()); ready = true } } }
@@ -32,7 +32,7 @@ object YouTube {
 
     fun cleanArtist(s: String) = s.removeSuffix(" - Topic").trim()
 
-    /** Элемент поиска/плейлиста → трек (id совпадают с десктопом: yt_<videoId>). */
+    /** Search/playlist item → track (ids match the desktop: yt_<videoId>). */
     fun toTrack(item: StreamInfoItem, music: Boolean = false, addedAt: Long = System.currentTimeMillis()): Track {
         val vid = videoIdOf(item.url)
         return if (vid != null) Track(
@@ -48,7 +48,7 @@ object YouTube {
         )
     }
 
-    /** Поиск: music=true — песни из YouTube Music (чище результаты), иначе обычные видео. */
+    /** Search: music=true — songs from YouTube Music (cleaner results), otherwise regular videos. */
     fun search(query: String, music: Boolean = true, limit: Int = 25): List<Track> {
         init()
         val yt = ServiceList.YouTube
@@ -56,14 +56,14 @@ object YouTube {
             .relatedItems.filterIsInstance<StreamInfoItem>()
             .filter { it.streamType.name != "LIVE_STREAM" && it.streamType.name != "AUDIO_LIVE_STREAM" }
         if (music) {
-            // раздел «песни» YouTube Music иногда отдаёт пусто — тогда ищем по обычным видео
+            // YouTube Music's "songs" section sometimes comes back empty — then search regular videos
             val songs = runCatching { run(YoutubeSearchQueryHandlerFactory.MUSIC_SONGS) }.getOrDefault(emptyList())
             if (songs.isNotEmpty()) return songs.take(limit).map { toTrack(it, true) }
         }
         return run(YoutubeSearchQueryHandlerFactory.VIDEOS).take(limit).map { toTrack(it, music) }
     }
 
-    /** Плейлист / альбом / видео по ссылке (YouTube, YouTube Music, SoundCloud, Bandcamp…). */
+    /** Playlist / album / video by link (YouTube, YouTube Music, SoundCloud, Bandcamp…). */
     fun importUrl(url: String, progress: (String) -> Unit = {}): Import {
         init()
         val service = NewPipe.getServiceByUrl(url)
@@ -100,7 +100,7 @@ object YouTube {
         }
     }
 
-    /** Радио по треку: микс YouTube (похожие песни), без самого трека. */
+    /** Track radio: a YouTube mix (similar songs), without the track itself. */
     fun radio(videoId: String, limit: Int = 30): List<Track> {
         init()
         val yt = ServiceList.YouTube
@@ -109,7 +109,7 @@ object YouTube {
         return info.relatedItems.map { toTrack(it, true, base) }.filter { it.videoId != videoId }.distinctBy { it.id }.take(limit)
     }
 
-    // ---- потоки для плеера (кэшируются: ссылки живут ~6 часов) ----
+    // ---- streams for the player (cached: links live ~6 hours) ----
     private class Cached(val url: String, val until: Long)
     private val audioCache = ConcurrentHashMap<String, Cached>()
     private val videoCache = ConcurrentHashMap<String, Cached>()
@@ -118,7 +118,7 @@ object YouTube {
 
     private fun pageUrl(key: String) = if (key.startsWith("http")) key else "https://www.youtube.com/watch?v=$key"
 
-    /** Прямая ссылка на лучший аудиопоток (m4a в приоритете — играет везде). */
+    /** Direct link to the best audio stream (m4a preferred — plays everywhere). */
     fun audioStream(key: String): String {
         audioCache[key]?.takeIf { it.until > System.currentTimeMillis() }?.let { return it.url }
         init()
@@ -130,7 +130,7 @@ object YouTube {
         return a.content
     }
 
-    /** Видео без звука (≤ 720p) для показа клипа синхронно со звуком. */
+    /** Video without audio (≤ 720p) to show the clip in sync with the music. */
     fun videoStream(key: String): String {
         videoCache[key]?.takeIf { it.until > System.currentTimeMillis() }?.let { return it.url }
         init()
@@ -139,7 +139,7 @@ object YouTube {
         val v = info.videoOnlyStreams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && res(it.getResolution()) in 1..720 }
             .sortedWith(compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> { res(it.getResolution()) }.thenByDescending { it.format?.name == "MPEG_4" })
             .firstOrNull()
-            ?: info.videoStreams.firstOrNull { it.isUrl } // со звуком — тоже сгодится (звук приглушим)
+            ?: info.videoStreams.firstOrNull { it.isUrl } // one with audio will do too (we'll mute it)
             ?: throw IllegalStateException(L("у видео нет видеопотока", "the video has no video stream"))
         videoCache[key] = Cached(v.content, System.currentTimeMillis() + 5 * 3600_000)
         return v.content

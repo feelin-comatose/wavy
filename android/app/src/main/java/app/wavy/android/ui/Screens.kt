@@ -76,7 +76,7 @@ import app.wavy.android.data.Track
 import app.wavy.android.data.fmtTime
 import app.wavy.android.player.PlayerConn
 
-// ---------- общие элементы ----------
+// ---------- shared elements ----------
 
 @Composable
 fun Header(title: String, sub: String? = null, back: (() -> Unit)? = null, actions: @Composable () -> Unit = {}) {
@@ -136,7 +136,7 @@ fun TrackRow(t: Track, index: Int?, playing: Boolean, onClick: () -> Unit, menu:
     }
 }
 
-/** Меню трека: играть далее, в очередь, в плейлист, удалить. */
+/** Track menu: play next, add to queue, add to playlist, delete. */
 @Composable
 fun TrackMenu(ids: List<String>, close: () -> Unit, playlistId: String? = null, onAddToPlaylist: (List<String>) -> Unit) {
     DropdownMenuItem({ Text(L("Играть далее", "Play next")) }, onClick = { PlayerConn.playNext(ids); AppState.say(L("Сыграет следующим", "Will play next")); close() })
@@ -171,7 +171,7 @@ fun TrackList(ids: List<String>, playlistId: String? = null, header: @Composable
     }
 }
 
-// ---------- экраны ----------
+// ---------- screens ----------
 
 @Composable
 fun LibraryScreen(onImport: () -> Unit, onScan: () -> Unit, onAddToPlaylist: (List<String>) -> Unit) {
@@ -205,7 +205,7 @@ fun PlaylistsScreen(openId: String?, onOpen: (String?) -> Unit, onImport: (Strin
     var create by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf<String?>(null) }
     val p = lib.playlists.firstOrNull { it.id == openId }
-    // «Любимое» и умные плейлисты — не настоящие плейлисты, собираются на лету
+    // "Liked" and smart playlists aren't real playlists; they're built on the fly
     val special: Pair<String, List<String>>? = when {
         openId == LIKED -> L("Любимое", "Liked") to lib.liked.filter { lib.tracks.containsKey(it) }
         openId?.startsWith(SMART) == true -> {
@@ -323,7 +323,7 @@ fun SearchScreen(onAddToPlaylist: (List<String>) -> Unit) {
     }
 }
 
-// ---------- диалоги ----------
+// ---------- dialogs ----------
 
 @Composable
 fun TextDialog(title: String, initial: String, ok: String, dismiss: () -> Unit, onOk: (String) -> Unit) {
@@ -383,7 +383,7 @@ fun Section(title: String, content: @Composable () -> Unit) {
     }
 }
 
-/** Псевдо-плейлисты в разделе «Плейлисты». */
+/** Pseudo-playlists in the "Playlists" section. */
 const val LIKED = "@liked"
 const val SMART = "@smart:"
 

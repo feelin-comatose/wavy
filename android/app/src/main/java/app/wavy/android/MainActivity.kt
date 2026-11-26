@@ -71,7 +71,7 @@ import app.wavy.android.update.Updater
 import java.io.File
 
 class MainActivity : ComponentActivity() {
-    /** Ссылка, пришедшая через «Поделиться» (YouTube, Spotify…) — откроет окно импорта. */
+    /** A link that arrived through "Share" (YouTube, Spotify…) — opens the import dialog. */
     private val sharedUrl = mutableStateOf<String?>(null)
 
     private val askMedia = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
         if (ok) AppState.listen() else AppState.say(L("Без микрофона Shazam не услышит музыку", "Without the microphone Shazam can't hear the music"))
     }
 
-    /** Shazam: разрешение на микрофон → слушать. */
+    /** Shazam: microphone permission → listen. */
     private fun shazam() {
         AppState.shazamOpen.value = true
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) AppState.listen()
@@ -115,7 +115,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_SEND -> {
                 (i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { importFile(it); return }
                 val text = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
-                // приложения шлют «Название https://…» — берём саму ссылку
+                // apps send "Title https://…" — take just the link
                 Regex("""(https?://\S+|spotify:\S+)""").find(text)?.value?.let { sharedUrl.value = it }
             }
             Intent.ACTION_VIEW -> i.data?.let { u -> if (u.scheme == "content" || u.scheme == "file") importFile(u) else sharedUrl.value = u.toString() }
@@ -158,7 +158,7 @@ class MainActivity : ComponentActivity() {
         var openAnime by rememberSaveable { mutableStateOf<String?>(null) }
         val shazamOpen by AppState.shazamOpen.collectAsState()
         val remoteOpen by AppState.remoteOpen.collectAsState()
-        // серия досмотрена (последние 10 %) — отмечаем
+        // episode finished (last 10 %) — mark it
         LaunchedEffect(Unit) {
             while (true) {
                 kotlinx.coroutines.delay(5000)
@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         var full by rememberSaveable { mutableStateOf(false) }
-        var importFor by remember { mutableStateOf<Pair<String, String?>?>(null) } // (ссылка, плейлист)
+        var importFor by remember { mutableStateOf<Pair<String, String?>?>(null) } // (link, playlist)
         var addTo by remember { mutableStateOf<List<String>?>(null) }
         val snack = remember { SnackbarHostState() }
         val msg by AppState.message.collectAsState()

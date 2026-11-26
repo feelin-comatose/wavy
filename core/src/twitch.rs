@@ -1,7 +1,7 @@
-//! Чат Twitch: заказы «!sr», голосование «!skip», «!song» и «!queue», награды за баллы канала.
-//! Без входа Wavy читает чат как гость (ничего настраивать не надо). Чтобы отвечать в чат
-//! («Сейчас играет …»), нужен вход: Twitch-приложение стримера (dev.twitch.tv, тип «Public»)
-//! и код на twitch.tv/activate. Дальше токен обновляется сам.
+//! Twitch chat: "!sr" requests, "!skip" voting, "!song" and "!queue", channel points rewards.
+//! Without sign-in Wavy reads chat as a guest (nothing to set up). To reply in chat
+//! ("Now playing …") sign-in is needed: the streamer's Twitch app (dev.twitch.tv, "Public" type)
+//! and a code at twitch.tv/activate. After that the token refreshes on its own.
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -10,19 +10,19 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Сообщение из чата.
+/// A chat message.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Msg {
     pub user: String,
     pub text: String,
-    /// модератор или сам стример
+    /// a moderator or the streamer
     pub is_mod: bool,
-    /// сообщение пришло вместе с наградой за баллы канала (награда «с текстом»)
+    /// the message came with a channel points reward (a reward "with text")
     pub reward: Option<String>,
 }
 
 impl Msg {
-    /// «!sr запрос» → Some("запрос"); `cmd` — с восклицательным знаком.
+    /// "!sr query" → Some("query"); `cmd` includes the exclamation mark.
     pub fn command(&self, cmd: &str) -> Option<String> {
         let rest = self.text.trim().strip_prefix(cmd)?;
         if !rest.is_empty() && !rest.starts_with(' ') { return None; }
@@ -30,13 +30,13 @@ impl Msg {
     }
 }
 
-/// Разобрать строку IRC (с тегами или без): сообщение в чат канала.
+/// Parse an IRC line (with or without tags): a message in the channel chat.
 pub fn parse(line: &str) -> Option<Msg> {
     let (tags, rest) = match line.strip_prefix('@') {
         Some(t) => { let (t, r) = t.split_once(' ')?; (t, r) }
         None => ("", line),
     };
-    // :ник!ник@ник.tmi.twitch.tv PRIVMSG #канал :текст
+    // :nick!nick@nick.tmi.twitch.tv PRIVMSG #channel :text
     let rest = rest.strip_prefix(':')?;
     let (prefix, rest) = rest.split_once(' ')?;
     let user = prefix.split('!').next()?.to_string();
@@ -55,7 +55,7 @@ pub fn parse(line: &str) -> Option<Msg> {
     Some(m)
 }
 
-/// Аккаунт Twitch, от имени которого Wavy пишет в чат.
+/// The Twitch account Wavy writes to chat as.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Account {
@@ -69,7 +69,7 @@ impl Account {
     pub fn logged_in(&self) -> bool { !self.access.is_empty() && !self.login.is_empty() }
 }
 
-/// Отправка сообщений в чат (если вошли).
+/// Sending messages to chat (when signed in).
 #[derive(Clone)]
 pub struct Chat { out: Option<Sender<String>> }
 
@@ -84,8 +84,8 @@ pub fn clean_channel(ch: &str) -> String {
     ch.trim().trim_start_matches("https://").trim_start_matches("www.").trim_start_matches("twitch.tv/").trim_start_matches('#').trim_end_matches('/').to_lowercase()
 }
 
-/// Слушать чат канала, пока `stop` не поднят. Переподключается сам.
-/// `account` — Some, если вошли: тогда можно писать в чат. Новый токен (после обновления) приходит в `on_token`.
+/// Listen to the channel chat until `stop` is raised. Reconnects on its own.
+/// `account` — Some when signed in: then chat writing works. A new token (after a refresh) arrives in `on_token`.
 pub fn listen(channel: &str, account: Option<Account>, stop: Arc<AtomicBool>, on: impl Fn(Msg) + Send + 'static, on_token: impl Fn(Account) + Send + 'static) -> Chat {
     let channel = clean_channel(channel);
     let (out, rx) = channel_pair(account.is_some());
@@ -98,7 +98,7 @@ pub fn listen(channel: &str, account: Option<Account>, stop: Arc<AtomicBool>, on
                 Ok(()) => wait = 2,
                 Err(e) => {
                     crate::log(&format!("twitch: {e} — переподключаюсь через {wait} с"));
-                    // токен протух — обновляем и пробуем снова
+                    // token expired — refresh and try again
                     if e.contains("authentication failed") || e.contains("Login unsuccessful") {
                         if let Some(a) = acc.as_mut() {
                             match refresh(a) { Ok(()) => { on_token(a.clone()); wait = 1; } Err(e) => { crate::log(&format!("twitch: не обновил токен: {e}")); acc = None; } }
@@ -119,7 +119,7 @@ fn channel_pair(can_say: bool) -> (Option<Sender<String>>, Receiver<String>) {
 }
 
 fn session(channel: &str, acc: Option<&Account>, stop: &AtomicBool, on: &impl Fn(Msg), out: &Mutex<Receiver<String>>) -> Result<(), String> {
-    // WAVY_TWITCH_IRC — подменить сервер (для проверки без Twitch)
+    // WAVY_TWITCH_IRC — override the server (for testing without Twitch)
     let host = std::env::var("WAVY_TWITCH_IRC").unwrap_or_else(|_| "irc.chat.twitch.tv:6667".into());
     let mut s = TcpStream::connect(&host).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_millis(300))).ok();
@@ -151,7 +151,7 @@ fn session(channel: &str, acc: Option<&Account>, stop: &AtomicBool, on: &impl Fn
     }
 }
 
-// ---------- вход (Device Code Flow: код вводится на twitch.tv/activate) ----------
+// ---------- sign-in (Device Code Flow: the code is entered at twitch.tv/activate) ----------
 
 const SCOPES: &str = "chat:read chat:edit";
 
@@ -167,7 +167,7 @@ fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), String> {
     Ok((code, v))
 }
 
-/// Начать вход: код для twitch.tv/activate.
+/// Start sign-in: a code for twitch.tv/activate.
 pub fn device_start(client_id: &str) -> Result<Device, String> {
     let (code, v) = post_form("https://id.twitch.tv/oauth2/device", &[("client_id", client_id.trim()), ("scopes", SCOPES)])?;
     if code != 200 { return Err(lf!("Twitch не начал вход: {}", "Twitch didn't start the sign-in: {}", v["message"].as_str().unwrap_or(l!("проверь Client ID (тип приложения — Public)", "check the Client ID (the application type must be Public)")))); }
@@ -179,7 +179,7 @@ pub fn device_start(client_id: &str) -> Result<Device, String> {
     })
 }
 
-/// Проверить, ввёл ли человек код. Ok(None) — ещё ждём.
+/// Check whether the user entered the code. Ok(None) — still waiting.
 pub fn device_poll(client_id: &str, d: &Device) -> Result<Option<Account>, String> {
     let (code, v) = post_form("https://id.twitch.tv/oauth2/token", &[
         ("client_id", client_id.trim()), ("scopes", SCOPES), ("device_code", &d.device_code), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
@@ -199,7 +199,7 @@ fn whoami(token: &str) -> Result<String, String> {
     v["login"].as_str().map(str::to_string).ok_or_else(|| l!("Twitch не сказал, кто вошёл", "Twitch didn't say who signed in").into())
 }
 
-/// Новый токен по refresh (у публичных приложений — без секрета).
+/// New token from refresh (public apps need no secret).
 pub fn refresh(acc: &mut Account) -> Result<(), String> {
     let (code, v) = post_form("https://id.twitch.tv/oauth2/token", &[("client_id", acc.client_id.as_str()), ("grant_type", "refresh_token"), ("refresh_token", acc.refresh.as_str())])?;
     if code != 200 { return Err(v["message"].as_str().unwrap_or(l!("войди заново", "sign in again")).to_string()); }
@@ -208,12 +208,12 @@ pub fn refresh(acc: &mut Account) -> Result<(), String> {
     Ok(())
 }
 
-/// Голосование за пропуск: сколько разных людей написали !skip за этот трек.
+/// Skip voting: how many different people wrote !skip for this track.
 #[derive(Default, Debug)]
 pub struct SkipVote { track: String, voters: Vec<String> }
 
 impl SkipVote {
-    /// Голос от `user` за трек `track`. true — набралось `need` голосов (и счёт сброшен).
+    /// A vote from `user` for track `track`. true — `need` votes reached (and the count is reset).
     pub fn vote(&mut self, track: &str, user: &str, need: u32) -> bool {
         if self.track != track { self.track = track.to_string(); self.voters.clear(); }
         if !self.voters.iter().any(|v| v == user) { self.voters.push(user.to_string()); }
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(v.count("t1"), 2);
         assert!(v.vote("t1", "c", 3));
         assert_eq!(v.count("t1"), 0);
-        // новый трек — счёт заново
+        // new track — start counting again
         v.vote("t1", "a", 3);
         assert!(!v.vote("t2", "b", 3));
         assert_eq!(v.count("t2"), 1);

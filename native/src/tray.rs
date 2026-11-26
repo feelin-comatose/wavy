@@ -1,6 +1,6 @@
-//! Иконка в трее (Windows): показать окно, пауза, следующий, выход.
-//! «Свернуть в трей» — окно сворачивается и прячется с панели задач (стиль tool window), но остаётся
-//! «видимым» для Windows — поэтому плеер продолжает работать (переключать треки, ловить горячие клавиши).
+//! Tray icon (Windows): show window, pause, next, quit.
+//! "Minimize to tray" minimizes the window and hides it from the taskbar (tool window style), but it stays
+//! "visible" to Windows — so the player keeps working (switching tracks, catching hotkeys).
 use eframe::egui;
 use std::sync::mpsc::Receiver;
 
@@ -21,7 +21,7 @@ mod imp {
     pub struct Tray { _icon: TrayIcon, items: [MenuItem; 5] }
 
     impl Tray {
-        /// Подписи на текущем языке (после смены языка в настройках).
+        /// Labels in the current language (after the language changes in settings).
         pub fn relabel(&self) {
             let [show, toggle, next, prev, quit] = &self.items;
             show.set_text(l!("Показать Wavy", "Show Wavy"));
@@ -34,7 +34,7 @@ mod imp {
 
     fn hwnd() -> windows_sys::Win32::Foundation::HWND { HWND_.load(Ordering::Relaxed) as _ }
 
-    /// Вернуть окно: с панели задач, развернуть, на передний план.
+    /// Bring the window back: onto the taskbar, restored, in front.
     pub fn show_now() {
         let h = hwnd();
         if h.is_null() { return; }
@@ -46,13 +46,13 @@ mod imp {
         }
     }
 
-    /// Свернуть и убрать с панели задач.
+    /// Minimize and remove from the taskbar.
     pub fn hide_now() {
         let h = hwnd();
         if h.is_null() { return; }
         unsafe {
             ShowWindow(h, SW_MINIMIZE);
-            ShowWindow(h, SW_HIDE); // смена стиля применяется к скрытому окну
+            ShowWindow(h, SW_HIDE); // the style change applies to the hidden window
             let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
             SetWindowLongPtrW(h, GWL_EXSTYLE, (ex & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize);
             ShowWindow(h, SW_SHOWMINNOACTIVE);
@@ -105,7 +105,7 @@ pub use imp::Tray;
 
 pub fn new(cc: &eframe::CreationContext) -> Option<(Tray, Receiver<Cmd>)> { imp::new(cc) }
 
-/// Свернуть в трей (если трея нет — просто свернуть).
+/// Minimize to tray (if there's no tray — just minimize).
 pub fn hide(ctx: &egui::Context) {
     if cfg!(windows) { imp::hide_now(); } else { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
 }

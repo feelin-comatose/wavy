@@ -1,18 +1,18 @@
-//! Синхронизация с телефоном по Wi-Fi: ПК слушает порт в локальной сети, телефон заходит по адресу
-//! и PIN-коду (виден в настройках Wavy на ПК). Обмен — тем же форматом, что и файл wavy-export.json:
-//!   GET  /wavy/sync?pin=…  → плейлисты и треки ПК
-//!   POST /wavy/sync?pin=…  ← плейлисты и треки телефона (добавляются на ПК)
-//! Пульт (телефон управляет ПК):
-//!   GET  /wavy/remote?pin=…              → что играет, позиция, громкость, очередь
-//!   POST /wavy/remote?pin=…&cmd=next&v=… ← toggle | next | prev | volume (0..1) | seek (с) | jump (номер в очереди)
-//!   GET  /wavy/remote/cover?pin=…        → обложка текущего трека (если она файл на ПК)
+//! Wi-Fi sync with the phone: the PC listens on a LAN port, the phone connects by address
+//! and PIN (shown in Wavy's settings on the PC). Data uses the same format as the wavy-export.json file:
+//!   GET  /wavy/sync?pin=…  → the PC's playlists and tracks
+//!   POST /wavy/sync?pin=…  ← the phone's playlists and tracks (added on the PC)
+//! Remote (the phone controls the PC):
+//!   GET  /wavy/remote?pin=…              → what's playing, position, volume, queue
+//!   POST /wavy/remote?pin=…&cmd=next&v=… ← toggle | next | prev | volume (0..1) | seek (s) | jump (index in the queue)
+//!   GET  /wavy/remote/cover?pin=…        → cover of the current track (if it's a file on the PC)
 use crate::store::Store;
 use std::net::UdpSocket;
 use std::sync::{Arc, Mutex};
 
 pub const PORT: u16 = 3738;
 
-/// Адрес ПК в локальной сети (по маршруту «наружу», пакеты при этом не отправляются).
+/// The PC's LAN address (from the outbound route; no packets are actually sent).
 pub fn local_ip() -> Option<String> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:80").ok()?;
@@ -23,20 +23,20 @@ pub fn new_pin() -> String { format!("{:06}", crate::now_ms().wrapping_mul(2_654
 
 pub struct Server { srv: Arc<tiny_http::Server> }
 
-/// Пульт: снимок состояния плеера (его обновляет приложение) и куда слать команды.
+/// Remote: snapshot of the player state (updated by the app) and where to send commands.
 #[derive(Clone)]
 pub struct Remote {
     pub state: Arc<Mutex<serde_json::Value>>,
-    /// (команда, число) → приложение; `wake` будит его интерфейс
+    /// (command, number) → the app; `wake` wakes its UI
     pub cmds: std::sync::mpsc::Sender<(String, f64)>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
-    /// путь к обложке текущего трека (локальный файл), если есть
+    /// path to the current track's cover (a local file), if any
     pub cover: Arc<Mutex<Option<String>>>,
 }
 
 impl Drop for Server { fn drop(&mut self) { self.srv.unblock(); } }
 
-/// Запустить сервер. `on_sync` — после приёма данных с телефона (обновить экран).
+/// Start the server. `on_sync` — after receiving data from the phone (refresh the screen).
 pub fn start(store: Arc<Mutex<Store>>, pin: String, remote: Remote, on_sync: impl Fn(String) + Send + Sync + 'static) -> Result<Server, String> {
     let srv = Arc::new(tiny_http::Server::http(("0.0.0.0", PORT)).map_err(|e| lf!("порт {PORT} занят: {e}", "port {PORT} is busy: {e}"))?);
     let s2 = srv.clone();
@@ -58,7 +58,7 @@ pub fn start(store: Arc<Mutex<Store>>, pin: String, remote: Remote, on_sync: imp
                     let v = q.get("v").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
                     let _ = remote.cmds.send((cmd, v));
                     (remote.wake)();
-                    // ответ — состояние чуть позже, когда приложение выполнит команду
+                    // the response is the state a bit later, once the app has run the command
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
                 let body = remote.state.lock().unwrap().to_string();

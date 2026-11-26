@@ -1,6 +1,6 @@
-//! Общие примеры с Android-версией (testdata/parity/*.json). Тот же набор читает
-//! android/app/src/test/.../ParityTest.kt — если одна сторона изменила алгоритм, а другая нет,
-//! упадёт тест на той стороне, которая разошлась с примерами.
+//! Cases shared with the Android version (testdata/parity/*.json). The same set is read by
+//! android/app/src/test/.../ParityLogicTest.kt — if one side changed an algorithm and the other didn't,
+//! the test fails on the side that drifted from the cases.
 use serde_json::Value;
 use wavy_core::{anime, lyrics, spotify, Track};
 

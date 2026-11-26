@@ -6,7 +6,7 @@ import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 
-/** Живые проверки с сетью: ./gradlew testDebugUnitTest -Plive=true --tests '*LiveTest*' */
+/** Live checks with network: ./gradlew testDebugUnitTest -Plive=true --tests '*LiveTest*' */
 class LiveTest {
     @Before fun live() = Assume.assumeTrue(System.getProperty("live") == "true")
 

@@ -1,13 +1,13 @@
-//! Потоковая загрузка: файл качается кусками в кэш, а читать его можно сразу —
-//! читатель ждёт, пока нужные байты докачаются. Так музыка начинает играть с первых
-//! килобайт, а целиком скачанный файл остаётся в кэше для повторного прослушивания.
+//! Progressive download: the file downloads into the cache in chunks and can be read right away —
+//! the reader waits until the bytes it needs arrive. That way music starts playing from the first
+//! kilobytes, and the fully downloaded file stays in the cache for replays.
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-/// YouTube режет скорость на больших запросах — качаем кусками (как yt-dlp).
+/// YouTube throttles large requests — download in chunks (like yt-dlp).
 const CHUNK: u64 = 4 * 1024 * 1024;
 
 #[derive(Default)]
@@ -25,7 +25,7 @@ pub struct Download {
     pub path: PathBuf,
 }
 
-/// Файл в кэше докачан до конца (рядом лежит метка .ok).
+/// The cached file is fully downloaded (an .ok marker sits next to it).
 pub fn is_complete(path: &Path) -> bool {
     path.exists() && marker(path).exists()
 }
@@ -36,14 +36,14 @@ fn marker(path: &Path) -> PathBuf {
     PathBuf::from(m)
 }
 
-/// Идущие загрузки: один и тот же файл не качается дважды (например, предзагрузка + воспроизведение).
+/// Downloads in progress: the same file isn't downloaded twice (e.g. preload + playback).
 fn active() -> &'static Mutex<std::collections::HashMap<PathBuf, Download>> {
     static A: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, Download>>> = std::sync::OnceLock::new();
     A.get_or_init(Default::default)
 }
 
 impl Download {
-    /// Начать загрузку `url` в `path` (или присоединиться к уже идущей). `size` — размер, если известен.
+    /// Start downloading `url` into `path` (or join one already running). `size` — the size, if known.
     pub fn start(url: String, path: PathBuf, size: Option<u64>) -> Self {
         let mut act = active().lock().unwrap();
         if let Some(d) = act.get(&path) {
@@ -70,8 +70,8 @@ impl Download {
         d
     }
 
-    /// Загрузка из вывода процесса (yt-dlp -o -): размер неизвестен, конец — когда процесс закрыл вывод.
-    /// Если идёт загрузка этого же файла — присоединяемся к ней (процесс тогда не нужен и завершается).
+    /// Download from a process's output (yt-dlp -o -): size unknown, the end is when the process closes its output.
+    /// If the same file is already downloading, join it (the process isn't needed then and is terminated).
     pub fn pipe(mut child: std::process::Child, path: PathBuf) -> Self {
         let mut act = active().lock().unwrap();
         if let Some(d) = act.get(&path) {
@@ -140,20 +140,20 @@ impl Download {
                 if self.shared.0.lock().unwrap().cancel { return Err(l!("отменено", "cancelled").into()); }
                 match self.fetch(url, pos, end, &mut f) {
                     Ok(n) => break n,
-                    // 403/404/410 — ссылка недействительна, повтор не поможет
+                    // 403/404/410 — the link is invalid, retrying won't help
                     Err(e) if attempt < 3 && !["403", "404", "410"].iter().any(|c| e.contains(c)) => { attempt += 1; crate::log(&format!("загрузка: повтор {attempt} ({e})")); std::thread::sleep(Duration::from_millis(400 * attempt)); }
                     Err(e) => return Err(e),
                 }
             };
             pos += n;
-            if n == 0 { break; } // сервер отдал всё
-            if total.is_none() && n < end - (pos - n) + 1 { break; } // размер неизвестен и кусок короче — конец
+            if n == 0 { break; } // the server sent everything
+            if total.is_none() && n < end - (pos - n) + 1 { break; } // size unknown and the chunk is shorter — end
         }
         f.flush().map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Один кусок: Range-запрос, запись в файл по мере прихода данных.
+    /// One chunk: a Range request, written to the file as data arrives.
     fn fetch(&self, url: &str, start: u64, end: u64, f: &mut File) -> Result<u64, String> {
         let resp = crate::http().get(url)
             .header("Range", &format!("bytes={start}-{end}"))
@@ -195,13 +195,13 @@ impl Download {
     pub fn error(&self) -> Option<String> { self.shared.0.lock().unwrap().error.clone() }
     pub fn total(&self) -> Option<u64> { self.shared.0.lock().unwrap().total }
 
-    /// Сколько скачано, в процентах (0..=100), если размер известен.
+    /// How much is downloaded, in percent (0..=100), if the size is known.
     pub fn progress(&self) -> Option<u8> {
         let st = self.shared.0.lock().unwrap();
         st.total.filter(|t| *t > 0).map(|t| ((st.downloaded * 100) / t).min(100) as u8)
     }
 
-    /// Подождать, пока скачается хотя бы `bytes` (или всё). false — ошибка/отмена/таймаут.
+    /// Wait until at least `bytes` (or everything) is downloaded. false — error/cancel/timeout.
     pub fn wait_for(&self, bytes: u64, timeout: Duration) -> bool {
         let (m, cv) = &*self.shared;
         let deadline = std::time::Instant::now() + timeout;
@@ -215,7 +215,7 @@ impl Download {
         }
     }
 
-    /// Читатель, который ждёт докачки нужных байт.
+    /// A reader that waits for the bytes it needs to arrive.
     pub fn reader(&self) -> std::io::Result<StreamReader> {
         Ok(StreamReader { dl: self.clone(), file: File::open(&self.path)?, pos: 0 })
     }
@@ -263,7 +263,7 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    /// Мини HTTP-сервер с Range и искусственной задержкой — проверяем, что читать можно до конца загрузки.
+    /// Mini HTTP server with Range and artificial delay — checks that reading works before the download finishes.
     #[test]
     fn progressive_read() {
         let data: Vec<u8> = (0..10_000_000u32).map(|i| (i % 251) as u8).collect();
@@ -274,26 +274,26 @@ mod tests {
             let r = req.headers().iter().find(|h| h.field.equiv("Range")).map(|h| h.value.as_str().to_string()).unwrap();
             let (a, b) = r.trim_start_matches("bytes=").split_once('-').unwrap();
             let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse::<usize>().unwrap().min(d2.len() - 1));
-            std::thread::sleep(Duration::from_millis(150)); // «медленная сеть»
+            std::thread::sleep(Duration::from_millis(150)); // "slow network"
             let hdr = tiny_http::Header::from_bytes("Content-Range", format!("bytes {a}-{b}/{}", d2.len())).unwrap();
             let _ = req.respond(tiny_http::Response::from_data(d2[a..=b].to_vec()).with_status_code(206).with_header(hdr));
         });
         let path = std::env::temp_dir().join(format!("wavy-stream-test-{}", crate::now_ms()));
         let dl = Download::start(format!("http://127.0.0.1:{port}/x"), path.clone(), None);
-        // первые байты доступны задолго до конца загрузки
+        // the first bytes are available long before the download finishes
         assert!(dl.wait_for(100_000, Duration::from_secs(5)));
         assert!(!dl.done());
         let mut r = dl.reader().unwrap();
         let mut head = vec![0u8; 100_000];
         r.read_exact(&mut head).unwrap();
         assert_eq!(&head[..], &data[..100_000]);
-        // перемотка вперёд — ждём нужный кусок
+        // seeking forward — wait for the needed chunk
         r.seek(SeekFrom::Start(9_000_000)).unwrap();
         let mut tail = Vec::new();
         r.read_to_end(&mut tail).unwrap();
         assert_eq!(&tail[..], &data[9_000_000..]);
         assert!(dl.wait_for(u64::MAX, Duration::from_secs(10)));
-        // флаг «готово» и метка .ok ставятся сразу после последнего байта — под нагрузкой чуть позже
+        // the "done" flag and the .ok marker are set right after the last byte — a bit later under load
         let t0 = std::time::Instant::now();
         while !(dl.done() && is_complete(&path)) && t0.elapsed() < Duration::from_secs(10) { std::thread::sleep(Duration::from_millis(20)); }
         assert!(dl.done() && is_complete(&path));
@@ -303,13 +303,13 @@ mod tests {
     }
 }
 
-/// Размер папки кэша (байты) и число файлов.
+/// Size of the cache folder (bytes) and number of files.
 pub fn dir_size(dir: &std::path::Path) -> (u64, usize) {
     std::fs::read_dir(dir).map(|rd| rd.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).fold((0, 0), |(s, n), m| (s + m.len(), n + 1))).unwrap_or((0, 0))
 }
 
-/// Удалить старые файлы (по времени последнего изменения), пока кэш не станет меньше `limit` байт.
-/// `keep` — файлы, которые сейчас нужны (играет/качается), их не трогаем. Возвращает освобождённое.
+/// Delete old files (by last modification time) until the cache is smaller than `limit` bytes.
+/// `keep` — files needed right now (playing/downloading), left alone. Returns what was freed.
 pub fn trim_dir(dir: &std::path::Path, limit: u64, keep: &[std::path::PathBuf]) -> u64 {
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> = rd.flatten()
@@ -338,7 +338,7 @@ mod trim_tests {
             let t = std::time::SystemTime::now() - std::time::Duration::from_secs(1000 - i as u64 * 100);
             std::fs::File::options().write(true).open(d.join(n)).unwrap().set_modified(t).unwrap();
         }
-        // a — самый старый, но он «играет»: удалиться должен b
+        // a is the oldest but it's "playing": b should be deleted
         let freed = super::trim_dir(&d, 2000, &[d.join("a.m4a")]);
         assert_eq!(freed, 1000);
         assert!(d.join("a.m4a").exists() && !d.join("b.m4a").exists() && d.join("c.m4a").exists());

@@ -16,7 +16,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Request
 import java.io.File
 
-/** Автообновление: GitHub Releases (сборки build-N, номер N вшит в APK как versionCode). */
+/** Auto-update: GitHub Releases (build-N builds; N is baked into the APK as versionCode). */
 object Updater {
     const val REPO = "feelin-comatose/wavy"
     data class Release(val build: Int, val url: String)
@@ -46,7 +46,7 @@ object Updater {
         return out
     }
 
-    /** Разрешено ли приложению ставить APK (Android спросит один раз). */
+    /** Whether the app is allowed to install APKs (Android asks once). */
     fun canInstall(ctx: Context) = Build.VERSION.SDK_INT < 26 || ctx.packageManager.canRequestPackageInstalls()
 
     fun openInstallPermission(ctx: Context) {

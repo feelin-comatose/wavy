@@ -1,13 +1,13 @@
-//! Аккаунт YouTube Music через куки: лайки, история, сохранённые плейлисты и «Моя волна»
-//! (радио YouTube Music по твоим лайкам и истории — под аккаунтом оно подбирается по вкусу).
+//! YouTube Music account via cookies: likes, history, saved playlists and "My wave"
+//! (YouTube Music radio based on your likes and history — under an account it's tuned to your taste).
 //!
-//! Куки берутся одним из способов:
-//! - «Войти через Google»: Wavy открывает отдельное окно Chrome/Edge/Brave с чистым профилем,
-//!   человек входит как обычно, Wavy забирает куки через DevTools этого окна и закрывает его.
-//!   Этим профилем больше никто не пользуется, поэтому YouTube не меняет куки у нас за спиной;
-//! - из браузера (Firefox) или файла cookies.txt — те же настройки, что для видео 18+.
+//! Cookies come from one of these:
+//! - "Sign in with Google": Wavy opens a separate Chrome/Edge/Brave window with a clean profile,
+//!   the user signs in as usual, Wavy takes the cookies through that window's DevTools and closes it.
+//!   Nobody else uses that profile, so YouTube doesn't rotate the cookies behind our back;
+//! - from a browser (Firefox) or a cookies.txt file — the same settings as for 18+ videos.
 //!
-//! Все функции блокирующие — вызывай из фонового потока.
+//! All functions block — call them from a background thread.
 use crate::youtube::{rt, ytm_track, YouTube};
 use crate::{now_ms, Track};
 use rustypipe::client::RustyPipe;
@@ -16,18 +16,18 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
-/// Где открыть вход в Google (сразу ведёт обратно на YouTube Music).
+/// Where to open the Google sign-in (leads straight back to YouTube Music).
 const LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
 
-/// Куки, по которым видно, что в YouTube выполнен вход.
+/// Cookies that show YouTube is signed in.
 const LOGIN_COOKIES: &[&str] = &["SAPISID", "__Secure-3PAPISID", "LOGIN_INFO"];
 
-/// Плейлист «Мне нравится» в YouTube Music.
+/// The "Liked music" playlist in YouTube Music.
 pub const LIKED_ID: &str = "LM";
 
-// ---------- вход через Google в отдельном окне браузера ----------
+// ---------- Google sign-in in a separate browser window ----------
 
-/// Браузер на Chromium, который умеет отдавать куки через DevTools.
+/// A Chromium-based browser that can hand out cookies through DevTools.
 pub fn find_browser() -> Option<PathBuf> {
     let mut c: Vec<PathBuf> = Vec::new();
     if cfg!(windows) {
@@ -49,19 +49,19 @@ pub fn find_browser() -> Option<PathBuf> {
     c.into_iter().find(|p| p.is_file())
 }
 
-/// Открытое окно входа.
+/// The open sign-in window.
 pub struct GoogleLogin {
     child: Child,
     port: u16,
 }
 
 impl GoogleLogin {
-    /// Открыть окно входа: отдельный профиль `profile` (там же он и остаётся до выхода).
+    /// Open the sign-in window: a separate profile `profile` (where it stays until sign-out).
     pub fn start(browser: &Path, profile: &Path) -> Result<Self, String> {
         let _ = std::fs::create_dir_all(profile);
         let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map(|a| a.port()).map_err(|e| e.to_string())?;
         let mut cmd = Command::new(browser);
-        // Chromium не запускается от root без этого флага (бывает только на Linux-серверах и в контейнерах)
+        // Chromium won't start as root without this flag (only happens on Linux servers and in containers)
         if cfg!(unix) && std::env::var("USER").is_ok_and(|u| u == "root") { cmd.arg("--no-sandbox"); }
         let child = cmd
             .arg(format!("--user-data-dir={}", profile.display()))
@@ -73,10 +73,10 @@ impl GoogleLogin {
         Ok(Self { child, port })
     }
 
-    /// Закрыли ли окно сами.
+    /// Whether the user closed the window themselves.
     pub fn closed(&mut self) -> bool { matches!(self.child.try_wait(), Ok(Some(_))) }
 
-    /// Куки окна в формате cookies.txt, когда вход в YouTube уже выполнен (иначе None).
+    /// The window's cookies in cookies.txt format once YouTube is signed in (otherwise None).
     pub fn poll(&self) -> Result<Option<String>, String> {
         let cookies = cdp(self.port, "Storage.getCookies", json!({}))?;
         let list = cookies["cookies"].as_array().cloned().unwrap_or_default();
@@ -84,7 +84,7 @@ impl GoogleLogin {
         Ok(logged_in.then(|| netscape(&list)))
     }
 
-    /// Закрыть окно (сначала вежливо, через DevTools).
+    /// Close the window (politely first, through DevTools).
     pub fn close(mut self) {
         let _ = cdp(self.port, "Browser.close", json!({}));
         for _ in 0..20 {
@@ -95,7 +95,7 @@ impl GoogleLogin {
     }
 }
 
-/// Одна команда Chrome DevTools Protocol на уровне браузера.
+/// One browser-level Chrome DevTools Protocol command.
 fn cdp(port: u16, method: &str, params: Value) -> Result<Value, String> {
     let info: Value = serde_json::from_str(&ureq::get(&format!("http://127.0.0.1:{port}/json/version")).call().map_err(|e| e.to_string())?
         .body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -114,7 +114,7 @@ fn cdp(port: u16, method: &str, params: Value) -> Result<Value, String> {
     }
 }
 
-/// Куки DevTools → файл cookies.txt (Netscape), только Google и YouTube.
+/// DevTools cookies → cookies.txt file (Netscape), Google and YouTube only.
 pub fn netscape(cookies: &[Value]) -> String {
     let mut out = String::from("# Netscape HTTP Cookie File\n# Wavy: вход через Google\n");
     for c in cookies {
@@ -130,10 +130,10 @@ pub fn netscape(cookies: &[Value]) -> String {
     out
 }
 
-// ---------- аккаунт ----------
+// ---------- account ----------
 
 impl YouTube {
-    /// Подключить аккаунт по кукам из настроек (браузер или файл cookies.txt).
+    /// Connect the account with cookies from settings (browser or cookies.txt file).
     pub fn account_connect(&self) -> Result<(), String> {
         let txt = self.cookies_txt()?;
         let dir = self.bin_dir.parent().unwrap_or(&self.bin_dir).join("rustypipe-account");
@@ -157,24 +157,24 @@ impl YouTube {
         self.acc.lock().unwrap().clone().ok_or_else(|| l!("аккаунт YouTube не подключён", "the YouTube account isn't connected").into())
     }
 
-    /// Текст cookies.txt: из файла как есть, из браузера — через yt-dlp (он умеет их читать и расшифровывать).
+    /// cookies.txt text: from a file as is, from a browser through yt-dlp (it can read and decrypt them).
     fn cookies_txt(&self) -> Result<String, String> {
         let args = self.cookie_args();
         if args.is_empty() { return Err(l!("сначала войди через Google или укажи, откуда брать куки", "first sign in with Google or choose where to take cookies from").into()); }
         if args[0] == "--cookies" { return std::fs::read_to_string(&args[1]).map_err(|e| lf!("не читается файл кук: {e}", "can't read the cookie file: {e}")); }
         let tmp = std::env::temp_dir().join(format!("wavy-cookies-{}.txt", now_ms()));
         let path = tmp.to_string_lossy().to_string();
-        // yt-dlp сохраняет куки в файл при выходе, даже если само видео не открылось
+        // yt-dlp saves cookies to the file on exit, even if the video itself didn't open
         let _ = self.run(&[&args[0], &args[1], "--cookies", &path, "--skip-download", "--simulate", "--no-warnings", "--playlist-items", "0", "https://www.youtube.com/watch?v=jNQXAC9IVRw"]);
         let txt = std::fs::read_to_string(&tmp).map_err(|_| l!("не вышло достать куки из браузера — закрой его и попробуй ещё раз", "couldn't get the cookies from the browser — close it and try again").to_string());
         let _ = std::fs::remove_file(&tmp);
         txt
     }
 
-    /// Лайкнутые песни YouTube Music (новые сверху).
+    /// Liked YouTube Music songs (newest first).
     pub fn liked_tracks(&self, limit: usize) -> Result<Vec<Track>, String> { self.playlist_tracks(LIKED_ID, limit) }
 
-    /// Треки плейлиста аккаунта (в том числе закрытого).
+    /// Tracks of an account playlist (including private ones).
     pub fn playlist_tracks(&self, id: &str, limit: usize) -> Result<Vec<Track>, String> {
         let rp = self.acc()?;
         let q = rp.query().authenticated();
@@ -185,7 +185,7 @@ impl YouTube {
         }).map_err(|e| format!("YouTube Music: {e}"))
     }
 
-    /// Сохранённые плейлисты: (id, название, сколько треков).
+    /// Saved playlists: (id, name, track count).
     pub fn saved_playlists(&self) -> Result<Vec<(String, String, u64)>, String> {
         let rp = self.acc()?;
         let q = rp.query().authenticated();
@@ -196,7 +196,7 @@ impl YouTube {
         }).map_err(|e| format!("YouTube Music: {e}"))
     }
 
-    /// Недавно прослушанное в YouTube Music.
+    /// Recently played in YouTube Music.
     pub fn history(&self, limit: usize) -> Result<Vec<Track>, String> {
         let rp = self.acc()?;
         let q = rp.query().authenticated();
@@ -206,7 +206,7 @@ impl YouTube {
         }).map_err(|e| format!("YouTube Music: {e}"))
     }
 
-    /// Радио YouTube Music по треку — под аккаунтом с учётом вкуса.
+    /// YouTube Music radio for a track — tuned to taste under the account.
     fn radio_for(&self, video_id: &str, limit: usize) -> Result<Vec<Track>, String> {
         let rp = self.acc()?;
         let q = rp.query().authenticated();
@@ -216,9 +216,9 @@ impl YouTube {
         }).map_err(|e| format!("YouTube Music: {e}"))
     }
 
-    /// «Моя волна»: радио по нескольким трекам из лайков и истории, вперемешку и без того,
-    /// что уже есть в `exclude` (id видео библиотеки и уже сыгранного). `seeds` — свои стартовые треки
-    /// (например, последние из прошлой волны), иначе берутся из аккаунта.
+    /// "My wave": radio from several tracks from likes and history, shuffled and without
+    /// what's already in `exclude` (video ids of the library and of what has played). `seeds` — custom starting tracks
+    /// (e.g. the last ones from the previous wave), otherwise taken from the account.
     pub fn wave(&self, seeds: &[String], exclude: &HashSet<String>, n: usize) -> Result<Vec<Track>, String> {
         let mut seeds: Vec<String> = seeds.to_vec();
         if seeds.len() < 3 {
@@ -237,7 +237,7 @@ impl YouTube {
     }
 }
 
-/// Списки радио → одна очередь: по очереди из каждого списка, без повторов и исключённых.
+/// Radio lists → one queue: round-robin across the lists, without repeats or excluded ones.
 pub fn mix(lists: Vec<Vec<Track>>, exclude: &HashSet<String>, n: usize) -> Vec<Track> {
     let mut seen = exclude.clone();
     let mut out = Vec::new();
@@ -256,11 +256,11 @@ pub fn mix(lists: Vec<Vec<Track>>, exclude: &HashSet<String>, n: usize) -> Vec<T
     }
 }
 
-/// Простой генератор случайных чисел (без лишней зависимости ради выбора нескольких треков).
+/// Simple random number generator (no extra dependency just to pick a few tracks).
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 { self.0 ^= self.0 << 13; self.0 ^= self.0 >> 7; self.0 ^= self.0 << 17; self.0 }
-    /// k случайных элементов (без повторов), из первых по порядку чаще.
+    /// k random elements (no repeats), earlier ones picked more often.
     fn pick<T: Clone>(&mut self, v: &[T], k: usize) -> Vec<T> {
         let mut idx: Vec<usize> = (0..v.len()).collect();
         let mut out = Vec::new();

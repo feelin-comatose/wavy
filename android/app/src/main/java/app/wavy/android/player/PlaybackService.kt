@@ -25,8 +25,8 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
 /**
- * Фоновое воспроизведение: ExoPlayer + MediaSession. Даёт уведомление с кнопками, управление
- * с экрана блокировки, наушников и часов. Пока играет музыка, сервис работает на переднем плане.
+ * Background playback: ExoPlayer + MediaSession. Provides a notification with buttons and control
+ * from the lock screen, headphones and watches. While music plays, the service runs in the foreground.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackService : MediaSessionService() {
@@ -40,7 +40,7 @@ class PlaybackService : MediaSessionService() {
         val http = OkHttpDataSource.Factory(Http.client).setUserAgent(Http.UA)
         val base = DefaultDataSource.Factory(this, http)
         val resolving = ResolvingDataSource.Factory(base) { spec -> Media.resolve(spec) }
-        // старт быстрее: начинаем играть, набрав 1 с звука (по умолчанию 2.5 с)
+        // faster start: begin playing after buffering 1 s of audio (default is 2.5 s)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 120_000, 1_000, 2_000)
             .build()
@@ -48,13 +48,13 @@ class PlaybackService : MediaSessionService() {
             .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCache.Factory(this, base, resolving)))
             .setLoadControl(loadControl)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
-            .setHandleAudioBecomingNoisy(true) // выдернули наушники — пауза
+            .setHandleAudioBecomingNoisy(true) // headphones unplugged — pause
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 val cause = error.cause
-                // ссылка YouTube протухла — забываем её и пробуем ещё раз
+                // the YouTube link expired — forget it and try again
                 if (cause is HttpDataSource.InvalidResponseCodeException && cause.responseCode == 403 && errorsInRow == 0) {
                     player.currentMediaItem?.localConfiguration?.uri?.let(Media::streamKey)?.let(YouTube::invalidate)
                     errorsInRow++
@@ -71,7 +71,7 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, player)
             .setSessionActivity(open)
             .setCallback(object : MediaSession.Callback {
-                // MediaItem от контроллера приходит без адреса — восстанавливаем по id трека
+                // a MediaItem from the controller arrives without an address — restore it by track id
                 override fun onAddMediaItems(s: MediaSession, c: MediaSession.ControllerInfo, items: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> =
                     Futures.immediateFuture(items.map { mi -> Store.track(mi.mediaId)?.let(Media::item) ?: mi }.toMutableList())
             })

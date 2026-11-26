@@ -1,6 +1,6 @@
-//! Скробблинг в Last.fm: «сейчас слушает» и прослушанные треки (половина трека или 4 минуты).
-//! Нужен ключ API Last.fm (last.fm/api/account/create — бесплатно): API key и Shared secret.
-//! Вход: Wavy открывает страницу Last.fm, там жмёшь «Разрешить», потом «Готово» в Wavy.
+//! Last.fm scrobbling: "now playing" and listened tracks (half the track or 4 minutes).
+//! Needs a Last.fm API key (last.fm/api/account/create — free): API key and Shared secret.
+//! Sign-in: Wavy opens the Last.fm page, you press "Allow" there, then "Done" in Wavy.
 use md5::{Digest, Md5};
 use serde_json::Value;
 
@@ -20,7 +20,7 @@ impl Account {
     pub fn ready(&self) -> bool { self.enabled && !self.session.is_empty() && !self.api_key.is_empty() && !self.secret.is_empty() }
 }
 
-/// Подпись запроса: md5 от «имязначение» по алфавиту + секрет.
+/// Request signature: md5 of "namevalue" pairs sorted alphabetically + the secret.
 pub fn sign(params: &[(&str, &str)], secret: &str) -> String {
     let mut p: Vec<&(&str, &str)> = params.iter().filter(|(k, _)| *k != "format" && *k != "callback").collect();
     p.sort_by(|a, b| a.0.cmp(b.0));
@@ -48,7 +48,7 @@ fn call(params: &[(&str, &str)], secret: &str, post: bool) -> Result<Value, Stri
     Ok(v)
 }
 
-/// Шаг 1: токен и страница, где человек разрешает доступ.
+/// Step 1: a token and the page where the user grants access.
 pub fn begin(acc: &Account) -> Result<(String, String), String> {
     let v = call(&[("method", "auth.getToken"), ("api_key", acc.api_key.trim())], acc.secret.trim(), false)?;
     let token = v["token"].as_str().ok_or(l!("Last.fm не выдал токен — проверь API key", "Last.fm didn't give a token — check the API key"))?.to_string();
@@ -56,7 +56,7 @@ pub fn begin(acc: &Account) -> Result<(String, String), String> {
     Ok((token, url))
 }
 
-/// Шаг 2: после «Разрешить» на сайте — постоянная сессия.
+/// Step 2: after "Allow" on the site — a permanent session.
 pub fn finish(acc: &mut Account, token: &str) -> Result<(), String> {
     let v = call(&[("method", "auth.getSession"), ("api_key", acc.api_key.trim()), ("token", token)], acc.secret.trim(), false)
         .map_err(|e| if e.contains("not authorized") || e.contains("Unauthorized") { l!("сначала нажми «Разрешить» на странице Last.fm", "first click “Allow access” on the Last.fm page").to_string() } else { e })?;
@@ -68,8 +68,8 @@ pub fn finish(acc: &mut Account, token: &str) -> Result<(), String> {
 
 pub struct Play<'a> { pub artist: &'a str, pub title: &'a str, pub album: &'a str, pub duration: f64 }
 
-/// Исполнитель и название для Last.fm: у видео с YouTube «Исполнитель - Название» часто в заголовке,
-/// а «исполнитель» — это канал («LiSA Official», «… - Topic»).
+/// Artist and title for Last.fm: YouTube videos often have "Artist - Title" in the title,
+/// while the "artist" is the channel ("LiSA Official", "… - Topic").
 pub fn clean<'a>(artist: &'a str, title: &'a str) -> (String, String) {
     let artist = artist.trim().trim_end_matches(" - Topic").trim_end_matches("VEVO").trim();
     if let Some((a, t)) = title.split_once(" - ").or_else(|| title.split_once(" – ")) {
@@ -98,7 +98,7 @@ pub fn now_playing(acc: &Account, p: &Play) -> Result<(), String> {
     call(&params, &acc.secret, true).map(|_| ())
 }
 
-/// Засчитать прослушивание; `started` — когда трек начал играть (Unix, секунды).
+/// Scrobble a play; `started` is when the track began playing (Unix, seconds).
 pub fn scrobble(acc: &Account, p: &Play, started: u64) -> Result<(), String> {
     let (artist, title) = clean(p.artist, p.title);
     if artist.is_empty() { return Ok(()); }
@@ -110,7 +110,7 @@ pub fn scrobble(acc: &Account, p: &Play, started: u64) -> Result<(), String> {
     call(&params, &acc.secret, true).map(|_| ())
 }
 
-/// Пора ли скробблить: трек длиннее 30 с и проиграно больше половины или 4 минуты.
+/// Whether it's time to scrobble: track longer than 30 s and more than half or 4 minutes played.
 pub fn due(position: f64, duration: f64) -> bool {
     duration > 30.0 && position >= (duration / 2.0).min(240.0)
 }

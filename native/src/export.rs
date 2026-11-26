@@ -1,5 +1,5 @@
-//! Экспорт песен в MP3: в папку, с тегами (название, исполнитель, альбом) и обложкой.
-//! Звук с YouTube берётся из кэша (или качается), перекодирует ffmpeg с LAME. Песни по одной — памяти мало.
+//! Export songs to MP3: into a folder, with tags (title, artist, album) and cover.
+//! YouTube audio comes from the cache (or is downloaded); ffmpeg with LAME re-encodes it. One song at a time — memory is tight.
 use std::path::{Path, PathBuf};
 use wavy_core::{ffmpeg::Ffmpeg, youtube::YouTube, Track};
 
@@ -9,7 +9,7 @@ pub struct Report {
     pub failed: Vec<(String, String)>,
 }
 
-/// Имя файла без символов, запрещённых в Windows.
+/// File name without characters forbidden on Windows.
 pub fn safe_name(s: &str) -> String {
     let s: String = s.chars().map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '_' } else { c }).collect();
     let s = s.trim().trim_end_matches(['.', ' ']).to_string();
@@ -23,7 +23,7 @@ fn file_name(t: &Track, n: usize, total: usize) -> String {
     if total > 1 { format!("{:0w$}. {base}.mp3", n, w = total.to_string().len().max(2)) } else { format!("{base}.mp3") }
 }
 
-/// Исходный звук трека: локальный файл, готовый кэш или скачать.
+/// The track's source audio: local file, finished cache, or download.
 fn source(t: &Track, yt: &YouTube, cache: &Path) -> Result<PathBuf, String> {
     if let Some(p) = t.path.as_ref().map(PathBuf::from) {
         return if p.exists() { Ok(p) } else { Err(l!("файла больше нет на диске", "the file is no longer on disk").into()) };
@@ -34,7 +34,7 @@ fn source(t: &Track, yt: &YouTube, cache: &Path) -> Result<PathBuf, String> {
     yt.download_audio(t, cache)
 }
 
-/// Обложка в JPEG (квадрат до 600 px). У YouTube берём кадр 16:9 без чёрных полос и режем по центру.
+/// Cover as JPEG (square up to 600 px). For YouTube we take the 16:9 frame without black bars and crop the center.
 fn cover(t: &Track) -> Option<Vec<u8>> {
     let get = |u: &str| -> Option<Vec<u8>> {
         let mut r = wavy_core::http().get(u).call().ok()?;
@@ -69,7 +69,7 @@ fn tag(path: &Path, t: &Track, pic: Option<Vec<u8>>) -> Result<(), String> {
     if let Some(data) = pic {
         tag.insert_picture(Picture::unchecked(data).pic_type(PictureType::CoverFront).mime_type(MimeType::Jpeg).build());
     }
-    // ID3v2.3 — его понимают и Проводник, и старые плееры, и магнитолы
+    // ID3v2.3 — understood by Explorer, old players and car stereos alike
     let mut opts = WriteOptions::default();
     tag.save_to_path(path, opts.use_id3v23(true)).map_err(|e| lf!("теги: {e}", "tags: {e}"))
 }
@@ -84,7 +84,7 @@ fn convert(ff: &Path, src: &Path, dest: &Path) -> Result<(), String> {
     Err(err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(l!("ffmpeg: ошибка", "ffmpeg: error")).trim().to_string())
 }
 
-/// Одна песня → dest. Уже готовый MP3 копируется как есть (без потерь), остальное перекодируется.
+/// One song → dest. An existing MP3 is copied as is (lossless); everything else is re-encoded.
 fn one(t: &Track, dest: &Path, ff: &Path, yt: &YouTube, cache: &Path) -> Result<(), String> {
     let src = source(t, yt, cache)?;
     let part = dest.with_extension("mp3.part");
@@ -98,10 +98,10 @@ fn one(t: &Track, dest: &Path, ff: &Path, yt: &YouTube, cache: &Path) -> Result<
     std::fs::rename(&part, dest).map_err(|e| e.to_string())
 }
 
-/// Экспорт списка треков в папку `dir`. `status` получает строку прогресса.
+/// Export a list of tracks to folder `dir`. `status` receives a progress line.
 pub fn run(tracks: &[Track], dir: &Path, ff: &Ffmpeg, yt: &YouTube, cache: &Path, status: impl Fn(String)) -> Result<Report, String> {
     std::fs::create_dir_all(dir).map_err(|e| lf!("не удалось создать папку: {e}", "couldn't create the folder: {e}"))?;
-    // MP3-исходники перекодировать не нужно — ffmpeg нужен, только если есть что-то кроме них
+    // MP3 sources don't need re-encoding — ffmpeg is only needed if there's something else
     let need_ff = tracks.iter().any(|t| t.path.as_deref().is_none_or(|p| !p.to_lowercase().ends_with(".mp3")));
     let ffp = if need_ff {
         status(l!("Экспорт: готовлю кодировщик MP3…", "Export: preparing the MP3 encoder…").into());
@@ -143,7 +143,7 @@ mod tests {
 
 #[cfg(test)]
 mod e2e {
-    /// Настоящий экспорт: WAVY_TEST_SRC=файл.m4a WAVY_TEST_BIN=папка-с-codecs/ffmpeg cargo test -- --ignored export_real
+    /// Real export: WAVY_TEST_SRC=file.m4a WAVY_TEST_BIN=folder-with-codecs/ffmpeg cargo test -- --ignored export_real
     #[test]
     #[ignore]
     fn export_real() {

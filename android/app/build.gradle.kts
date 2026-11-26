@@ -5,7 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-// номер сборки передаёт GitHub Actions (-PwavyBuild=N) — по нему работает автообновление
+// build number comes from GitHub Actions (-PwavyBuild=N) — auto-update relies on it
 val wavyBuild = (findProperty("wavyBuild") as String?)?.toIntOrNull() ?: 1
 
 android {
@@ -21,8 +21,8 @@ android {
         buildConfigField("int", "WAVY_BUILD", "$wavyBuild")
     }
 
-    // Подпись релиза постоянным ключом (release.p12 в репо зашифрован паролем из секрета CI
-    // WAVY_KEYSTORE_PASSWORD) — иначе новая версия не встанет поверх старой.
+    // Sign releases with a permanent key (release.p12 in the repo is encrypted with the CI secret
+    // WAVY_KEYSTORE_PASSWORD) — otherwise a new version won't install over the old one.
     val keystorePassword: String? = System.getenv("WAVY_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() }
     signingConfigs {
         create("release") {
@@ -46,7 +46,7 @@ android {
     }
 
     compileOptions {
-        isCoreLibraryDesugaringEnabled = true // нужно NewPipeExtractor
+        isCoreLibraryDesugaringEnabled = true // needed by NewPipeExtractor
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }

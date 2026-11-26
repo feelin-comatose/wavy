@@ -10,7 +10,7 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.util.concurrent.TimeUnit
 
-/** Общий HTTP-клиент приложения. */
+/** Shared HTTP client for the app. */
 object Http {
     const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
@@ -29,7 +29,7 @@ object Http {
     }
 }
 
-/** Загрузчик для NewPipeExtractor поверх OkHttp. */
+/** Downloader for NewPipeExtractor on top of OkHttp. */
 class NewPipeDownloader(private val client: OkHttpClient = Http.client) : Downloader() {
     override fun execute(request: Request): Response {
         val body = request.dataToSend()?.toRequestBody()
