@@ -4,6 +4,7 @@
 pub mod i18n;
 pub mod addons;
 pub mod radio;
+pub mod romaji;
 pub mod anilist;
 pub mod anime;
 pub mod animethemes;

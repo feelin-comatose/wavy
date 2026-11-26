@@ -5761,6 +5761,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "discord-rich-presence",
+ "flate2",
  "libc",
  "lofty",
  "matroska-demuxer",

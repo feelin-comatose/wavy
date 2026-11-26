@@ -43,7 +43,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 - **Likes and "Liked"**: the heart on a track and in the player (`L`). Tracks in playlists, "Liked" and the queue can be reordered with the mouse.
 - **Sorting**: playlist order, "Most played", newest/oldest, by title, artist, album. Your own picture as a playlist cover, folders for playlists.
 - **Sound**: speed (slowed / nightcore), 10-band equalizer with presets, volume normalisation (using the ReplayGain values in your files' tags when they have them), crossfade 1–12 s, sleep timer. Choose the output device (speakers, headphones, USB DAC) in the Sound window; if it's unplugged, Wavy plays through the default one. A small spectrum visualizer plays along in the player bar and under the large cover (it can be switched off there too).
-- **Lyrics** (`T`): synced lyrics from LRCLIB; the current line is highlighted and clicking a line seeks to it. For your own files Wavy first uses a `.lrc` file next to the song or lyrics stored in its tags, so they work offline.
+- **Lyrics** (`T`): synced lyrics from LRCLIB; the current line is highlighted and clicking a line seeks to it. For your own files Wavy first uses a `.lrc` file next to the song or lyrics stored in its tags, so they work offline. Japanese lyrics can show romaji under each line (the "Romaji" switch in the lyrics panel; approximate, from a built-in dictionary).
 - **Recap**: plays, minutes, top tracks and artists for the month, year or all time. Plus a duplicate finder and editing of a track's title, artist, album and cover.
 - **Track radio**: similar songs from a YouTube mix are added to the queue.
 - **Mini player** on top of all windows and a **tray icon** (Windows). The close button can minimise to the tray if you want.
@@ -172,6 +172,8 @@ docs/      addon API reference
 ```
 
 Fonts: Inter (OFL), icons: Phosphor (MIT). Details in `native/assets/README.md`.
+
+Romaji readings come from [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) by the Electronic Dictionary Research and Development Group, used under [CC BY-SA 4.0](https://www.edrdg.org/edrdg/licence.html) (a compact extract is in `core/assets/romaji-dict.tsv.gz`, built by `scripts/build-romaji-dict.py`).
 
 The screenshots use a made-up demo library (artists, covers and anime titles are fictional).
 

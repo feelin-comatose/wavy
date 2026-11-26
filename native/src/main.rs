@@ -365,6 +365,8 @@ struct App {
     al_busy: bool,
     /// own music server sign-in form: address, user, password (the password isn't kept), busy
     sub_form: (String, String, String, bool),
+    /// romaji for the shown lyrics: (track id, one per synced line, for plain lyrics the whole text)
+    romaji: Option<(String, Vec<Option<String>>, String)>,
 }
 
 impl App {
@@ -428,7 +430,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(), romaji: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -1928,7 +1930,7 @@ impl App {
     }
 
     /// Japanese/Chinese/Korean titles: every couple of seconds check whether any appeared
-    /// (library, playlists, search, anime), and if so load the system font once.
+    /// (library, playlists, search, anime, lyrics, the playing track), and if so load the system font once.
     fn cjk_tick(&mut self, ctx: &egui::Context) {
         if self.cjk_loaded || self.cjk_check.elapsed() < Duration::from_secs(2) { return; }
         self.cjk_check = Instant::now();
@@ -1941,7 +1943,10 @@ impl App {
             || has_cjk(&self.filter) || has_cjk(&self.search_q)
             || self.toast.as_ref().is_some_and(|t| has_cjk(&t.0))
             || matches!(&self.modal, Some(Modal::Shazam { state: ShazamState::Found(f), .. }) if has_cjk(&f.title) || has_cjk(&f.artist))
-            || matches!(&self.modal, Some(Modal::AnimeMatch { results, .. }) if results.iter().any(|r| has_cjk(r.display())));
+            || matches!(&self.modal, Some(Modal::AnimeMatch { results, .. }) if results.iter().any(|r| has_cjk(r.display())))
+            // lyrics: a song with a Latin title can still have Japanese lyrics; also radio song titles (current track only)
+            || matches!(&self.lyrics, Some((_, Some(Ok(l)))) if has_cjk(&l.plain) || l.synced.iter().any(|(_, t)| has_cjk(t)))
+            || self.current.as_ref().is_some_and(|t| has_cjk(&t.title) || has_cjk(&t.artist));
         if !found { return; }
         self.cjk_loaded = true;
         let fonts = load_cjk_fonts();
@@ -3613,6 +3618,21 @@ impl App {
         ui.separator();
         if self.current.is_none() { ui.label(RichText::new(l!("Ничего не играет", "Nothing is playing")).color(th().muted)); return };
         self.ensure_lyrics(ui.ctx());
+        // Japanese lyrics: a "Romaji" switch, and the romaji (computed once per song)
+        let show_romaji = self.settings().romaji;
+        if let Some((id, Some(Ok(l)))) = &self.lyrics {
+            let japanese = l.synced.iter().any(|(_, t)| wavy_core::romaji::has_japanese(t)) || wavy_core::romaji::has_japanese(&l.plain);
+            if japanese {
+                let mut on = show_romaji;
+                if ui.checkbox(&mut on, l!("Ромадзи (латиницей)", "Romaji")).on_hover_text(l!("Японский текст латиницей — примерно: слово не всегда читается так, как в словаре", "Japanese lyrics in Latin letters — approximate: a word isn't always read the way the dictionary says")).changed() { acts.push(Act::Settings(json!({"romaji": on}))); }
+                if on && self.romaji.as_ref().is_none_or(|r| &r.0 != id) {
+                    let lines = l.synced.iter().map(|(_, t)| wavy_core::romaji::line(t)).collect();
+                    let plain = l.plain.lines().map(|t| match wavy_core::romaji::line(t) { Some(r) => format!("{t}\n{r}"), None => t.to_string() }).collect::<Vec<_>>().join("\n");
+                    self.romaji = Some((id.clone(), lines, plain));
+                }
+            }
+        }
+        let romaji = if show_romaji { self.romaji.as_ref().filter(|r| self.lyrics.as_ref().is_some_and(|l| l.0 == r.0)).cloned() } else { None };
         let Some((_, slot)) = &self.lyrics else { return };
         match slot {
             None => { ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new(l!("Ищу текст…", "Looking for lyrics…")).color(th().muted)); }); }
@@ -3623,7 +3643,8 @@ impl App {
                 ui.label(RichText::new(l!("Тексты берутся из открытой базы LRCLIB. Если у трека странное название — поправь его (правый клик → «Изменить…»).", "Lyrics come from the open LRCLIB database. If the track has a weird title, fix it (right click → “Edit…”).")).color(th().muted).size(12.0));
             }
             Some(Ok(l)) if l.synced.is_empty() => {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| { ui.label(RichText::new(&l.plain).size(14.0).color(th().text)); });
+                let text = romaji.as_ref().map(|r| r.2.clone()).unwrap_or_else(|| l.plain.clone());
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| { ui.label(RichText::new(text).size(14.0).color(th().text)); });
             }
             Some(Ok(l)) => {
                 let l = l.clone();
@@ -3640,6 +3661,9 @@ impl App {
                             .color(if on { th().text } else if cur.is_some_and(|c| i < c) { th().muted.gamma_multiply(0.6) } else { th().muted })).wrap().sense(Sense::click()));
                         if r.clicked() { acts.push(Act::Seek(*time)); }
                         if on && jump { r.scroll_to_me(Some(Align::Center)); }
+                        if let Some(rj) = romaji.as_ref().and_then(|r| r.1.get(i).cloned().flatten()) {
+                            ui.add(egui::Label::new(RichText::new(rj).size(if on { 13.5 } else { 12.0 }).color(if on { th().accent } else { th().muted })).wrap());
+                        }
                         ui.add_space(6.0);
                     }
                     ui.add_space(200.0);
