@@ -99,6 +99,25 @@ impl Audio {
         Ok(())
     }
 
+    /// Internet radio: decode from the station buffer (endless, no seeking).
+    pub fn load_radio(&mut self, reader: wavy_core::radio::RadioReader, codec: &str, volume: f32) -> Result<(), String> {
+        if self.player.is_none() { self.open(); }
+        self.stream = None;
+        self.volume = volume;
+        let p = self.player.as_ref().ok_or_else(|| self.error.clone().unwrap_or_default())?;
+        p.clear();
+        self.loaded = false;
+        let dec = rodio::Decoder::builder().with_data(std::io::BufReader::new(reader)).with_seekable(false).with_hint(codec)
+            .build().map_err(|e| lf!("не удалось декодировать станцию: {e}", "couldn't decode the station: {e}"))?;
+        self.duration = 0.0;
+        self.pos = Default::default();
+        p.append(crate::fx::Fx::new(dec, self.fx.clone(), self.pos.clone()));
+        p.set_volume(if self.fade_in.is_some() { 0.0 } else { volume });
+        p.play();
+        self.loaded = true;
+        Ok(())
+    }
+
     /// A seek waiting for the download (for the "buffering…" indicator).
     pub fn buffering(&self) -> bool { self.stream.as_ref().is_some_and(|s| s.1.is_some()) }
 

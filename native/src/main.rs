@@ -53,6 +53,8 @@ enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
 enum UpdState { Checking, Downloading(u32), Ready(u32), UpToDate, Error(String) }
 
 enum Bg {
+    /// internet radio connected (or not): (load token, track id, station + buffer)
+    RadioReady(u64, String, Result<(wavy_core::radio::Station, wavy_core::radio::Radio), String>),
     Status(String),
     OpenPlaylist(String),
     Search(Result<Vec<Track>, String>),
@@ -337,6 +339,10 @@ struct App {
     /// watched folders: when they were last checked, and whether a scan is running
     watch_checked: Instant,
     watch_busy: Arc<std::sync::atomic::AtomicBool>,
+    /// internet radio playing now: track id, station buffer, last song title shown
+    station: Option<(String, wavy_core::radio::Radio, String)>,
+    /// radio connection lost: when to try again
+    radio_retry: Option<Instant>,
 }
 
 impl App {
@@ -399,7 +405,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -530,15 +536,27 @@ impl App {
         self.current = Some(t.clone());
         self.shown_at = Instant::now();
         self.audio.stop();
+        self.station = None;
+        self.radio_retry = None;
         self.prepare_media(&t);
         if t.is_local() {
             let path = PathBuf::from(t.path.clone().unwrap_or_default());
             self.start_file(&path);
+        } else if t.kind == "radio" {
+            self.loading = true;
+            self.push_state();
+            let (tx, c, url, id) = (self.tx.clone(), ctx.clone(), t.url.clone().unwrap_or_default(), t.id.clone());
+            std::thread::spawn(move || {
+                let r = wavy_core::radio::probe(&url).and_then(|st| st.ok_or_else(|| l!("по ссылке больше нет радиостанции", "there's no radio station at this link anymore").to_string()))
+                    .and_then(|st| wavy_core::radio::Radio::open(&st).map(|r| (st, r)));
+                let _ = tx.send(Bg::RadioReady(token, id, r));
+                c.request_repaint();
+            });
         } else {
             self.loading = true;
             self.push_state();
             let (yt, tx, cache, c) = (self.yt.clone(), self.tx.clone(), self.cache.clone(), ctx.clone());
-            let next = self.queue.get(self.qi + 1).and_then(|n| self.track(n)).filter(|n| !n.is_local());
+            let next = self.queue.get(self.qi + 1).and_then(|n| self.track(n)).filter(|n| !n.is_local() && n.kind != "radio");
             std::thread::spawn(move || {
                 let t0 = Instant::now();
                 let mut res = fetch_audio(&yt, &t, &cache);
@@ -685,6 +703,15 @@ impl App {
     /// continues from the same place — up to twice per track, then moves on to the next one.
     fn recover_cut(&mut self, ctx: &egui::Context) -> bool {
         let Some(t) = self.current.clone() else { return false };
+        // internet radio never "ends": the connection dropped — reconnect (a few times, then move on)
+        if t.kind == "radio" {
+            let n = match &self.cut_retries { Some((id, n)) if *id == t.id => *n, _ => 0 };
+            if n >= 5 { return false; }
+            self.cut_retries = Some((t.id.clone(), n + 1));
+            wavy_core::log(&format!("радио «{}» оборвалось — переподключаюсь", t.title));
+            self.load_current(ctx);
+            return true;
+        }
         if t.is_local() || t.duration < 15.0 { return false; }
         let pos = self.audio.position();
         let dur = if self.audio.duration > 0.0 { self.audio.duration } else { t.duration };
@@ -799,6 +826,11 @@ impl App {
                     let mut s = store.lock().unwrap();
                     s.add_tracks(tracks);
                     let target = if let Some(pid) = pid { s.add_to_playlist(&pid, &ids); Some(pid) }
+                        else if source == "radio" {
+                            // all stations live in one "Radio" playlist (found by its name in either language)
+                            let existing = s.lib.playlists.iter().find(|p| p.name == "Радио" || p.name == "Radio").map(|p| p.id.clone());
+                            Some(match existing { Some(id) => { s.add_to_playlist(&id, &ids); id } None => s.create_playlist(l!("Радио", "Radio"), ids, None).id })
+                        }
                         else { name.map(|name| s.create_playlist(&name, ids, Some(source)).id) };
                     let _ = tx.send(Bg::Status(lf!("Добавлено {n} трек(ов){note}", "Added {n} track(s){note}")));
                     if let Some(t) = &target { let _ = tx.send(Bg::OpenPlaylist(t.clone())); }
@@ -1418,6 +1450,27 @@ impl App {
     /// Background thread messages, end of track, hotkeys, drag & drop.
     fn tick(&mut self, ctx: &egui::Context) {
         self.thumbs.poll(ctx);
+        // internet radio: the station sent a new song title — show it (song as the title, station as the artist)
+        let song = self.station.as_ref().map(|(id, r, shown)| (id.clone(), r.title.lock().unwrap().clone(), shown.clone()));
+        if let Some((id, song, shown)) = song.filter(|(_, song, shown)| song != shown) {
+            let _ = shown;
+            if let Some(s) = self.station.as_mut() { s.2 = song.clone(); }
+            let name = self.store.lock().unwrap().lib.tracks.get(&id).map(|t| t.title.clone()).unwrap_or_default();
+            if let Some(cur) = self.current.as_mut().filter(|c| c.id == id) {
+                let (artist, title) = song.split_once(" - ").map(|(a, t)| (a.trim().to_string(), t.trim().to_string())).unwrap_or((String::new(), song.clone()));
+                cur.title = title;
+                cur.artist = if artist.is_empty() { name } else { format!("{artist} · {name}") };
+                self.lyrics = None; // lyrics belong to the song, not the station
+                self.push_state();
+            }
+        }
+        if self.station.is_some() { ctx.request_repaint_after(Duration::from_secs(1)); }
+        if let Some(at) = self.radio_retry {
+            if Instant::now() >= at {
+                self.radio_retry = None;
+                if self.current.as_ref().is_some_and(|t| t.kind == "radio") { self.load_current(ctx); }
+            } else { ctx.request_repaint_after(at - Instant::now()); }
+        }
         let st = self.settings();
         self.audio.fx.set(fx::Settings { speed: st.speed, eq_on: st.eq_on, eq: st.eq, normalize: st.normalize });
         if self.audio.tick() { ctx.request_repaint_after(Duration::from_millis(40)); }
@@ -1572,6 +1625,31 @@ impl App {
                     if let UpdState::Ready(n) = &st { self.toast(lf!("Новая версия (сборка {n}) установлена — перезапусти плеер", "New version (build {n}) installed — restart the player"), false); }
                     if let UpdState::Error(e) = &st { wavy_core::log(&format!("обновление: {e}")); }
                     self.upd = Some(st);
+                }
+                Bg::RadioReady(token, id, r) => {
+                    if token != self.token { continue; } // the user already switched to something else
+                    self.loading = false;
+                    match r {
+                        Ok((st, radio)) => {
+                            let vol = self.settings().volume;
+                            match self.audio.load_radio(radio.reader(), &st.codec, vol * vol) {
+                                Ok(()) => { self.station = Some((id, radio, String::new())); if self.cut_retries.as_ref().is_some_and(|c| c.1 > 0) { self.cut_retries = None; } }
+                                Err(e) => self.toast(e, true),
+                            }
+                        }
+                        Err(e) => {
+                            // a reconnect that failed (the station is restarting, the network is back soon): try again in a few seconds
+                            let n = match &self.cut_retries { Some((cid, n)) if *cid == id => *n, _ => 0 };
+                            if n > 0 && n < 5 {
+                                self.cut_retries = Some((id, n + 1));
+                                self.radio_retry = Some(Instant::now() + Duration::from_secs(3));
+                                self.toast(l!("Радио: связь пропала, пробую снова…", "Radio: connection lost, trying again…"), false);
+                            } else {
+                                self.toast(lf!("Радио: {e}", "Radio: {e}"), true);
+                            }
+                        }
+                    }
+                    self.push_state();
                 }
                 Bg::ImportDone(r) => {
                     if let Err(e) = r {
@@ -2252,7 +2330,7 @@ impl App {
                             if resp.on_hover_text(if on { l!("Убрать из «Любимого»", "Remove from “Liked”") } else { l!("В «Любимое»", "Add to “Liked”") }).clicked() { acts.push(Act::Like(vec![id.clone()], !on)); }
                         }
                     });
-                    row.col(|ui| { ui.label(RichText::new(fmt_time(t.duration)).color(th().muted)); });
+                    row.col(|ui| { ui.label(RichText::new(dur_label(&t)).color(th().muted)); });
                     let r = row.response();
                     if r.hovered() || r.contains_pointer() { self.hover_row = Some(id.clone()); }
                     if can_drag {
@@ -2448,7 +2526,7 @@ impl App {
                             ui.add(egui::Label::new(RichText::new(file).color(th().muted).size(11.5)).truncate());
                         });
                     });
-                    row.col(|ui| { ui.label(RichText::new(fmt_time(t.duration)).color(th().muted)); });
+                    row.col(|ui| { ui.label(RichText::new(dur_label(&t)).color(th().muted)); });
                     let r = row.response();
                     if r.double_clicked() { acts.push(Act::PlayAnime(a.id.clone(), Some(t.id.clone()))); }
                     r.context_menu(|ui| {
@@ -2486,7 +2564,7 @@ impl App {
                         ui.add(egui::Label::new(RichText::new(&t.title).color(if cur.as_deref() == Some(&t.id) { th().accent } else { th().text })).truncate());
                         ui.add(egui::Label::new(RichText::new(wavy_core::i18n::tr(&t.artist)).color(th().muted).size(12.5)).truncate());
                     });
-                    ui.label(RichText::new(fmt_time(t.duration)).color(th().muted));
+                    ui.label(RichText::new(dur_label(&t)).color(th().muted));
                     ui.add_space(10.0);
                     if pill(ui, "\u{E3D0}", false).clicked() { acts.push(Act::Play(ids.clone(), i, false)); }
                     if ui.add_enabled(!in_lib, egui::Button::new(if in_lib { l!("В библиотеке", "In library") } else { l!("+ В библиотеку", "+ To library") }).corner_radius(99)).clicked() { acts.push(Act::AddTracks(vec![t.clone()])); }
@@ -2507,7 +2585,7 @@ impl App {
                 ui.painter().text(r.center(), Align2::CENTER_CENTER, "\u{E33C}", FontId::proportional(size * 0.4), th().muted);
             }
         }
-        if !t.is_local() { ui.painter().rect_filled(Rect::from_min_size(r.right_bottom() - Vec2::splat(10.0), Vec2::splat(10.0)), 3, Color32::from_rgb(0xff, 0, 0x33)); }
+        if !t.is_local() && t.kind != "radio" { ui.painter().rect_filled(Rect::from_min_size(r.right_bottom() - Vec2::splat(10.0), Vec2::splat(10.0)), 3, Color32::from_rgb(0xff, 0, 0x33)); }
     }
 
     fn player_bar(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -2570,6 +2648,15 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     let dur = if self.audio.duration > 0.0 { self.audio.duration } else { self.current.as_ref().map(|t| t.duration).unwrap_or(0.0) };
+                    // live radio: how long you've been listening, a full bar, "LIVE"; no seeking
+                    let live = self.current.as_ref().is_some_and(|t| t.kind == "radio");
+                    if live {
+                        ui.label(RichText::new(fmt_time(self.audio.position())).size(12.0).color(th().muted));
+                        let sw = (ui.available_width() - 48.0).max(60.0);
+                        bar(ui, if self.audio.is_playing() { 1.0 } else { 0.0 }, sw);
+                        ui.label(RichText::new(l!("ЭФИР", "LIVE")).size(11.0).family(semi()).color(th().accent));
+                        return;
+                    }
                     let pos = self.seek_drag.unwrap_or(self.audio.position()).min(dur.max(0.0));
                     ui.label(RichText::new(fmt_time(pos)).size(12.0).color(th().muted));
                     let sw = (ui.available_width() - 48.0).max(60.0);
@@ -4615,6 +4702,15 @@ fn fetch_url(url: &str, yt: &YouTube, store: &Arc<Mutex<Store>>, tx: &Sender<Bg>
         if r.truncated { note += l!(". Spotify без ключа отдаёт только первые 100 треков — ключ добавляется в Настройках", ". Spotify without a key only gives the first 100 tracks — the key is added in Settings"); }
         Ok(((kind != "track").then_some(r.name), r.source, r.tracks, note, r.not_found))
     } else {
+        // an internet radio station (Icecast/SHOUTcast stream, or a .pls/.m3u pointing at one)?
+        let host = url.split("://").nth(1).unwrap_or("").to_ascii_lowercase();
+        let known = ["youtube.", "youtu.be", "soundcloud.", "bandcamp.", "vk.com", "twitch.", "vimeo."].iter().any(|k| host.contains(k));
+        if !known {
+            if let Ok(Some(st)) = wavy_core::radio::probe(url) {
+                let t = wavy_core::radio::station_track(url, &st);
+                return Ok((None, "radio".into(), vec![t], l!(" — радиостанция, она в плейлисте «Радио»", " — a radio station, it's in the “Radio” playlist").into(), Vec::new()));
+            }
+        }
         let r = yt.import_url(url.trim(), &status)?;
         Ok((r.name, r.source, r.tracks, String::new(), Vec::new()))
     }
@@ -4951,6 +5047,9 @@ fn main() -> eframe::Result {
         Ok(Box::new(app))
     }))
 }
+
+/// Duration column: "3:24", or "live" for a radio station.
+fn dur_label(t: &Track) -> String { if t.kind == "radio" { l!("эфир", "live").into() } else { fmt_time(t.duration) } }
 
 /// Unix milliseconds → "21.11.2026".
 fn fmt_date(ms: u64) -> String {

@@ -45,7 +45,8 @@ class PlaybackService : MediaSessionService() {
             .setBufferDurationsMs(15_000, 120_000, 1_000, 2_000)
             .build()
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCache.Factory(this, base, resolving)))
+            // not cached ("direct") still goes through `resolving`: radio links are resolved there
+            .setMediaSourceFactory(DefaultMediaSourceFactory(MediaCache.Factory(this, resolving, resolving)))
             .setLoadControl(loadControl)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             .setHandleAudioBecomingNoisy(true) // headphones unplugged — pause

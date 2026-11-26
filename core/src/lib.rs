@@ -3,6 +3,7 @@
 #[macro_use]
 pub mod i18n;
 pub mod addons;
+pub mod radio;
 pub mod anime;
 pub mod animethemes;
 pub mod aniskip;

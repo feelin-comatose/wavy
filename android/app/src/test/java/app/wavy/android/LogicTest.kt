@@ -177,6 +177,13 @@ class LogicTest {
         assertEquals("LiSA" to "Gurenge", app.wavy.android.data.Lyrics.clean(yt("y", "LiSA - Gurenge (Official Video)", "LiSA Official", 200.0)))
     }
 
+    @Test fun radioLinks() {
+        val m = app.wavy.android.player.Media
+        assertEquals("http://ice.example:8000/live", m.radioPlaylistEntry("[playlist]\nNumberOfEntries=1\nFile1=http://ice.example:8000/live\nTitle1=X\n"))
+        assertEquals("https://s.example/stream.mp3", m.radioPlaylistEntry("#EXTM3U\n#EXTINF:-1,Station\nhttps://s.example/stream.mp3\n"))
+        assertNull(m.radioPlaylistEntry("<html>nope</html>"))
+    }
+
     @Test fun spotifyCleanTitle() {
         assertEquals("come together", Spotify.cleanTitle("Come Together - Remastered 2009"))
         assertEquals("stay", Spotify.cleanTitle("Stay (feat. Justin Bieber)"))
