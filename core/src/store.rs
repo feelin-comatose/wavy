@@ -48,6 +48,11 @@ impl Default for OverlaySettings { fn default() -> Self { Self { port: 3737, the
 pub struct OverlayWindowSettings { pub visible: bool, pub locked: bool, pub bounds: Option<[f32; 4]> }
 impl Default for OverlayWindowSettings { fn default() -> Self { Self { visible: false, locked: true, bounds: None } } }
 
+/// A watched music folder and when it was last scanned (ms; 0 — never: the first scan takes everything).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WatchFolder { pub path: String, pub last_scan: u64 }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -69,6 +74,8 @@ pub struct Settings {
     pub addons: Vec<String>,
     /// Audio output device name; empty — the system default.
     pub audio_device: String,
+    /// Watched music folders: new files in them are added to the library on their own.
+    pub watch_folders: Vec<WatchFolder>,
     pub spotify: SpotifySettings,
     /// Sorting: "library" or playlist id → method (see Sort).
     pub sort: HashMap<String, String>,
@@ -119,7 +126,7 @@ pub struct Settings {
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, lang: "ru".into(), theme: "dark".into(), accent: String::new(), addons: Vec::new(), audio_device: String::new(), spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), yt_account: false, hotkeys: HashMap::new(), lastfm: Default::default(), backup_dir: String::new(), last_backup: 0 }
+        Self { volume: 0.8, shuffle: false, repeat: "off".into(), discord: Default::default(), overlay: Default::default(), overlay_window: Default::default(), auto_update: true, lang: "ru".into(), theme: "dark".into(), accent: String::new(), addons: Vec::new(), audio_device: String::new(), watch_folders: Vec::new(), spotify: Default::default(), sort: HashMap::new(), last_build: None, mini: false, mini_pos: None, close_to_tray: false, speed: 1.0, crossfade: 0.0, normalize: false, eq_on: false, eq: [0.0; 10], anime_autoskip: false, anime_next: true, shiki: Default::default(), twitch_channel: String::new(), twitch_sr: false, twitch_max_min: 10, twitch_account: Default::default(), twitch_skip_votes: 3, twitch_reward: String::new(), now_playing_file: false, cache_limit_gb: 0, wifi_sync: false, wifi_pin: String::new(), yt_cookies: String::new(), yt_account: false, hotkeys: HashMap::new(), lastfm: Default::default(), backup_dir: String::new(), last_backup: 0 }
     }
 }
 

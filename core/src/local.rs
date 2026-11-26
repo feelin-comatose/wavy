@@ -39,6 +39,17 @@ fn parse_m3u(file: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Audio files in `dir` (recursively) created or modified after `since_ms` (0 — all of them).
+/// Creation time counts too: a copied file often keeps its old modification time but gets a new creation time.
+pub fn changed_since(dir: &Path, since_ms: u64) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    if since_ms == 0 { return files; }
+    let ms = |t: std::io::Result<std::time::SystemTime>| t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0);
+    files.retain(|f| std::fs::metadata(f).is_ok_and(|m| ms(m.modified()).max(ms(m.created())) > since_ms));
+    files
+}
+
 pub fn local_id(p: &Path) -> String {
     let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     format!("loc_{}", sha16(abs.to_string_lossy().as_bytes()))
@@ -114,4 +125,28 @@ pub fn import_paths(paths: &[PathBuf], covers: &Path, mut progress: impl FnMut(u
         t
     }).collect();
     ImportResult { tracks, playlists }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    #[test]
+    fn only_new_files_after_the_first_scan() {
+        let d = std::env::temp_dir().join(format!("wavy-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("Album")).unwrap();
+        std::fs::write(d.join("Album/old.mp3"), b"x").unwrap();
+        std::fs::write(d.join("notes.txt"), b"x").unwrap();
+        assert_eq!(changed_since(&d, 0).len(), 1); // first scan: everything (audio only)
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let scan = now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(changed_since(&d, scan).is_empty());
+        std::fs::write(d.join("Album/new.flac"), b"x").unwrap();
+        let v = changed_since(&d, scan);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].ends_with("new.flac"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -143,6 +143,8 @@ enum Act {
     AddonToggle(String, bool), AddonRestart(String), AddonsRescan,
     /// put back the last deleted tracks/playlist/anime
     Undo,
+    /// watched music folders: add (dialog), remove, scan now
+    WatchAdd, WatchRemove(String), WatchScan,
     View(View), ImportFiles, ImportFolder, ImportPaths(Vec<PathBuf>, Option<String>), ImportUrl(String, Option<String>),
     Search(String), AddTracks(Vec<Track>), PlayNext(Vec<String>), Enqueue(Vec<String>),
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
@@ -332,6 +334,9 @@ struct App {
     devices: Option<(Instant, Vec<String>)>,
     /// last delete, for Undo: what was removed, message, when
     undo: Option<(wavy_core::store::Removed, String, Instant)>,
+    /// watched folders: when they were last checked, and whether a scan is running
+    watch_checked: Instant,
+    watch_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -394,7 +399,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(),
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -984,6 +989,20 @@ impl App {
                 if on { self.run_addon(&id); } else { self.addon_run.stop(&id); self.addon_run.exited.remove(&id); }
             }
             Act::AddonRestart(id) => self.run_addon(&id),
+            Act::WatchAdd => {
+                let Some(dir) = rfd::FileDialog::new().set_title(l!("Папка с музыкой", "Music folder")).pick_folder() else { return };
+                let path = dir.to_string_lossy().into_owned();
+                let mut list = self.settings().watch_folders;
+                if list.iter().any(|w| w.path == path) { return; }
+                list.push(wavy_core::store::WatchFolder { path, last_scan: 0 });
+                self.store.lock().unwrap().patch_settings(&json!({"watchFolders": list}));
+                self.scan_watched(ctx);
+            }
+            Act::WatchRemove(path) => {
+                let list: Vec<_> = self.settings().watch_folders.into_iter().filter(|w| w.path != path).collect();
+                self.store.lock().unwrap().patch_settings(&json!({"watchFolders": list}));
+            }
+            Act::WatchScan => self.scan_watched(ctx),
             Act::Undo => if let Some((r, _, _)) = self.undo.take() {
                 self.store.lock().unwrap().undo(&r);
                 self.toast(l!("Возвращено", "Restored"), false);
@@ -3226,6 +3245,33 @@ impl App {
         self.api_tick(ctx);
     }
 
+    /// Watched folders: add files that appeared since the last scan (the first scan takes everything).
+    /// Deleted tracks don't come back: their files are older than the last scan.
+    fn scan_watched(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        self.watch_checked = Instant::now();
+        let folders = self.settings().watch_folders;
+        if folders.is_empty() || self.watch_busy.swap(true, Ordering::SeqCst) { return; }
+        let (store, covers, busy, tx, c) = (self.store.clone(), self.covers.clone(), self.watch_busy.clone(), self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let mut added = 0;
+            for w in folders {
+                let started = wavy_core::now_ms();
+                let dir = PathBuf::from(&w.path);
+                if !dir.is_dir() { continue; } // a disconnected drive: try again next time, don't move last_scan
+                let files: Vec<PathBuf> = { let s = store.lock().unwrap(); local::changed_since(&dir, w.last_scan).into_iter().filter(|f| !s.lib.tracks.contains_key(&local::local_id(f))).collect() };
+                let res = if files.is_empty() { None } else { Some(local::import_paths(&files, &covers, |_, _| {})) };
+                let mut s = store.lock().unwrap();
+                if let Some(res) = res { added += res.tracks.len(); s.add_tracks(res.tracks); }
+                if let Some(x) = s.lib.settings.watch_folders.iter_mut().find(|x| x.path == w.path) { x.last_scan = started; }
+                s.save();
+            }
+            if added > 0 { wavy_core::log(&format!("папки с музыкой: добавлено {added}")); let _ = tx.send(Bg::Status(lf!("Новое в папках с музыкой: {added}", "New in your music folders: {added}"))); }
+            busy.store(false, Ordering::SeqCst);
+            c.request_repaint();
+        });
+    }
+
     /// Remember a delete for Undo (the bar with the button shows for a few seconds).
     fn offer_undo(&mut self, r: wavy_core::store::Removed, msg: String) {
         if r.is_empty() { return; }
@@ -3270,6 +3316,10 @@ impl App {
 
     /// Addon API: run commands from addons, publish the player state a few times a second, notice exited addons.
     fn api_tick(&mut self, ctx: &egui::Context) {
+        // watched music folders: every 5 minutes (the first time ~10 s after launch)
+        if self.watch_checked.elapsed() > Duration::from_secs(300) { self.scan_watched(ctx); }
+        // an idle window doesn't redraw on its own — ask to be woken for the next check
+        if !self.settings().watch_folders.is_empty() { ctx.request_repaint_after(Duration::from_secs(300).saturating_sub(self.watch_checked.elapsed()) + Duration::from_millis(50)); }
         let cmds: Vec<(String, serde_json::Value)> = self.api_rx.try_iter().collect();
         let cmds_empty = cmds.is_empty();
         for (cmd, v) in cmds {
@@ -4139,6 +4189,21 @@ impl App {
                             }
                         });
                         ui.label(RichText::new(l!("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды", "Keys in the window: Space — pause · ←/→ — ±5 s · Ctrl+←/→ — track · ↑/↓ — volume · M — mute · L — like · Q — queue · S — shuffle · R — repeat · Ctrl+F — search · Ctrl+K — commands")).color(th().muted).size(12.0));
+                        section(ui, l!("Папки с музыкой", "Music folders"));
+                        ui.label(RichText::new(l!("Новые файлы в этих папках сами появляются в библиотеке (проверка раз в 5 минут). Удалённые из библиотеки треки обратно не добавляются.", "New files in these folders show up in the library on their own (checked every 5 minutes). Tracks you delete from the library aren't added back.")).color(th().muted).size(12.5));
+                        for w in &s.watch_folders {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Label::new(RichText::new(&w.path).color(th().text)).truncate());
+                                if ui.link(l!("убрать", "remove")).clicked() { acts.push(Act::WatchRemove(w.path.clone())); }
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            if pill(ui, l!("Добавить папку…", "Add folder…"), false).clicked() { acts.push(Act::WatchAdd); }
+                            if !s.watch_folders.is_empty() {
+                                let busy = self.watch_busy.load(std::sync::atomic::Ordering::SeqCst);
+                                if ui.add_enabled(!busy, pill_btn(if busy { l!("Проверяю…", "Checking…") } else { l!("Проверить сейчас", "Check now") }, false)).clicked() { acts.push(Act::WatchScan); }
+                            }
+                        });
                         section(ui, l!("Аддоны", "Addons"));
                         ui.label(RichText::new(l!("Аддоны — отдельные программы, которые управляют Wavy через локальный API: кладёшь папку аддона в папку аддонов и включаешь его здесь. Описание API — docs/addons.md в репозитории.", "Addons are separate programs that control Wavy through a local API: put an addon's folder into the addons folder and enable it here. The API is described in docs/addons.md in the repository.")).color(th().muted).size(12.5));
                         ui.horizontal(|ui| {
