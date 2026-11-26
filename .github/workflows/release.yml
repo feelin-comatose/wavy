@@ -40,7 +40,7 @@ jobs:
           name: Wavy-windows
           path: dist/Wavy.exe
 
-  # Memory budget (CLAUDE.md): the Linux build plays music and video from a demo library, and its private
+  # Desktop tests and the memory budget (CLAUDE.md): the Linux build plays music and video from a demo library, and its private
   # memory is measured (scripts/mem-check.py). Over 100 MB while playing music blocks the release.
   # No GPU here, so the in-process software renderer adds ~8 MB compared with a real PC.
   memory:
@@ -60,6 +60,10 @@ jobs:
 
       - name: Measure
         run: python3 scripts/mem-check.py target/release/wavy-native --cycles 2
+
+      # the desktop app's own tests (player, effects, visualizer, themes…) and the developer examples
+      - name: Desktop tests
+        run: cargo test --release -p wavy-native
 
   # Small ffmpeg.exe for HEVC/10-bit/VP9/AV1 video and Opus/AC3/DTS audio (the player downloads it when needed).
   # Rebuilt only when the script changes — otherwise taken from the cache.
