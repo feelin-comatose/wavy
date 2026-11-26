@@ -117,7 +117,7 @@ fun RemoteScreen(addr: String, pin: String, back: () -> Unit, initial: Remote.St
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 IconButton({ send("prev") }) { Icon(Icons.Rounded.SkipPrevious, L("Предыдущий", "Previous"), Modifier.size(34.dp)) }
                 Box(Modifier.size(68.dp).background(Accent, CircleShape).clickable { send("toggle") }, contentAlignment = Alignment.Center) {
-                    Icon(if (s.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (s.playing) L("Пауза", "Pause") else L("Играть", "Play"), tint = Bg, modifier = Modifier.size(36.dp))
+                    Icon(if (s.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (s.playing) L("Пауза", "Pause") else L("Играть", "Play"), tint = OnAccent, modifier = Modifier.size(36.dp))
                 }
                 IconButton({ send("next") }) { Icon(Icons.Rounded.SkipNext, L("Следующий", "Next"), Modifier.size(34.dp)) }
             }

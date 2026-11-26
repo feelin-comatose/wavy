@@ -51,6 +51,8 @@ data class Settings(
     val lang: String = "ru",
     /** interface theme id (ui/Theme.kt): dark, amoled, light, ocean, sakura, forest, amber */
     val theme: String = "dark",
+    /** custom accent "#rrggbb" on top of the theme; "" — the theme's own */
+    val accent: String = "",
 )
 
 /** Saved queue — to pick up where you left off after a restart. */

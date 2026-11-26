@@ -70,7 +70,7 @@ class ScreenshotTest {
     }
 
     // themes: the palette is global, so put it back for the other tests
-    @After fun reset() { Themes.set("dark"); app.wavy.android.data.Lang.set("ru") }
+    @After fun reset() { Themes.set("dark", ""); app.wavy.android.data.Lang.set("ru") }
     /** English screenshots for the README (screenshots/android.png). */
     private fun readme(theme: String, name: String, content: @Composable () -> Unit) { Store.settings { it.copy(lang = "en") }; themed(theme, "en-$name", content) }
     @Test fun readmeLibrary() = readme("dark", "library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
@@ -91,6 +91,9 @@ class ScreenshotTest {
     @Test fun oceanLibrary() = themed("ocean", "library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }
     @Test fun sakuraPlayer() = themed("sakura", "player") { FullPlayer {} }
     @Test fun forestSettings() = themed("forest", "settings") { SettingsScreen({}, {}, {}, {}) }
+    // a custom accent on top of a theme: bright (dark icons on it) and dark (white icons on it)
+    @Test fun accentBrightPlayer() { Store.settings { it.copy(accent = "#f59e0b") }; themed("dark", "accent-bright-player") { FullPlayer {} } }
+    @Test fun accentDarkSettings() { Store.settings { it.copy(accent = "#3b82f6") }; themed("light", "accent-dark-settings") { SettingsScreen({}, {}, {}, {}) } }
     @Test fun amberPlaylist() = themed("amber", "playlist") { PlaylistsScreen(Store.lib.value.playlists.first().id, {}, {}, {}) }
 
     @Test fun library() = shot("1-library") { Column { Box(Modifier.weight(1f)) { LibraryScreen({}, {}, {}) }; MiniPlayer {} } }

@@ -33,6 +33,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -67,12 +73,25 @@ fun SettingsScreen(
                     Pill(L(names.first, names.second), primary = s.theme == id) { Store.settings { it.copy(theme = id) } }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            Text(L("Цвет акцента", "Accent color"), color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // the theme's own accent, then the swatches
+                val own = Themes.list.firstOrNull { it.first == s.theme }?.third?.accent ?: Accent
+                Swatch(own, s.accent.isEmpty(), L("Как в теме", "Theme default")) { Store.settings { it.copy(accent = "") } }
+                Themes.accents.forEach { hex -> Swatch(Themes.parseHex(hex)!!, s.accent.equals(hex, true), hex) { Store.settings { it.copy(accent = hex) } } }
+            }
+            Spacer(Modifier.height(8.dp))
+            var hex by remember(s.accent) { mutableStateOf(s.accent) }
+            OutlinedTextField(hex, { v -> hex = v.take(7); if (Themes.parseHex(hex) != null) Store.settings { it.copy(accent = "#" + hex.trim().removePrefix("#").lowercase()) } },
+                label = { Text(L("Свой цвет: #rrggbb", "Custom color: #rrggbb")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
         }
 
         Section(L("Мини-плеер поверх приложений", "Mini player over apps")) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(L("Показывать плавающий плеер, когда Wavy свёрнут (поверх игр и других приложений)", "Show a floating player when Wavy is minimized (over games and other apps)"), Modifier.weight(1f), color = Muted, fontSize = 13.sp)
-                Switch(s.floatingPlayer, onFloating, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Bg))
+                Switch(s.floatingPlayer, onFloating, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent))
             }
         }
 
@@ -117,7 +136,7 @@ fun SettingsScreen(
             Text(L("Версия: сборка ${Updater.currentBuild}", "Version: build ${Updater.currentBuild}"), fontSize = 14.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(L("Проверять обновления при запуске", "Check for updates on launch"), Modifier.weight(1f), color = Muted, fontSize = 13.sp)
-                Switch(s.autoUpdate, { v -> Store.settings { it.copy(autoUpdate = v) } }, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = Bg))
+                Switch(s.autoUpdate, { v -> Store.settings { it.copy(autoUpdate = v) } }, colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent))
             }
             Spacer(Modifier.height(6.dp))
             when (val u = upd) {
@@ -134,4 +153,16 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+/** A round color swatch; the chosen one gets a ring in the text color. */
+@Composable
+private fun Swatch(color: androidx.compose.ui.graphics.Color, selected: Boolean, label: String, onClick: () -> Unit) {
+    androidx.compose.foundation.layout.Box(
+        Modifier.size(34.dp).clip(androidx.compose.foundation.shape.CircleShape)
+            .border(if (selected) 3.dp else 1.dp, if (selected) TextC else Line, androidx.compose.foundation.shape.CircleShape)
+            .padding(if (selected) 5.dp else 0.dp).clip(androidx.compose.foundation.shape.CircleShape)
+            .background(color).clickable(onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label }
+    )
 }

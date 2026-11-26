@@ -190,8 +190,8 @@ fun FullPlayer(onClose: () -> Unit) {
                 IconButton({ PlayerConn.setShuffle(!st.shuffle) }) { Icon(Icons.Rounded.Shuffle, L("Перемешать", "Shuffle"), tint = if (st.shuffle) Accent else Muted) }
                 IconButton({ PlayerConn.prev() }) { Icon(Icons.Rounded.SkipPrevious, L("Назад", "Back"), Modifier.size(36.dp)) }
                 Box(Modifier.size(68.dp).clip(CircleShape).background(Accent).clickable { PlayerConn.toggle() }, contentAlignment = Alignment.Center) {
-                    if (st.buffering) CircularProgressIndicator(Modifier.size(28.dp), color = Bg, strokeWidth = 3.dp)
-                    else Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, L("Играть/пауза", "Play/pause"), Modifier.size(38.dp), tint = Bg)
+                    if (st.buffering) CircularProgressIndicator(Modifier.size(28.dp), color = OnAccent, strokeWidth = 3.dp)
+                    else Icon(if (st.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, L("Играть/пауза", "Play/pause"), Modifier.size(38.dp), tint = OnAccent)
                 }
                 IconButton({ PlayerConn.next() }) { Icon(Icons.Rounded.SkipNext, L("Вперёд", "Next"), Modifier.size(36.dp)) }
                 IconButton({ PlayerConn.cycleRepeat() }) {

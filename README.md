@@ -88,7 +88,7 @@ A native app (Kotlin, Jetpack Compose, Media3) in the `android/` folder.
 
 ![Android: library, player in the light theme, lyrics in ocean, settings in sakura](screenshots/android.png) Download `Wavy.apk` from [Releases](https://github.com/feelin-comatose/wavy/releases/latest).
 
-- **Themes**: the same seven themes as on the PC (Settings → Theme).
+- **Themes**: the same seven themes as on the PC, plus your own accent color (Settings → Theme).
 - **Background playback**: notification with buttons, lock screen, headphones, watches.
 - **Music and video on the phone**: the "From phone" button finds everything in storage.
 - **YouTube Music / YouTube / Spotify / SoundCloud**: search, import by link or through "Share" straight from their apps, music videos in sync with the audio. Under the hood it's NewPipeExtractor.

@@ -24,13 +24,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.SubcomposeAsyncImage
 
 /** Interface theme palette (same themes and colors as the PC version, native/src/theme.rs). */
-data class Pal(val dark: Boolean, val bg: Color, val bg2: Color, val bg3: Color, val line: Color, val text: Color, val muted: Color, val accent: Color)
+data class Pal(val dark: Boolean, val bg: Color, val bg2: Color, val bg3: Color, val line: Color, val text: Color, val muted: Color, val accent: Color,
+               /** icons and text drawn on an accent fill (play button, primary buttons) */
+               val onAccent: Color = if (dark) bg else Color.White)
 
 object Themes {
     private fun pal(dark: Boolean, bg: Long, bg2: Long, bg3: Long, line: Long, text: Long, muted: Long, accent: Long) =
@@ -51,7 +54,17 @@ object Themes {
     var current by mutableStateOf(list[0].third)
         private set
 
-    fun set(id: String) { current = (list.firstOrNull { it.first == id } ?: list[0]).third }
+    /** Accent swatches offered in settings (besides the theme's own). */
+    val accents = listOf("#ef4444", "#f97316", "#f59e0b", "#84cc16", "#22c55e", "#14b8a6", "#0ea5e9", "#3b82f6", "#8b5cf6", "#ec4899")
+
+    /** "#rrggbb" → color, null if malformed. */
+    fun parseHex(s: String): Color? = s.trim().removePrefix("#").takeIf { it.length == 6 }?.toLongOrNull(16)?.let { Color(0xFF000000 or it) }
+
+    /** Theme + optional custom accent ("" — the theme's own), like the PC version (native/src/theme.rs resolve). */
+    fun set(id: String, accent: String = "") {
+        val base = (list.firstOrNull { it.first == id } ?: list[0]).third
+        current = parseHex(accent)?.let { a -> base.copy(accent = a, onAccent = if (a.luminance() > 0.45f) Color(0xFF0A0A0C) else Color.White) } ?: base
+    }
 }
 
 // Palette colors used across the UI; they follow the current theme.
@@ -62,6 +75,7 @@ val Line: Color get() = Themes.current.line
 val TextC: Color get() = Themes.current.text
 val Muted: Color get() = Themes.current.muted
 val Accent: Color get() = Themes.current.accent
+val OnAccent: Color get() = Themes.current.onAccent
 val Bad = Color(0xFFF87171)
 val YtRed = Color(0xFFFF0033)
 
@@ -78,7 +92,7 @@ fun WavyTheme(content: @Composable () -> Unit) {
     }
     MaterialTheme(
         colorScheme = base.copy(
-            primary = Accent, onPrimary = Bg, secondary = Muted, onSecondary = Bg,
+            primary = Accent, onPrimary = OnAccent, secondary = Muted, onSecondary = Bg,
             background = Bg, onBackground = TextC, surface = Bg2, onSurface = TextC,
             surfaceVariant = Bg3, onSurfaceVariant = Muted, outline = Line, outlineVariant = Line,
             surfaceContainer = Bg2, surfaceContainerHigh = Bg3, surfaceContainerHighest = Bg3, surfaceContainerLow = Bg2,
