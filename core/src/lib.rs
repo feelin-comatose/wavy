@@ -2,6 +2,7 @@
 //! Used by the native (egui) app.
 #[macro_use]
 pub mod i18n;
+pub mod addons;
 pub mod anime;
 pub mod animethemes;
 pub mod aniskip;

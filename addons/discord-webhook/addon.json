@@ -1,0 +1,7 @@
+{
+  "name": "Discord webhook",
+  "description": "Posts \"Now playing\" to a Discord channel. Put the channel's webhook URL into config.json in this folder.",
+  "version": "1.0",
+  "author": "Wavy",
+  "run": ["python", "main.py"]
+}

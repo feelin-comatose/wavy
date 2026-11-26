@@ -5761,6 +5761,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "discord-rich-presence",
+ "libc",
  "lofty",
  "matroska-demuxer",
  "md-5",
@@ -5774,6 +5775,7 @@ dependencies = [
  "tungstenite",
  "ureq",
  "url",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

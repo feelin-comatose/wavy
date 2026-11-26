@@ -18,6 +18,7 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 
 - **Russian or English interface**: switch it at the very top of Settings; it applies instantly, without a restart (the tray menu updates after a restart). The phone app has the same setting: Settings → "Язык · Language".
 - **Themes**: dark (the default black and white), black (AMOLED), light, ocean, sakura, forest and amber, plus a custom accent color. Pick one in Settings → Theme; it applies instantly. The phone app has the same themes.
+- **Addons**: small separate programs that control Wavy through a local API, such as a track log, posting "now playing" to Discord, or a Stream Deck button. Put an addon's folder into the addons folder and switch it on in Settings → Addons. Writing your own is easy in any language: see [docs/addons.md](docs/addons.md) and the examples in [`addons/`](addons).
 - **Local music**: drag files, folders and `.m3u` playlists into the window or add them with the buttons. Tags and covers are read from the files. Supports mp3, flac, wav, ogg, m4a/aac, alac.
 - **Spotify**: paste a link to a playlist, album or track. The list comes from Spotify and each track is found on YouTube (6 at a time, matched by duration; title and artist are taken from Spotify). Without any setup you get up to 100 tracks per playlist; for bigger playlists add a Spotify API key (Client ID + Secret) in Settings.
 - **YouTube Music / YouTube / SoundCloud / Bandcamp**: import a playlist, album or video by link (or just press `Ctrl+V` in the window), search YouTube, keep a playlist in sync with its source. Under the hood it's **yt-dlp**: if it isn't installed, Wavy downloads it once by itself. Tracks are downloaded into a cache (up to ~1.5 GB) and the next one is fetched in advance.
@@ -74,6 +75,8 @@ All builds are on the [Releases](https://github.com/feelin-comatose/wavy/release
 ![Overlay themes: card, minimal, vinyl](screenshots/overlay.png)
 
 ![Settings](screenshots/settings.png)
+
+![Addons](screenshots/addons.png)
 
 ## Android
 
@@ -157,6 +160,8 @@ native/    interface (egui), audio (rodio), media keys (souvlaki), cover cache
 overlay/   the OBS overlay page
 android/   the Android app
 testdata/  test cases shared by the PC and Android implementations
+addons/    example addons (see docs/addons.md)
+docs/      addon API reference
 ```
 
 Fonts: Inter (OFL), icons: Phosphor (MIT). Details in `native/assets/README.md`.

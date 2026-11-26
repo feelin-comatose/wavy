@@ -139,6 +139,8 @@ enum PickTarget {
 enum Act {
     Play(Vec<String>, usize, bool),
     TogglePlay, Next, Prev, Seek(f64), Volume(f32), SaveVolume, Shuffle, Repeat,
+    /// addons: enable/disable, restart, rescan the folder
+    AddonToggle(String, bool), AddonRestart(String), AddonsRescan,
     View(View), ImportFiles, ImportFolder, ImportPaths(Vec<PathBuf>, Option<String>), ImportUrl(String, Option<String>),
     Search(String), AddTracks(Vec<Track>), PlayNext(Vec<String>), Enqueue(Vec<String>),
     AddTo(String, Vec<String>), RemoveFrom(String, Vec<String>), RemoveTracks(Vec<String>),
@@ -318,6 +320,12 @@ struct App {
     /// the CJK font is already loaded (or we looked and didn't find one)
     cjk_loaded: bool,
     cjk_check: Instant,
+    /// addons: commands from the local API, found addons, running processes, API token, last state push
+    api_rx: Receiver<(String, serde_json::Value)>,
+    addon_list: Vec<wavy_core::addons::Addon>,
+    addon_run: wavy_core::addons::Runner,
+    api_token: String,
+    api_pushed: Instant,
 }
 
 impl App {
@@ -338,6 +346,10 @@ impl App {
         discord.configure(s.discord.enabled, &s.discord.client_id, s.discord.show_buttons);
         overlay.set_config(&s.overlay.theme, s.overlay.auto_hide_sec, s.overlay.show_queue, s.overlay.show_lyrics);
         let mut toast = None;
+        let api_token = wavy_core::addons::token(&wavy_core::addons::dir());
+        let (api_tx, api_rx) = channel();
+        let c3 = ctx.clone();
+        overlay.set_api(api_token.clone(), api_tx, Arc::new(move || c3.request_repaint()));
         if let Err(e) = overlay.start(s.overlay.port) { wavy_core::log(&format!("оверлей: {e}")); toast = Some((format!("Оверлей: {e}"), true, Instant::now())); }
 
         // global hotkeys (work in games too): pause, tracks, volume, overlay… — configurable
@@ -376,7 +388,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60),
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(),
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -388,6 +400,7 @@ impl App {
             if s.last_build != Some(cur) { app.store.lock().unwrap().patch_settings(&json!({"lastBuild": cur})); }
         }
         app.restore_session(&ctx);
+        app.start_addons();
         // "Open with Wavy"
         let args: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
         if !args.is_empty() { app.apply(Act::ImportPaths(args, None), &ctx); }
@@ -951,6 +964,15 @@ impl App {
             Act::ShowWindow => tray::show(ctx),
             Act::Quit => { self.quitting = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             Act::Reveal(p) => reveal(&p),
+            Act::AddonToggle(id, on) => {
+                let mut list = self.settings().addons;
+                list.retain(|x| x != &id);
+                if on { list.push(id.clone()); }
+                self.store.lock().unwrap().patch_settings(&json!({"addons": list}));
+                if on { self.run_addon(&id); } else { self.addon_run.stop(&id); self.addon_run.exited.remove(&id); }
+            }
+            Act::AddonRestart(id) => self.run_addon(&id),
+            Act::AddonsRescan => { self.addon_list = wavy_core::addons::scan(&wavy_core::addons::dir()); self.start_addons(); }
             Act::OpenUrl(u) => open_url(&u),
             Act::Settings(patch) => {
                 self.store.lock().unwrap().patch_settings(&patch);
@@ -1804,7 +1826,7 @@ impl App {
 impl eframe::App for App {
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] { [0.0; 4] } // transparency for the overlay window
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) { self.save_session(); }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) { self.save_session(); self.addon_run.stop_all(); }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -3173,6 +3195,65 @@ impl App {
         self.overlay.set_queue(json!(queue));
         if ov.show_lyrics { self.ensure_lyrics(ctx); }
         if self.wifi.is_some() { self.remote_tick(ctx); }
+        self.api_tick(ctx);
+    }
+
+    /// Scan the addons folder and start the enabled ones that aren't running.
+    fn start_addons(&mut self) {
+        self.addon_list = wavy_core::addons::scan(&wavy_core::addons::dir());
+        for id in self.settings().addons { if !self.addon_run.is_running(&id) { self.run_addon(&id); } }
+    }
+
+    fn run_addon(&mut self, id: &str) {
+        let Some(a) = self.addon_list.iter().find(|a| a.id == id).cloned() else { return };
+        let api = self.overlay.api_url().unwrap_or_default();
+        if let Err(e) = self.addon_run.start(&a, &api, &self.api_token) { self.addon_run.exited.insert(a.id.clone(), e); }
+    }
+
+    /// Addon API: run commands from addons, publish the player state a few times a second, notice exited addons.
+    fn api_tick(&mut self, ctx: &egui::Context) {
+        let cmds: Vec<(String, serde_json::Value)> = self.api_rx.try_iter().collect();
+        let cmds_empty = cmds.is_empty();
+        for (cmd, v) in cmds {
+            let num = v["value"].as_f64().unwrap_or(0.0);
+            let act = match cmd.as_str() {
+                "toggle" => Act::TogglePlay, "next" => Act::Next, "prev" => Act::Prev,
+                "play" => if self.audio.is_playing() { continue } else { Act::TogglePlay },
+                "pause" => if self.audio.is_playing() { Act::TogglePlay } else { continue },
+                "seek" => Act::Seek(num.max(0.0)),
+                "volume" => { self.apply(Act::Volume(num.clamp(0.0, 1.0) as f32), ctx); Act::SaveVolume }
+                "jump" if (num.max(0.0) as usize) < self.queue.len() => Act::JumpQueue(num.max(0.0) as usize),
+                "like" => match self.current.as_ref() {
+                    Some(t) => { let on = v["value"].as_bool().unwrap_or(!self.store.lock().unwrap().is_liked(&t.id)); Act::Like(vec![t.id.clone()], on) }
+                    None => continue,
+                },
+                "add" => match v["url"].as_str().filter(|u| u.starts_with("http")) { Some(u) => Act::ImportUrl(u.to_string(), None), None => continue },
+                _ => continue,
+            };
+            self.apply(act, ctx);
+        }
+        // after a command, publish right away and once more shortly after, when the player has settled
+        // (an idle window doesn't redraw on its own)
+        let had_cmds = !cmds_empty;
+        if had_cmds { ctx.request_repaint_after(Duration::from_millis(350)); }
+        if !had_cmds && self.api_pushed.elapsed() < Duration::from_millis(300) { return; }
+        self.api_pushed = Instant::now();
+        let port = self.overlay.port.lock().unwrap().unwrap_or(0);
+        let cover = |t: &Track| t.cover.as_ref().map(|c| if c.starts_with("http") { c.clone() } else { format!("http://127.0.0.1:{port}/cover/{}", t.id) });
+        let t = self.current.clone();
+        let duration = if self.audio.duration > 0.0 { self.audio.duration } else { t.as_ref().map(|t| t.duration).unwrap_or(0.0) };
+        let s = self.settings();
+        let liked = t.as_ref().is_some_and(|t| self.store.lock().unwrap().is_liked(&t.id));
+        let queue: Vec<serde_json::Value> = self.queue.iter().enumerate().skip(self.qi).take(50)
+            .filter_map(|(i, id)| self.track(id).map(|q| json!({"index": i, "id": q.id, "title": q.title, "artist": q.artist, "duration": q.duration})))
+            .collect();
+        self.overlay.set_api_state(json!({
+            "track": t.as_ref().map(|t| json!({"id": t.id, "title": t.title, "artist": t.artist, "album": t.album, "type": t.kind,
+                "duration": t.duration, "url": t.url, "cover": cover(t)})),
+            "playing": self.audio.is_playing(), "position": self.audio.position(), "duration": duration, "liked": liked,
+            "volume": s.volume, "shuffle": s.shuffle, "repeat": s.repeat, "queueIndex": self.qi, "queue": queue,
+        }));
+        self.addon_run.reap();
     }
 
     /// Phone remote: run its commands and update the state it sees.
@@ -3997,6 +4078,39 @@ impl App {
                             }
                         });
                         ui.label(RichText::new(l!("Клавиши в окне: Пробел — пауза · ←/→ — ±5 с · Ctrl+←/→ — трек · ↑/↓ — громкость · M — без звука · L — лайк · Q — очередь · S — перемешать · R — повтор · Ctrl+F — поиск · Ctrl+K — команды", "Keys in the window: Space — pause · ←/→ — ±5 s · Ctrl+←/→ — track · ↑/↓ — volume · M — mute · L — like · Q — queue · S — shuffle · R — repeat · Ctrl+F — search · Ctrl+K — commands")).color(th().muted).size(12.0));
+                        section(ui, l!("Аддоны", "Addons"));
+                        ui.label(RichText::new(l!("Аддоны — отдельные программы, которые управляют Wavy через локальный API: кладёшь папку аддона в папку аддонов и включаешь его здесь. Описание API — docs/addons.md в репозитории.", "Addons are separate programs that control Wavy through a local API: put an addon's folder into the addons folder and enable it here. The API is described in docs/addons.md in the repository.")).color(th().muted).size(12.5));
+                        ui.horizontal(|ui| {
+                            if pill(ui, l!("Открыть папку аддонов", "Open addons folder"), false).clicked() {
+                                let d = wavy_core::addons::dir();
+                                let _ = std::fs::create_dir_all(&d);
+                                acts.push(Act::Reveal(d.join("api-token").to_string_lossy().into_owned()));
+                            }
+                            if pill(ui, l!("Обновить список", "Refresh list"), false).clicked() { acts.push(Act::AddonsRescan); }
+                            if pill(ui, l!("Копировать токен API", "Copy API token"), false).clicked() {
+                                ui.ctx().copy_text(self.api_token.clone());
+                                self.toast = Some((l!("Токен скопирован. Он даёт управление плеером — не публикуй его", "Token copied. It gives control of the player — don't share it").into(), false, Instant::now()));
+                            }
+                        });
+                        if let Some(api) = self.overlay.api_url() { ui.label(RichText::new(format!("API: {api}")).color(th().muted).size(12.0)); }
+                        if self.addon_list.is_empty() { ui.label(RichText::new(l!("Аддонов пока нет", "No addons yet")).color(th().muted)); }
+                        for a in self.addon_list.clone() {
+                            let on = s.addons.contains(&a.id);
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let mut en = on;
+                                let title = match &a.manifest { Ok(m) => format!("{}  {}", m.name, m.version), Err(_) => a.id.clone() };
+                                if ui.add_enabled(a.manifest.is_ok(), egui::Checkbox::new(&mut en, RichText::new(title).family(semi()))).changed() { acts.push(Act::AddonToggle(a.id.clone(), en)); }
+                                let (status, col) = if self.addon_run.is_running(&a.id) { (l!("работает", "running").to_string(), OK) }
+                                    else if let Some(msg) = self.addon_run.exited.get(&a.id) { (msg.clone(), BAD) }
+                                    else { (if on { l!("не запущен", "not running") } else { l!("выключен", "off") }.to_string(), th().muted) };
+                                ui.label(RichText::new(status).color(col).size(12.0));
+                                if on && ui.link(l!("перезапустить", "restart")).clicked() { acts.push(Act::AddonRestart(a.id.clone())); }
+                                if ui.link(l!("лог", "log")).clicked() { acts.push(Act::Reveal(a.dir.join("addon.log").to_string_lossy().into_owned())); }
+                            });
+                            let desc = match &a.manifest { Ok(m) if !m.author.is_empty() => format!("{} · {}", m.description, m.author), Ok(m) => m.description.clone(), Err(e) => e.clone() };
+                            if !desc.is_empty() { ui.label(RichText::new(desc).color(th().muted).size(12.0)); }
+                        }
                         section(ui, l!("\u{E248}  Резервные копии", "\u{E248}  Backups"));
                         let bdir = if s.backup_dir.is_empty() { wavy_core::data_dir().join("backups") } else { PathBuf::from(&s.backup_dir) };
                         ui.label(RichText::new(l!("Раз в день Wavy сохраняет плейлисты, лайки, историю и настройки (14 последних копий). Чтобы копии пережили переустановку Windows, выбери папку на другом диске или в облаке (OneDrive, Google Диск).", "Once a day Wavy saves playlists, likes, history and settings (the last 14 copies). For backups to survive a Windows reinstall, choose a folder on another drive or in the cloud (OneDrive, Google Drive).")).color(th().muted).size(12.0));

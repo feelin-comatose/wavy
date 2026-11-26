@@ -1,0 +1,7 @@
+{
+  "name": "Track log",
+  "description": "Writes every track you play to plays.csv in this folder (time, artist, title, link).",
+  "version": "1.0",
+  "author": "Wavy",
+  "run": ["python", "main.py"]
+}

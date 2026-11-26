@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Wavy is a music and anime player. There is a desktop app (Rust, egui; Windows primary, Linux works) and an Android app (Kotlin, Jetpack Compose, Media3). Code comments are in English (so the project is easy to fork). Commit messages and the default UI language are Russian; every user-visible string also has an English translation (see "Translations").
+Wavy is a music and anime player. There is a desktop app (Rust, egui; Windows primary, Linux works) and an Android app (Kotlin, Jetpack Compose, Media3). Code comments and commit messages are in English (so the project is easy to fork). The default UI language is Russian; every user-visible string also has an English translation (see "Translations").
 
 ## Commands
 
@@ -33,6 +33,8 @@ Android (from `android/`):
 
 Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` tests, then builds `Wavy.exe` on Windows and `ffmpeg.exe` (from `scripts/build-ffmpeg.sh`). On Linux it runs `LogicTest` and builds a signed `Wavy.apk`. It then publishes GitHub release `build-<run_number>`. The build number is baked in: `WAVY_BUILD` env for Rust (`native/src/update.rs`) and `-PwavyBuild` for Android (`versionCode`). Both apps compare it with the latest release and update themselves, so a local build (no `WAVY_BUILD`) never auto-updates. Pushing to `main` therefore ships to users.
 
+**Commit messages are user-facing:** after an auto-update the desktop app shows the titles and descriptions of the new commits as "What's new" (`native/src/update.rs`, service lines like `Co-Authored-By:` are dropped). Write them for users: a short title, then what changed for them.
+
 **Git workflow:** commit and push straight to `main`. Don't create feature branches or pull requests, even if the session setup assigns a development branch; the owner wants every change on `main`. Since each push ships a release, run the relevant tests before pushing.
 
 ## Desktop architecture
@@ -46,7 +48,8 @@ Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` t
   - `anime.rs` / `media.rs`: episode filename parsing, MKV tracks and subtitles.
   - `shazam.rs`: audio fingerprint.
   - Integrations: Twitch, Discord, Last.fm, Shikimori, AniSkip, LRCLIB, AnimeThemes.
-  - Embedded HTTP servers: `overlay.rs` (OBS overlay, port 3737, SSE) and `wifisync.rs` (phone sync and remote, port 3738, PIN).
+  - Embedded HTTP servers: `overlay.rs` (OBS overlay, port 3737, SSE; also the addon API under `/api/v1`, token required) and `wifisync.rs` (phone sync and remote, port 3738, PIN).
+  - `addons.rs`: addons are separate processes started from `data_dir/addons/<id>/addon.json`; they get `WAVY_API`/`WAVY_TOKEN` and die with Wavy (job object / `PR_SET_PDEATHSIG`). The API is documented in `docs/addons.md`; keep it backward compatible (addons are written by other people), and add new commands to `API_COMMANDS` and to `api_tick` in `main.rs`.
 - **`native`** is the executable:
   - `main.rs` is very large and holds the whole egui app.
   - Also: `theme.rs` (color themes, `th()`), `player.rs`/`fx.rs` (rodio audio and effects), `video.rs` (OpenH264, falls back to the downloaded ffmpeg), `tray.rs`, `hotkeys.rs`, `instance.rs`, `update.rs`, `export.rs`, `recap.rs`.
