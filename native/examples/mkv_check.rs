@@ -6,6 +6,9 @@ extern crate wavy_core;
 #[path = "../src/video.rs"]
 mod video;
 #[allow(dead_code)]
+#[path = "../src/viz.rs"]
+#[allow(dead_code)]
+mod viz;
 #[path = "../src/fx.rs"]
 #[allow(dead_code)]
 mod fx;
