@@ -16,6 +16,7 @@ cargo test --release -p wavy-core sync        # tests whose name contains "sync"
 cargo test --release -p wavy-core --test parity  # Rust side of testdata/parity (shared with Android)
 cargo check --release --target x86_64-pc-windows-gnu -p wavy-native   # compile-check Windows-only code (tray, hotkeys) from Linux
 cargo run --release -p wavy-core --example stream_check -- <url>       # manual checks: core/examples/*, native/examples/*
+python3 scripts/mem-check.py                  # Linux: run the built app through idle/scroll/music/video and report its private memory (fails over 100 MB while playing music)
 ```
 
 Linux build needs `libasound2-dev`, `libxkbcommon-x11-0`. The release profile is size-optimized (`opt-level = "s"`, LTO, strip, `panic = "abort"`), so release builds take a few minutes. `.cargo/config.toml` statically links the MSVC C runtime.
@@ -99,7 +100,7 @@ A separate Kotlin implementation with no shared code. Several algorithms are del
 
 ## Product constraints
 
-- Keep memory modest, but it no longer has to be minimal: the app should stay comfortable on a weak PC. It used ~45 MB of its own memory while playing; up to roughly 100 MB is fine when a feature needs it. Still no browser engine, and heavy pieces (yt-dlp, deno, ffmpeg) download on first use.
+- Keep memory modest, but it no longer has to be minimal: the app should stay comfortable on a weak PC. It used ~45 MB of its own memory while playing; up to roughly 100 MB is fine when a feature needs it. Measure with `scripts/mem-check.py` (private memory, like Task Manager; on a machine without a GPU the in-process software renderer adds ~8 MB). Baseline, 500 tracks with covers: ~58 MB playing music, ~118 MB playing 720p video, ~76 MB back on music afterwards (allocator retention, not a leak: it stays flat over `--cycles`). Still no browser engine, and heavy pieces (yt-dlp, deno, ffmpeg) download on first use.
 - Color themes are allowed. The default theme ("dark") is the original black-and-white look. Themes live in `native/src/theme.rs` and `android/.../ui/Theme.kt`; keep their ids and colors in sync. UI code must take colors from the palette (`th().accent`, `th().text`, … on desktop; `Accent`, `TextC`, … on Android) instead of hard-coding them, so every theme, including the light one, stays readable. Video, the in-game overlay and the recap image keep their own fixed colors.
 - License is GPL-3.0, required by rustypipe and NewPipeExtractor.
 - `CONTEXT.md` is a gitignored local notes file (history, what's verified, what's pending). Read it if it exists, but never commit it.
