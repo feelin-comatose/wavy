@@ -73,6 +73,15 @@ def line_from(st):
     return "\t".join(map(str, fields)) + "\n"
 
 
+def queue_from(st):
+    """The next three tracks: "Q", then index, title and artist for each (older sketches ignore this line)."""
+    fields = ["Q"]
+    if st.get("track"):
+        for q in (st.get("queue") or [])[1:4]:
+            fields += [q.get("index", 0), clean(q.get("title"), 80) or "?", clean(q.get("artist"), 60)]
+    return "\t".join(map(str, fields)) + "\n"
+
+
 def send_all(line):
     with clients_lock:
         for c in list(clients):
@@ -105,6 +114,8 @@ def command(cmd):
             return
         vol = min(1.0, max(0.0, vol + (0.05 if cmd == "vol+" else -0.05)))
         api_cmd({"cmd": "volume", "value": round(vol, 2)})
+    elif cmd.startswith("jump ") and cmd[5:].isdigit():
+        api_cmd({"cmd": "jump", "value": int(cmd[5:])})
     else:
         return
     # /state refreshes about three times a second; a like or volume change has no event of its own.
@@ -184,7 +195,8 @@ while True:
     dirty.wait(5)
     dirty.clear()
     try:
-        current = line_from(api_get("/state"))
+        st = api_get("/state")
+        current = line_from(st) + queue_from(st)
     except OSError:
         time.sleep(1)
         continue

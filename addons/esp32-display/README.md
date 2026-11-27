@@ -1,12 +1,19 @@
 # ESP32 display
 
-A small screen next to your PC showing what Wavy is playing: title, artist, progress, play/pause and like. Three buttons control the player.
+A small screen next to your PC showing what Wavy is playing: title, artist, progress, play/pause and like. Four buttons control the player, and a tiny equalizer dances in the corner while music plays.
 
 | Button | Short press | Hold |
 |---|---|---|
-| left | previous track | volume down (repeats) |
-| middle | play / pause | like / unlike |
-| right | next track | volume up (repeats) |
+| 1 | previous track | volume down (repeats) |
+| 2 | play / pause | like / unlike |
+| 3 | next track | volume up (repeats) |
+| 4 | next screen | back to "Now playing" |
+
+The fourth button switches between three screens:
+
+- **Now playing:** title, artist, progress bar and times.
+- **Up next:** the next three tracks in the queue. Buttons 1 and 3 move the highlight, button 2 plays the highlighted track. It returns to "Now playing" after 20 s.
+- **Clock:** the time (set from the internet), the date, and the current track along the bottom.
 
 It has two parts:
 
@@ -17,22 +24,23 @@ It has two parts:
 
 | Part | Notes |
 |---|---|
-| ESP32 dev board | Any "ESP32 DevKit" / "ESP32-WROOM-32" board with a USB port. ESP32-S3/C3 boards work too, but the pin numbers differ. |
+| ESP32 dev board | Any "ESP32 DevKit" / "ESP32-WROOM-32" board, or a small ESP32-C3 board ("C3 SuperMini"). An ESP8266 (NodeMCU, Wemos D1 mini) works too, but without the fourth button. |
 | 0.96" or 1.3" I²C OLED, 128×64 | The 4-pin kind (GND, VCC, SCL, SDA). 0.96" is usually SSD1306, 1.3" is usually SH1106. |
-| 3 push buttons | The common 6×6 mm tactile buttons. |
+| 4 push buttons | The common 6×6 mm tactile buttons. If your screen module has its own buttons with their own pins, wire those instead. |
 | Breadboard and jumper wires | Or solder everything onto perfboard. |
 | USB cable | It also powers the ESP32. Plug it into the PC or any phone charger. |
 
 ## Wiring
 
-```
-OLED VCC  → 3V3            Left button   → GPIO 32 and GND
-OLED GND  → GND            Middle button → GPIO 33 and GND
-OLED SDA  → GPIO 21        Right button  → GPIO 25 and GND
-OLED SCL  → GPIO 22
-```
+OLED VCC goes to **3V3** (not 5V/VIN) and OLED GND to **GND**. The other pins depend on the board; the sketch picks the right set by itself:
 
-Each button goes between its pin and GND. No resistors are needed, because the ESP32's built-in pull-ups are used. Use **3V3** for the screen, not 5V/VIN.
+| | OLED SDA | OLED SCL | Button 1 | Button 2 | Button 3 | Button 4 |
+|---|---|---|---|---|---|---|
+| ESP32 | GPIO 21 | GPIO 22 | GPIO 32 | GPIO 33 | GPIO 25 | GPIO 26 |
+| ESP32-C3 | GPIO 5 | GPIO 6 | GPIO 3 | GPIO 4 | GPIO 10 | GPIO 7 |
+| ESP8266 | D2 | D1 | D5 | D6 | D7 | — |
+
+Each button goes between its pin and GND. No resistors are needed, because the board's built-in pull-ups are used. On small C3 boards the pins are labelled with plain numbers, often on the back.
 
 ## 1. Set up the addon on the PC
 
@@ -62,7 +70,11 @@ Each button goes between its pin and GND. No resistors are needed, because the E
    const char* KEY       = "the key from config.json";
    ```
    For a 1.3" SH1106 screen, comment out the `SSD1306` line and uncomment the `SH1106` line below it.
-5. Plug in the ESP32, pick **Tools → Board → esp32 → ESP32 Dev Module** and its port under **Tools → Port**, then press **Upload**. If the upload hangs at "Connecting…", hold the board's **BOOT** button until it starts.
+   The clock uses UK time. For another timezone, change `TIMEZONE` (examples are next to it).
+5. Plug in the board, pick it under **Tools → Board** and its port under **Tools → Port**, then press **Upload**. If the upload hangs at "Connecting…", hold the board's **BOOT** button until it starts.
+   - ESP32: **esp32 → ESP32 Dev Module**.
+   - ESP32-C3: **esp32 → ESP32C3 Dev Module**, and set **Tools → USB CDC On Boot → Enabled** so the Serial Monitor works.
+   - ESP8266: add `https://arduino.esp8266.com/stable/package_esp8266com_index.json` to the boards manager URLs, install **esp8266**, then pick **NodeMCU 1.0** (or your board).
 
 The screen shows "Connecting to Wi-Fi…", then "Looking for Wavy…", and then the current track. **Tools → Serial Monitor** at 115200 baud shows the same steps.
 
@@ -70,20 +82,22 @@ The screen shows "Connecting to Wi-Fi…", then "Looking for Wavy…", and then 
 
 | Screen says | Fix |
 |---|---|
-| Connecting to Wi-Fi… | Check the name and password. The ESP32 only works with **2.4 GHz** Wi-Fi; most routers have both bands, so pick the 2.4 GHz one. |
+| Connecting to Wi-Fi… | Check the name and password. These boards only work with **2.4 GHz** Wi-Fi; most routers have both bands, so pick the 2.4 GHz one (a name ending in `_5` or `-5G` is usually 5 GHz). The small antennas also need a decent signal: move the board closer to the router to test. |
 | Looking for Wavy… | Is the addon ticked in Wavy, and is Wavy running? Some routers block broadcasts ("AP/client isolation", guest networks). Then set `PC_HOST` in the sketch to the PC's IP address (it's printed in `addon.log`). Giving the PC a fixed IP in your router settings keeps that working. |
 | Connecting to PC… (over and over) | The firewall is blocking port 3739: see step 1.4. |
 | Wrong key! | `KEY` in the sketch doesn't match `key` in `config.json`. |
 | Nothing at all | Check the screen wiring and the SSD1306/SH1106 choice. Some screens swap the GND and VCC pins, so read the labels. |
+| Up next: Queue is empty | Update this addon too (the queue needs its newer version), then switch it off and on in Settings → Addons. |
+| Clock: --:-- | The time comes from the internet and takes up to a minute after start-up. |
 
 Japanese and other scripts the screen's font can't draw are left out of titles. Accented letters lose their accents.
 
 ## Changing things
 
-- **Pins:** `PIN_PREV`, `PIN_PLAY`, `PIN_NEXT` in the sketch. Avoid GPIO 34–39 (they have no pull-ups), and avoid 6–11 and 0/2/12/15, which the board uses for flash and booting.
+- **Pins:** `PIN_PREV`, `PIN_PLAY`, `PIN_NEXT`, `PIN_VIEW` in the sketch, in the section for your board. On the ESP32 avoid GPIO 34–39 (no pull-ups) and 6–11, 0, 2, 12 and 15 (flash and booting). On the C3 avoid 2, 8, 9 (booting) and 18, 19 (USB).
 - **Ports:** `port` and `discovery_port` in `config.json`, then change `PORT` and `DISCOVERY_PORT` in the sketch to match.
 - **Several gadgets:** any number of ESP32s can connect at once with the same key.
 
 ## How it works
 
-The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded. It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+` or `vol-`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.
+The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded, followed by `Q` and then index, title and artist for each of the next three tracks. It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+`, `vol-` or `jump <queue index>`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.

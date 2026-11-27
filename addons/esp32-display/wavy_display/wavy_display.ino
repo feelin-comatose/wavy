@@ -1,17 +1,24 @@
-// Wavy ESP32 display: shows what Wavy plays on a 128x64 OLED and controls it with three buttons.
+// Wavy ESP32 display: shows what Wavy plays on a 128x64 OLED and controls it with four buttons.
 // Needs the "ESP32 display" addon running in Wavy on your PC (it relays Wavy over your home Wi-Fi).
 //
 // Libraries (Arduino IDE → Tools → Manage Libraries): U8g2 by oliver.
-// Board: any ESP32 dev board (Tools → Board → esp32 → "ESP32 Dev Module").
+// Boards: ESP32 ("ESP32 Dev Module"), ESP32-C3 ("ESP32C3 Dev Module", USB CDC On Boot: Enabled)
+//         or ESP8266 ("NodeMCU 1.0"). Pins are picked automatically for each; see README.md.
 //
-// Wiring (see README.md):
-//   OLED  VCC → 3V3, GND → GND, SDA → GPIO 21, SCL → GPIO 22
-//   Buttons between the pin and GND (no resistors needed): PREV → GPIO 32, PLAY → GPIO 33, NEXT → GPIO 25
+// Wiring: OLED VCC → 3V3, GND → GND; each button between its pin and GND (no resistors needed).
+//              SDA  SCL   PREV  PLAY  NEXT  SCREEN
+//   ESP32      21   22    32    33    25    26
+//   ESP32-C3   5    6     3     4     10    7
+//   ESP8266    D2   D1    D5    D6    D7    (none)
 //
-// Buttons: short press = previous / play-pause / next.
-//          hold PLAY = like, hold PREV / NEXT = volume down / up (repeats while held).
-
+// Buttons: short press = previous / play-pause / next / switch screen.
+//          hold PLAY = like, hold PREV / NEXT = volume down / up (repeats), hold SCREEN = back to "Now playing".
+// Screens: Now playing, Up next (PREV/NEXT pick a track, PLAY plays it) and Clock.
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#else
 #include <WiFi.h>
+#endif
 #include <WiFiUdp.h>
 #include <U8g2lib.h>
 #include <Wire.h>
@@ -24,7 +31,19 @@ const char* PC_HOST   = "";                    // leave empty to find the PC aut
 const uint16_t PORT           = 3739;          // "port" in config.json
 const uint16_t DISCOVERY_PORT = 3740;          // "discovery_port" in config.json
 
-const int PIN_PREV = 32, PIN_PLAY = 33, PIN_NEXT = 25;
+#ifdef ESP8266
+const int PIN_PREV = 14, PIN_PLAY = 12, PIN_NEXT = 13;   // D5, D6, D7
+const int PIN_VIEW = -1;                                  // no spare safe pin: no screen button
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+// ESP32-C3: OLED SDA → GPIO 5, SCL → GPIO 6. Avoids the boot pins 2, 8 and 9.
+const int PIN_SDA = 5, PIN_SCL = 6;
+const int PIN_PREV = 3, PIN_PLAY = 4, PIN_NEXT = 10, PIN_VIEW = 7;
+#else
+const int PIN_PREV = 32, PIN_PLAY = 33, PIN_NEXT = 25, PIN_VIEW = 26;
+#endif
+
+// For the clock screen. UK time; others e.g. "CET-1CEST,M3.5.0,M10.5.0/3" (Central Europe), "MSK-3" (Moscow).
+const char* TIMEZONE = "GMT0BST,M3.5.0/1,M10.5.0";
 
 // Pick your screen. Most 0.96" boards are SSD1306; most 1.3" boards are SH1106.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
@@ -48,51 +67,86 @@ unsigned long titleSince = 0;      // when the title changed, for scrolling
 unsigned long nextConnectTry = 0;
 String rx;
 
+// The next tracks in Wavy's queue (sent by the addon as a "Q" line).
+struct QueueItem { int index; String title, artist; };
+QueueItem upNext[3];
+int upNextCount = 0;
+
+// Screens, switched with the fourth button.
+enum View { NOW_PLAYING, UP_NEXT, CLOCK, VIEW_COUNT };
+int view = NOW_PLAYING;
+int selected = 0;                  // highlighted row on the "Up next" screen
+unsigned long lastPress = 0;       // "Up next" returns to "Now playing" after a while
+unsigned long selectedSince = 0;   // for scrolling the highlighted row
+
 // ---------- buttons ----------
+enum Btn { B_PREV, B_PLAY, B_NEXT, B_VIEW };
 struct Button {
   int pin;
-  const char* tap;      // command on a short press
-  const char* hold;     // command when held
-  bool repeat;          // repeat the hold command while held
+  bool repeat;          // repeat the hold action while held
   bool down = false, held = false;
   unsigned long since = 0, lastRepeat = 0;
 };
-Button buttons[] = {
-  {PIN_PREV, "prev", "vol-", true},
-  {PIN_PLAY, "toggle", "like", false},
-  {PIN_NEXT, "next", "vol+", true},
-};
+Button buttons[] = {{PIN_PREV, true}, {PIN_PLAY, false}, {PIN_NEXT, true}, {PIN_VIEW, false}};
 const unsigned long HOLD_MS = 600, REPEAT_MS = 250, DEBOUNCE_MS = 30;
 
-void send(const char* cmd) {
+void send(const String& cmd) {
   if (client.connected()) {
     client.print(cmd);
     client.print('\n');
   }
 }
 
+void onTap(int b) {
+  if (b == B_VIEW) {
+    view = (view + 1) % VIEW_COUNT;
+    selected = 0;
+    selectedSince = millis();
+    return;
+  }
+  if (view == UP_NEXT && upNextCount > 0) {   // on "Up next": move the highlight, play the highlighted track
+    if (b == B_PREV) selected = (selected + upNextCount - 1) % upNextCount;
+    if (b == B_NEXT) selected = (selected + 1) % upNextCount;
+    if (b == B_PLAY) { send("jump " + String(upNext[selected].index)); view = NOW_PLAYING; }
+    selectedSince = millis();
+    return;
+  }
+  send(b == B_PREV ? "prev" : b == B_PLAY ? "toggle" : "next");
+}
+
+void onHold(int b) {
+  if (b == B_PREV) send("vol-");
+  if (b == B_NEXT) send("vol+");
+  if (b == B_PLAY) send("like");
+  if (b == B_VIEW) view = NOW_PLAYING;   // hold the screen button: straight back to "Now playing"
+}
+
 void pollButtons() {
   unsigned long now = millis();
-  for (auto& b : buttons) {
+  for (int i = 0; i < 4; i++) {
+    Button& b = buttons[i];
+    if (b.pin < 0) continue;
     bool pressed = digitalRead(b.pin) == LOW;
     if (pressed && !b.down) {
       if (now - b.since < DEBOUNCE_MS) continue;
       b.down = true; b.held = false; b.since = now;
+      lastPress = now;
     } else if (!pressed && b.down) {
       if (now - b.since < DEBOUNCE_MS) continue;
       b.down = false;
-      if (!b.held) send(b.tap);
+      if (!b.held) onTap(i);
       b.since = now;
     } else if (pressed && b.down) {
       if (!b.held && now - b.since >= HOLD_MS) {
         b.held = true; b.lastRepeat = now;
-        send(b.hold);
+        onHold(i);
       } else if (b.held && b.repeat && now - b.lastRepeat >= REPEAT_MS) {
         b.lastRepeat = now;
-        send(b.hold);
+        onHold(i);
       }
     }
   }
+  if (view == UP_NEXT && now - lastPress > 20000) view = NOW_PLAYING;
 }
 
 // ---------- link to the PC ----------
@@ -110,8 +164,19 @@ int splitTabs(const String& s, String* parts, int max) {
 
 void handleLine(const String& line) {
   lastLine = millis();
-  if (line == "N") { loaded = false; return; }
+  if (line == "N") { loaded = false; upNextCount = 0; return; }
   if (line.startsWith("E")) { status = "Wrong key!"; client.stop(); return; }
+  if (line[0] == 'Q') {
+    String q[10];
+    int n = (splitTabs(line, q, 10) - 1) / 3;
+    for (int i = 0; i < n; i++) {
+      QueueItem item = {q[1 + i * 3].toInt(), q[2 + i * 3], q[3 + i * 3]};
+      upNext[i] = item;
+    }
+    upNextCount = n;
+    if (selected >= n) selected = n > 0 ? n - 1 : 0;
+    return;
+  }
   String p[8];
   if (line[0] != 'S' || splitTabs(line, p, 8) < 8) return;
   int newVolume = p[3].toInt();
@@ -167,7 +232,12 @@ void keepConnected() {
   }
   nextConnectTry = millis() + 3000;
   status = "Connecting to PC...";
+#ifdef ESP8266
+  client.setTimeout(2000);
+  if (client.connect(pcIp, PORT)) {
+#else
   if (client.connect(pcIp, PORT, 2000)) {
+#endif
     client.setNoDelay(true);
     client.print("key ");
     client.print(KEY);
@@ -219,25 +289,119 @@ void drawHeart(int x, int y) {   // 9x8, top-left at x,y
   oled.drawTriangle(x, y + 3, x + 9, y + 3, x + 4, y + 8);
 }
 
+// The eye-catcher in the top-right corner of every screen: a tiny equalizer that dances
+// while music plays and slowly breathes otherwise.
+float eqLevel[4] = {1, 1, 1, 1}, eqTarget[4] = {1, 1, 1, 1};
+unsigned long eqNext = 0;
+
+void drawEq() {
+  unsigned long now = millis();
+  bool dancing = loaded && playing;
+  if (dancing && now >= eqNext) {
+    eqNext = now + 110;
+    for (int i = 0; i < 4; i++) eqTarget[i] = 2 + random(9);                 // 2..10 px
+  }
+  for (int i = 0; i < 4; i++) {
+    float target = dancing ? eqTarget[i] : 2.5f + 1.5f * sinf(now / 500.0f + i * 0.9f);   // 1..4 px
+    eqLevel[i] += (target - eqLevel[i]) * 0.35f;
+    int h = constrain((int)(eqLevel[i] + 0.5f), 1, 10);
+    oled.drawBox(116 + i * 3, 10 - h, 2, h);
+  }
+}
+
+// Shared top bar: which screen you're on (dots), the volume after a change, and the equalizer.
+void drawTopBar() {
+  oled.setFont(u8g2_font_6x13_t_cyrillic);
+  if (millis() < volumeShownUntil) {
+    String v = "Vol " + String(volume) + "%";
+    oled.drawUTF8(113 - oled.getUTF8Width(v.c_str()), 10, v.c_str());
+  } else if (PIN_VIEW >= 0) {
+    for (int i = 0; i < VIEW_COUNT; i++) {
+      if (i == view) oled.drawBox(86 + i * 7, 3, 4, 4);
+      else oled.drawFrame(86 + i * 7, 3, 4, 4);
+    }
+  }
+  drawEq();
+}
+
+// One row of the "Up next" list; the highlighted row is inverted and scrolls if too long.
+void drawRow(const String& text, int top, bool highlighted) {
+  if (highlighted) { oled.drawBox(0, top, 128, 15); oled.setDrawColor(0); }
+  oled.setClipWindow(0, top, 127, top + 14);
+  int w = oled.getUTF8Width(text.c_str());
+  int offset = 0;
+  if (highlighted && w > 124) {
+    unsigned long t = millis() - selectedSince;
+    offset = t < 1000 ? 0 : ((t - 1000) / 30) % (w + 30);
+    oled.drawUTF8(2 - offset + w + 30, top + 12, text.c_str());
+  }
+  oled.drawUTF8(2 - offset, top + 12, text.c_str());
+  oled.setMaxClipWindow();
+  oled.setDrawColor(1);
+}
+
+void drawUpNext() {
+  oled.drawUTF8(0, 10, "Up next");
+  if (upNextCount == 0) {
+    oled.drawUTF8((128 - oled.getUTF8Width("Queue is empty")) / 2, 40, "Queue is empty");
+    return;
+  }
+  for (int i = 0; i < upNextCount; i++) {
+    String text = upNext[i].title;
+    if (upNext[i].artist.length()) text += " - " + upNext[i].artist;
+    drawRow(text, 15 + i * 16, i == selected);
+  }
+}
+
+void drawClock() {
+  time_t now = time(nullptr);
+  struct tm t;
+  localtime_r(&now, &t);
+  char hm[8] = "--:--", date[20] = "";
+  if (now > 1700000000) {                      // the clock has been set from the internet
+    strftime(hm, sizeof(hm), (now % 2) ? "%H:%M" : "%H %M", &t);   // blinking colon
+    strftime(date, sizeof(date), "%a %d %b", &t);
+  }
+  oled.drawUTF8(0, 10, date);
+  oled.setFont(u8g2_font_logisoso28_tn);
+  oled.drawStr((128 - oled.getStrWidth("00:00")) / 2, 46, hm);   // fixed position, so the blink doesn't shift it
+  oled.setFont(u8g2_font_6x13_t_cyrillic);
+  if (loaded) drawScrolling(artist.length() ? title + " - " + artist : title, 62, 51, 63);
+  else {
+    String s = client.connected() ? "Nothing playing" : status;
+    oled.drawUTF8((128 - oled.getUTF8Width(s.c_str())) / 2, 62, s.c_str());
+  }
+}
+
 void draw() {
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x13_t_cyrillic);
+  if (view == CLOCK) {
+    drawClock();
+    drawTopBar();
+    oled.sendBuffer();
+    return;
+  }
   if (!loaded) {
     String s = client.connected() ? "Nothing playing" : status;
     oled.drawUTF8((128 - oled.getUTF8Width(s.c_str())) / 2, 30, s.c_str());
     oled.drawUTF8((128 - oled.getUTF8Width("Wavy")) / 2, 50, "Wavy");
+    drawTopBar();
+    oled.sendBuffer();
+    return;
+  }
+  if (view == UP_NEXT) {
+    drawUpNext();
+    drawTopBar();
     oled.sendBuffer();
     return;
   }
 
-  // Top bar: play/pause, like, volume.
+  // Now playing. Top left: play/pause and like.
   if (playing) oled.drawTriangle(0, 0, 0, 9, 7, 5);
   else { oled.drawBox(0, 1, 3, 8); oled.drawBox(5, 1, 3, 8); }
   if (liked) drawHeart(12, 1);
-  if (millis() < volumeShownUntil) {
-    String v = "Vol " + String(volume) + "%";
-    oled.drawUTF8(127 - oled.getUTF8Width(v.c_str()), 10, v.c_str());
-  }
+  drawTopBar();
 
   float pos = position + (playing ? (millis() - receivedAt) / 1000.0 : 0);
   if (duration > 0 && pos > duration) pos = duration;
@@ -261,12 +425,21 @@ void draw() {
 // ---------- main ----------
 void setup() {
   Serial.begin(115200);
-  for (auto& b : buttons) pinMode(b.pin, INPUT_PULLUP);
+  for (auto& b : buttons) if (b.pin >= 0) pinMode(b.pin, INPUT_PULLUP);
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  Wire.begin(PIN_SDA, PIN_SCL);
+#endif
   oled.begin();
   oled.enableUTF8Print();
+  oled.setFontMode(1);   // transparent text, so it can be drawn inverted on the highlighted row
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+#ifdef ESP8266
+  configTime(TIMEZONE, "pool.ntp.org");
+#else
+  configTzTime(TIMEZONE, "pool.ntp.org");
+#endif
   udp.begin(DISCOVERY_PORT);
 }
 
