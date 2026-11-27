@@ -1,4 +1,4 @@
-// Wavy ESP32 display: shows what Wavy plays on a 128x64 OLED and controls it with four buttons.
+// Wavy ESP32 display: shows what Wavy plays on a 128x64 OLED and controls it with four buttons and a volume knob.
 // Needs the "ESP32 display" addon running in Wavy on your PC (it relays Wavy over your home Wi-Fi).
 //
 // Libraries (Arduino IDE → Tools → Manage Libraries): U8g2 by oliver.
@@ -6,13 +6,15 @@
 //         or ESP8266 ("NodeMCU 1.0"). Pins are picked automatically for each; see README.md.
 //
 // Wiring: OLED VCC → 3V3, GND → GND; each button between its pin and GND (no resistors needed).
-//              SDA  SCL   PREV  PLAY  NEXT  SCREEN
-//   ESP32      21   22    32    33    25    26
-//   ESP32-C3   5    6     3     4     10    7
-//   ESP8266    D2   D1    D5    D6    D7    (none)
+//              SDA  SCL   PREV  PLAY  NEXT  SCREEN   KNOB CLK  DT  SW
+//   ESP32      21   22    32    33    25    26       27        14  13
+//   ESP32-C3   5    6     3     4     10    7        0         1   20
+//   ESP8266    D2   D1    D5    D6    D7    (none)   (none)
+// The volume knob is a rotary encoder module such as the KY-040 (its + pin to 3V3).
 //
 // Buttons: short press = previous / play-pause / next / switch screen.
 //          hold PLAY = like, hold PREV / NEXT = volume down / up (repeats), hold SCREEN = back to "Now playing".
+// Knob: turn = volume, press = mute / unmute (on "Up next": turn = pick a track, press = play it).
 // Screens: Now playing, Up next (PREV/NEXT pick a track, PLAY plays it) and Clock.
 #ifdef ESP8266
 #include <ESP8266WiFi.h>
@@ -34,13 +36,22 @@ const uint16_t DISCOVERY_PORT = 3740;          // "discovery_port" in config.jso
 #ifdef ESP8266
 const int PIN_PREV = 14, PIN_PLAY = 12, PIN_NEXT = 13;   // D5, D6, D7
 const int PIN_VIEW = -1;                                  // no spare safe pin: no screen button
+const int PIN_ENC_A = -1, PIN_ENC_B = -1, PIN_ENC_SW = -1;   // ...and no volume knob
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
 // ESP32-C3: OLED SDA → GPIO 5, SCL → GPIO 6. Avoids the boot pins 2, 8 and 9.
 const int PIN_SDA = 5, PIN_SCL = 6;
 const int PIN_PREV = 3, PIN_PLAY = 4, PIN_NEXT = 10, PIN_VIEW = 7;
+const int PIN_ENC_A = 0, PIN_ENC_B = 1, PIN_ENC_SW = 20;    // volume knob: CLK, DT, SW
 #else
 const int PIN_PREV = 32, PIN_PLAY = 33, PIN_NEXT = 25, PIN_VIEW = 26;
+const int PIN_ENC_A = 27, PIN_ENC_B = 14, PIN_ENC_SW = 13;  // volume knob: CLK, DT, SW
 #endif
+
+// Volume knob (a rotary encoder such as the KY-040). If one click moves the volume by two steps,
+// set ENC_STEPS to 2; if turning right lowers the volume, set ENC_REVERSE to true.
+const int ENC_STEPS = 4;          // encoder signal changes per click
+const bool ENC_REVERSE = false;
+const int VOLUME_STEP = 2;        // % per click
 
 // For the clock screen. UK time; others e.g. "CET-1CEST,M3.5.0,M10.5.0/3" (Central Europe), "MSK-3" (Moscow).
 const char* TIMEZONE = "GMT0BST,M3.5.0/1,M10.5.0";
@@ -80,14 +91,14 @@ unsigned long lastPress = 0;       // "Up next" returns to "Now playing" after a
 unsigned long selectedSince = 0;   // for scrolling the highlighted row
 
 // ---------- buttons ----------
-enum Btn { B_PREV, B_PLAY, B_NEXT, B_VIEW };
+enum Btn { B_PREV, B_PLAY, B_NEXT, B_VIEW, B_KNOB, BUTTON_COUNT };
 struct Button {
   int pin;
   bool repeat;          // repeat the hold action while held
   bool down = false, held = false;
   unsigned long since = 0, lastRepeat = 0;
 };
-Button buttons[] = {{PIN_PREV, true}, {PIN_PLAY, false}, {PIN_NEXT, true}, {PIN_VIEW, false}};
+Button buttons[] = {{PIN_PREV, true}, {PIN_PLAY, false}, {PIN_NEXT, true}, {PIN_VIEW, false}, {PIN_ENC_SW, false}};
 const unsigned long HOLD_MS = 600, REPEAT_MS = 250, DEBOUNCE_MS = 30;
 
 void send(const String& cmd) {
@@ -107,11 +118,58 @@ void onTap(int b) {
   if (view == UP_NEXT && upNextCount > 0) {   // on "Up next": move the highlight, play the highlighted track
     if (b == B_PREV) selected = (selected + upNextCount - 1) % upNextCount;
     if (b == B_NEXT) selected = (selected + 1) % upNextCount;
-    if (b == B_PLAY) { send("jump " + String(upNext[selected].index)); view = NOW_PLAYING; }
+    if (b == B_PLAY || b == B_KNOB) { send("jump " + String(upNext[selected].index)); view = NOW_PLAYING; }
     selectedSince = millis();
     return;
   }
+  if (b == B_KNOB) { send("mute"); return; }
   send(b == B_PREV ? "prev" : b == B_PLAY ? "toggle" : "next");
+}
+
+// ---------- volume knob ----------
+volatile int encRaw = 0;          // signal changes counted by the interrupt
+volatile uint8_t encState = 0;
+int encLeft = 0;                  // changes not yet making up a whole click
+int volumePending = 0;            // % not yet sent to the PC
+unsigned long volumeSentAt = 0;
+unsigned long volumeLocalUntil = 0;   // ignore the PC's (older) volume while the knob is turning
+
+void IRAM_ATTR encoderIsr() {
+  // Quadrature decoding: previous and current A/B state → -1, 0 or +1.
+  static const int8_t table[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+  encState = ((encState << 2) | (digitalRead(PIN_ENC_A) << 1) | digitalRead(PIN_ENC_B)) & 0x0F;
+  encRaw += table[encState];
+}
+
+void pollEncoder() {
+  if (PIN_ENC_A < 0) return;
+  noInterrupts();
+  int raw = encRaw;
+  encRaw = 0;
+  interrupts();
+  encLeft += raw;
+  int clicks = encLeft / ENC_STEPS;
+  encLeft -= clicks * ENC_STEPS;
+  if (ENC_REVERSE) clicks = -clicks;
+  unsigned long now = millis();
+  if (clicks) {
+    lastPress = now;
+    if (view == UP_NEXT && upNextCount > 0) {   // on "Up next" the knob scrolls the list
+      selected = constrain(selected + clicks, 0, upNextCount - 1);
+      selectedSince = now;
+    } else {
+      int target = constrain(volume + clicks * VOLUME_STEP, 0, 100);
+      volumePending += target - volume;
+      volume = target;                          // show the new volume right away
+      volumeShownUntil = now + 1500;
+      volumeLocalUntil = now + 800;
+    }
+  }
+  if (volumePending && now - volumeSentAt >= 100) {   // at most ten updates a second
+    send("vol " + String(volumePending));
+    volumePending = 0;
+    volumeSentAt = now;
+  }
 }
 
 void onHold(int b) {
@@ -123,7 +181,7 @@ void onHold(int b) {
 
 void pollButtons() {
   unsigned long now = millis();
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < BUTTON_COUNT; i++) {
     Button& b = buttons[i];
     if (b.pin < 0) continue;
     bool pressed = digitalRead(b.pin) == LOW;
@@ -179,7 +237,7 @@ void handleLine(const String& line) {
   }
   String p[8];
   if (line[0] != 'S' || splitTabs(line, p, 8) < 8) return;
-  int newVolume = p[3].toInt();
+  int newVolume = millis() < volumeLocalUntil ? volume : p[3].toInt();
   if (loaded && newVolume != volume) volumeShownUntil = millis() + 1500;
   if (p[6] != title || p[7] != artist) titleSince = millis();
   loaded = true;
@@ -433,6 +491,12 @@ void draw() {
 void setup() {
   Serial.begin(115200);
   for (auto& b : buttons) if (b.pin >= 0) pinMode(b.pin, INPUT_PULLUP);
+  if (PIN_ENC_A >= 0) {
+    pinMode(PIN_ENC_A, INPUT_PULLUP);
+    pinMode(PIN_ENC_B, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_A), encoderIsr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENC_B), encoderIsr, CHANGE);
+  }
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
   Wire.begin(PIN_SDA, PIN_SCL);
 #endif
@@ -455,6 +519,7 @@ String lastStatus;
 
 void loop() {
   pollButtons();
+  pollEncoder();
   keepConnected();
   readLines();
   if (status != lastStatus) { Serial.println(status); lastStatus = status; }

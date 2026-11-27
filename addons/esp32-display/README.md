@@ -8,11 +8,12 @@ A small screen next to your PC showing what Wavy is playing: title, artist, prog
 | 2 | play / pause | like / unlike |
 | 3 | next track | volume up (repeats) |
 | 4 | next screen | back to "Now playing" |
+| knob | turn: volume (2% per click); press: mute / unmute | |
 
 The fourth button switches between three screens:
 
 - **Now playing:** title, artist, progress bar and times.
-- **Up next:** the next three tracks in the queue. Buttons 1 and 3 move the highlight, button 2 plays the highlighted track. It returns to "Now playing" after 20 s.
+- **Up next:** the next three tracks in the queue. Buttons 1 and 3 (or turning the knob) move the highlight, button 2 (or pressing the knob) plays the highlighted track. It returns to "Now playing" after 20 s.
 - **Clock:** the time (set from the internet), the date, and the current track along the bottom.
 
 It has two parts:
@@ -27,6 +28,7 @@ It has two parts:
 | ESP32 dev board | Any "ESP32 DevKit" / "ESP32-WROOM-32" board, or a small ESP32-C3 board ("C3 SuperMini"). An ESP8266 (NodeMCU, Wemos D1 mini) works too, but without the fourth button. |
 | 0.96" or 1.3" I²C OLED, 128×64 | The 4-pin kind (GND, VCC, SCL, SDA). 0.96" is usually SSD1306, 1.3" is usually SH1106. |
 | 4 push buttons | The common 6×6 mm tactile buttons. If your screen module has its own buttons with their own pins, wire those instead. |
+| Rotary encoder (optional) | For the volume knob: a 5-pin module such as the KY-040 (CLK, DT, SW, +, GND). Not on the ESP8266. |
 | Breadboard and jumper wires | Or solder everything onto perfboard. |
 | USB cable | It also powers the ESP32. Plug it into the PC or any phone charger. |
 
@@ -34,11 +36,13 @@ It has two parts:
 
 OLED VCC goes to **3V3** (not 5V/VIN) and OLED GND to **GND**. The other pins depend on the board; the sketch picks the right set by itself:
 
-| | OLED SDA | OLED SCL | Button 1 | Button 2 | Button 3 | Button 4 |
-|---|---|---|---|---|---|---|
-| ESP32 | GPIO 21 | GPIO 22 | GPIO 32 | GPIO 33 | GPIO 25 | GPIO 26 |
-| ESP32-C3 | GPIO 5 | GPIO 6 | GPIO 3 | GPIO 4 | GPIO 10 | GPIO 7 |
-| ESP8266 | D2 | D1 | D5 | D6 | D7 | — |
+| | OLED SDA | OLED SCL | Button 1 | Button 2 | Button 3 | Button 4 | Knob CLK | Knob DT | Knob SW |
+|---|---|---|---|---|---|---|---|---|---|
+| ESP32 | GPIO 21 | GPIO 22 | GPIO 32 | GPIO 33 | GPIO 25 | GPIO 26 | GPIO 27 | GPIO 14 | GPIO 13 |
+| ESP32-C3 | GPIO 5 | GPIO 6 | GPIO 3 | GPIO 4 | GPIO 10 | GPIO 7 | GPIO 0 | GPIO 1 | GPIO 20 |
+| ESP8266 | D2 | D1 | D5 | D6 | D7 | — | — | — | — |
+
+The knob's **+** pin goes to 3V3 and its **GND** to GND. If one click changes the volume twice, set `ENC_STEPS` to 2 in the sketch; if turning right lowers the volume, set `ENC_REVERSE` to `true`.
 
 Each button goes between its pin and GND. No resistors are needed, because the board's built-in pull-ups are used. On small C3 boards the pins are labelled with plain numbers, often on the back.
 
@@ -100,4 +104,4 @@ Japanese and other scripts the screen's font can't draw are left out of titles. 
 
 ## How it works
 
-The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded, followed by `Q` and then index, title and artist for each of the next three tracks. It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+`, `vol-` or `jump <queue index>`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.
+The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded, followed by `Q` and then index, title and artist for each of the next three tracks. It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+`, `vol-`, `vol <change in %>`, `mute` or `jump <queue index>`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.

@@ -104,16 +104,37 @@ def follow_events():
             time.sleep(3)
 
 
+muted_from = None   # volume before "mute", restored by the next "mute"
+
+
+def change_volume(percent):
+    try:
+        vol = api_get("/state").get("volume") or 0
+    except OSError:
+        return
+    vol = min(1.0, max(0.0, vol + percent / 100))
+    api_cmd({"cmd": "volume", "value": round(vol, 2)})
+
+
 def command(cmd):
+    global muted_from
     if cmd in ("toggle", "next", "prev", "like"):
         api_cmd({"cmd": cmd})
     elif cmd in ("vol+", "vol-"):
+        change_volume(5 if cmd == "vol+" else -5)
+    elif cmd.startswith("vol ") and cmd[4:].lstrip("-").isdigit():   # from the volume knob: change by N %
+        change_volume(int(cmd[4:]))
+    elif cmd == "mute":
         try:
             vol = api_get("/state").get("volume") or 0
         except OSError:
             return
-        vol = min(1.0, max(0.0, vol + (0.05 if cmd == "vol+" else -0.05)))
-        api_cmd({"cmd": "volume", "value": round(vol, 2)})
+        if vol > 0:
+            muted_from = vol
+            api_cmd({"cmd": "volume", "value": 0})
+        else:
+            api_cmd({"cmd": "volume", "value": muted_from or 0.5})
+            muted_from = None
     elif cmd.startswith("jump ") and cmd[5:].isdigit():
         api_cmd({"cmd": "jump", "value": int(cmd[5:])})
     else:
