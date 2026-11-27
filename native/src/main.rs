@@ -17,6 +17,7 @@ mod recap;
 mod fx;
 mod theme;
 mod viz;
+mod foryou;
 use theme::p as th;
 
 use eframe::egui::{self, Align, Align2, Color32, ColorImage, CornerRadius, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
@@ -45,7 +46,7 @@ fn openings() -> &'static str { l!("Опенинги", "Openings") }
 enum Sleep { At(Instant), EndOfTrack }
 
 #[derive(Clone, PartialEq)]
-enum View { Library, Liked, Stats, Playlist(String), Search, Anime, AnimeTitle(String), Smart(String) }
+enum View { Library, Liked, Stats, Playlist(String), Search, ForYou, Anime, AnimeTitle(String), Smart(String) }
 
 #[derive(Clone)]
 enum ShazamState { Listening, Found(Found), NotFound, Error(String), Adding }
@@ -105,6 +106,10 @@ enum Bg {
     Account(Result<(), String>),
     /// "My wave": tracks, whether it's a top-up
     Wave(Result<Vec<Track>, String>, bool),
+    /// "For you": a row loaded (refresh generation, row slot, cards) / a mood's playlists / an album or playlist fetched (card id, save it, (name, link, tracks))
+    Rec(u64, u32, Result<Vec<wavy_core::recs::Card>, String>),
+    RecMood(u64, usize, Result<Vec<wavy_core::recs::Card>, String>),
+    RecOpened(String, bool, Result<(String, String, Vec<Track>), String>),
     /// Last.fm: sign-in page (token, link) / sign-in finished
     LastfmBegin(Result<(String, String), String>),
     LastfmDone(Result<wavy_core::lastfm::Account, String>),
@@ -183,6 +188,11 @@ enum Act {
     YtImportLikes, YtImportPlaylists,
     /// "My wave" (true — top up the queue, false — start over)
     Wave(bool),
+    /// "For you": load the rows again / play tracks of a row (start index, as "My wave") / play or save (true) an album or playlist / show a mood's playlists
+    ForYou,
+    RecPlay(Vec<Track>, usize, bool),
+    RecOpen(wavy_core::recs::Card, bool),
+    RecMood(usize),
     /// subtitles from any file (name doesn't match the episode)
     PickSubs,
     /// save the current video frame as PNG
@@ -320,6 +330,8 @@ struct App {
     /// "My wave" is playing (the queue tops itself up) / being picked
     wave_on: bool,
     wave_busy: bool,
+    /// "For you" tab
+    foryou: foryou::ForYou,
     /// Last.fm: who has already been sent "now playing", what's already scrobbled, when playback started (s), sign-in token
     lfm_np: Option<String>,
     lfm_done: Option<String>,
@@ -436,7 +448,7 @@ impl App {
             show_video: false, fullscreen: false, video: None, video_loading: None, video_dl: None, video_error: None, upd: None, upd_checked: None, started: Instant::now(), pre_fullscreen: None, restore_window: None,
             _hotkeys: hotkeys, hk_rx, hk_keys, hk_capture: None,
             media_info: None, audio_sel: 0, sub_sel: None, watched_mark: None,
-            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(), romaji: None, bg_tex: None,
+            ff, reload_after_ff: false, exporting: false, cut_retries: None, counted: None, drag_ids: None, drop_at: None, hover_row: None, drag_queue: None, muted_vol: 0.0, focus_filter: false, quitting: false, sleep: None, radio: Vec::new(), show_lyrics: false, lyrics: None, lyrics_line: None, stats_period: 0, skips: None, auto_skipped: HashSet::new(), next_ep: None, stay_ep: None, shiki_code: String::new(), twitch: None, sr_tx, sr_rx, skip_vote: Default::default(), remote: { let (t, r) = channel(); (Default::default(), Default::default(), t, r) }, reward_bind: false, themes_busy: None, palette: None, sound_open: false, acc: AccState::Off, google_login: None, wave_on: false, wave_busy: false, foryou: Default::default(), lfm_np: None, lfm_done: None, lfm_started: 0, lfm_token: None, twitch_device: None, sr_last: Default::default(), sr_by: HashMap::new(), cache_size: None, cache_trimmed: Instant::now() - Duration::from_secs(3600), cache_counting: false, wifi: None, xfaded: None, tray: None, instance: None, cjk_loaded: false, cjk_check: Instant::now() - Duration::from_secs(60), api_rx, addon_list: Vec::new(), addon_run: Default::default(), api_token, api_pushed: Instant::now(), devices: None, undo: None, watch_checked: Instant::now() - Duration::from_secs(290), watch_busy: Default::default(), station: None, radio_retry: None, lb_input: String::new(), lb_busy: false, spectrum: viz::Spectrum::new(32), al_input: String::new(), al_busy: false, sub_form: Default::default(), romaji: None, bg_tex: None,
         };
         app.fix_episode_numbers();
         if s.yt_account && !s.yt_cookies.is_empty() { app.connect_account(&cc.egui_ctx); }
@@ -538,7 +550,7 @@ impl App {
             View::Liked => s.lib.liked.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect(),
             View::Playlist(id) => s.lib.playlists.iter().find(|p| &p.id == id).map(|p| p.track_ids.iter().filter(|t| s.lib.tracks.contains_key(*t)).cloned().collect()).unwrap_or_default(),
             View::Search => return self.results.iter().map(|t| t.id.clone()).collect(),
-            View::Anime | View::AnimeTitle(_) | View::Stats => return vec![],
+            View::Anime | View::AnimeTitle(_) | View::Stats | View::ForYou => return vec![],
             View::Smart(rule) => {
                 let q = self.filter.trim().to_lowercase();
                 return s.smart(rule).into_iter().filter(|id| q.is_empty() || s.lib.tracks.get(id).is_some_and(|t| format!("{} {} {}", t.title, t.artist, t.album).to_lowercase().contains(&q))).collect();
@@ -839,7 +851,11 @@ impl App {
                 let r = match self.settings().repeat.as_str() { "off" => "all", "all" => "one", _ => "off" };
                 self.store.lock().unwrap().patch_settings(&json!({"repeat": r}));
             }
-            Act::View(v) => { self.view = v; self.selected.clear(); self.filter.clear(); self.show_video = false; } // switching sections collapses the video
+            Act::View(v) => {
+                let fy = v == View::ForYou;
+                self.view = v; self.selected.clear(); self.filter.clear(); self.show_video = false; // switching sections collapses the video
+                if fy { self.foryou_open(ctx); }
+            }
             Act::ImportFiles | Act::ImportFolder => {
                 let pid = self.cur_playlist();
                 let dlg = rfd::FileDialog::new();
@@ -1365,6 +1381,21 @@ impl App {
                     Ok(())
                 });
             }
+            Act::ForYou => self.foryou_refresh(ctx),
+            Act::RecMood(i) => self.foryou_mood(i, ctx),
+            Act::RecPlay(tracks, i, wave) => {
+                let cards: Vec<wavy_core::recs::Card> = tracks.into_iter().map(wavy_core::recs::Card::track).collect();
+                self.foryou_pool(&cards);
+                self.play_list(cards.into_iter().map(|c| c.id).collect(), i, false, ctx);
+                // "Mixed for you" goes on as "My wave": the queue tops itself up
+                self.wave_on = wave;
+            }
+            Act::RecOpen(card, save) => {
+                if self.foryou.opening.is_some() { return; }
+                self.foryou.opening = Some(card.id.clone());
+                let (yt, tx, c) = (self.yt.clone(), self.tx.clone(), ctx.clone());
+                std::thread::spawn(move || { let _ = tx.send(Bg::RecOpened(card.id.clone(), save, yt.card_tracks(&card))); c.request_repaint(); });
+            }
             Act::Wave(more) => {
                 if self.wave_busy { return; }
                 if self.acc != AccState::On { self.toast(l!("Сначала войди в YouTube в настройках", "Sign in to YouTube in Settings first"), true); return; }
@@ -1538,7 +1569,7 @@ impl App {
     }
 
     fn ensure_in_library(&mut self, ids: &[String]) {
-        let missing: Vec<Track> = ids.iter().filter(|id| !self.store.lock().unwrap().lib.tracks.contains_key(*id)).filter_map(|id| self.results.iter().find(|t| &t.id == id).cloned()).collect();
+        let missing: Vec<Track> = ids.iter().filter(|id| !self.store.lock().unwrap().lib.tracks.contains_key(*id)).filter_map(|id| self.results.iter().chain(self.radio.iter()).find(|t| &t.id == id).cloned()).collect();
         if !missing.is_empty() { self.store.lock().unwrap().add_tracks(missing); }
     }
 
@@ -1799,6 +1830,9 @@ impl App {
                     Ok(()) => { if self.acc == AccState::Connecting { self.toast(l!("YouTube Music: аккаунт подключён", "YouTube Music: account connected"), false); } self.acc = AccState::On; }
                     Err(e) => { self.acc = AccState::Err(e.clone()); self.toast(lf!("YouTube Music: {e}", "YouTube Music: {e}"), true); }
                 },
+                Bg::Rec(gen, slot, r) => self.foryou_row_done(gen, slot, r),
+                Bg::RecMood(gen, i, r) => self.foryou_mood_done(gen, i, r),
+                Bg::RecOpened(id, save, r) => self.foryou_opened(id, save, r, ctx),
                 Bg::Wave(r, more) => {
                     self.wave_busy = false;
                     match r {
@@ -2192,6 +2226,7 @@ impl App {
         if nav(ui, l!("\u{E2A8}  Любимое", "\u{E2A8}  Liked"), self.view == View::Liked, (n_liked > 0).then_some(n_liked)).clicked() { acts.push(Act::View(View::Liked)); }
         if nav(ui, l!("\u{E150}  Итоги", "\u{E150}  Recap"), self.view == View::Stats, None).clicked() { acts.push(Act::View(View::Stats)); }
         if nav(ui, l!("\u{E30C}  Поиск на YouTube", "\u{E30C}  Search YouTube"), self.view == View::Search, None).clicked() { acts.push(Act::View(View::Search)); }
+        if nav(ui, l!("\u{E6A2}  Для тебя", "\u{E6A2}  For you"), self.view == View::ForYou, None).on_hover_text(l!("Рекомендации: похожее на то, что ты слушаешь, новинки и чарты", "Recommendations: similar to what you listen to, new releases and charts")).clicked() { acts.push(Act::View(View::ForYou)); }
         let n_anime = self.store.lock().unwrap().lib.anime.len();
         if nav(ui, l!("\u{E754}  Аниме", "\u{E754}  Anime"), matches!(self.view, View::Anime | View::AnimeTitle(_)), (n_anime > 0).then_some(n_anime)).clicked() { acts.push(Act::View(View::Anime)); }
         if self.acc == AccState::On {
@@ -2261,6 +2296,7 @@ impl App {
                 View::Smart(r) => (l!("УМНЫЙ ПЛЕЙЛИСТ", "SMART PLAYLIST"), wavy_core::store::SMART.iter().find(|x| x.0 == r).map(|x| wavy_core::i18n::tr(x.1).to_string()).unwrap_or_default(), None),
                 View::Stats => (l!("ТВОЯ МУЗЫКА", "YOUR MUSIC"), l!("Итоги", "Recap").to_string(), None),
                 View::Search => ("YOUTUBE", l!("Поиск", "Search").to_string(), None),
+                View::ForYou => ("YOUTUBE MUSIC", l!("Для тебя", "For you").to_string(), None),
                 View::Anime | View::AnimeTitle(_) => (l!("АНИМЕ", "ANIME"), l!("Аниме", "Anime").to_string(), None),
                 View::Playlist(id) => {
                     let p = s.lib.playlists.iter().find(|p| &p.id == id).cloned();
@@ -2344,6 +2380,7 @@ impl App {
         match self.view.clone() {
             View::Anime => return self.anime_grid(ui, acts),
             View::Stats => return self.stats_page(ui, acts),
+            View::ForYou => return self.foryou_page(ui, acts),
             View::AnimeTitle(id) => return self.anime_page(ui, &id, acts),
             _ => {}
         }
@@ -3107,6 +3144,7 @@ impl App {
         add("\u{E340}", l!("Библиотека", "Library"), "", "library треки", Cmd::Act(Act::View(View::Library)));
         add("\u{E2A8}", l!("Любимое", "Liked"), "", "liked лайки", Cmd::Act(Act::View(View::Liked)));
         add("\u{E150}", l!("Итоги", "Recap"), "", "stats статистика топ", Cmd::Act(Act::View(View::Stats)));
+        add("\u{E6A2}", l!("Для тебя", "For you"), "", "for you рекомендации recommendations новинки чарты charts", Cmd::Act(Act::View(View::ForYou)));
         add("\u{E754}", l!("Аниме", "Anime"), "", "anime серии", Cmd::Act(Act::View(View::Anime)));
         add("\u{EA20}", l!("Добавить файлы", "Add files"), "", "import импорт музыка", Cmd::Act(Act::ImportFiles));
         add("\u{E256}", l!("Добавить папку", "Add a folder"), "", "import импорт folder", Cmd::Act(Act::ImportFolder));

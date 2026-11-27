@@ -70,7 +70,7 @@ impl YouTube {
         if COOKIE_BROWSERS.iter().any(|b| b.0 == v) { vec!["--cookies-from-browser".into(), v] } else { vec!["--cookies".into(), v] }
     }
 
-    fn rustypipe(&self) -> Result<&rustypipe::client::RustyPipe, String> {
+    pub(crate) fn rustypipe(&self) -> Result<&rustypipe::client::RustyPipe, String> {
         self.rp.get_or_init(|| {
             let dir = self.bin_dir.parent().unwrap_or(&self.bin_dir).join("rustypipe");
             let _ = std::fs::create_dir_all(&dir);

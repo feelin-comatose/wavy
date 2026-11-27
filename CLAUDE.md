@@ -44,6 +44,7 @@ Every push to `main` runs `.github/workflows/release.yml`. It runs `wavy-core` t
   - `store.rs`: the library (`library.json` in `data_dir()`, `%APPDATA%\wavy` or `~/.local/share/wavy`), settings, smart playlists, backups.
   - `youtube.rs`: yt-dlp + rustypipe.
   - `ytaccount.rs`: YouTube Music account via cookies, "My wave".
+  - `recs.rs`: the "For you" tab's data (seed tracks from the listening history, similar songs, new releases, charts, mood playlists). New releases and charts are parsed from raw YouTube Music pages (`two_row_cards`): rustypipe's `music_new_albums`/`music_genres`/`music_charts` broke when YouTube dropped those pages. Manual check: `core/examples/recs_check.rs`. UI: `native/src/foryou.rs`.
   - `spotify.rs`: Spotify list → YouTube matching.
   - `stream.rs`: progressive chunked download into the cache.
   - `anime.rs` / `media.rs`: episode filename parsing, MKV tracks and subtitles.

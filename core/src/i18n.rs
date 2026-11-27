@@ -32,6 +32,24 @@ pub fn tr(ru: &str) -> &str {
     if !en() { return ru; }
     match ru {
         "Ровно" => "Flat",
+        // moods and genres on the "For you" tab (core/src/recs.rs)
+        "Расслабиться" => "Relax",
+        "Энергия" => "Energize",
+        "Тренировка" => "Workout",
+        "Хорошее настроение" => "Feel good",
+        "Фокус" => "Focus",
+        "Вечеринка" => "Party",
+        "Грусть" => "Sad",
+        "Романтика" => "Romance",
+        "Сон" => "Sleep",
+        "Дорога" => "Commute",
+        "Поп" => "Pop",
+        "Хип-хоп" => "Hip-hop",
+        "Джаз" => "Jazz",
+        "Классика" => "Classical",
+        "Метал" => "Metal",
+        "Лоу-фай" => "Lo-fi",
+        "Аниме" => "Anime",
         // interface themes (native/src/theme.rs)
         "Тёмная" => "Dark",
         "Чёрная (AMOLED)" => "Black (AMOLED)",
