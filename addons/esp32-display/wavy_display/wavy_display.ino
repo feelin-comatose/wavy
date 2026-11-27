@@ -357,14 +357,21 @@ void drawClock() {
   time_t now = time(nullptr);
   struct tm t;
   localtime_r(&now, &t);
-  char hm[8] = "--:--", date[20] = "";
-  if (now > 1700000000) {                      // the clock has been set from the internet
-    strftime(hm, sizeof(hm), (now % 2) ? "%H:%M" : "%H %M", &t);   // blinking colon
+  char hh[4] = "--", mm[4] = "--", date[20] = "";
+  bool synced = now > 1700000000;              // the clock has been set from the internet
+  if (synced) {
+    strftime(hh, sizeof(hh), "%H", &t);
+    strftime(mm, sizeof(mm), "%M", &t);
     strftime(date, sizeof(date), "%a %d %b", &t);
   }
   oled.drawUTF8(0, 10, date);
+  // Hours, colon and minutes at fixed positions, so the blinking colon never moves the digits.
   oled.setFont(u8g2_font_logisoso28_tn);
-  oled.drawStr((128 - oled.getStrWidth("00:00")) / 2, 46, hm);   // fixed position, so the blink doesn't shift it
+  int x = (128 - oled.getStrWidth("00:00")) / 2;
+  int colonX = x + oled.getStrWidth("00");
+  oled.drawStr(x, 46, hh);
+  if (!synced || now % 2) oled.drawStr(colonX, 46, ":");
+  oled.drawStr(colonX + oled.getStrWidth(":"), 46, mm);
   oled.setFont(u8g2_font_6x13_t_cyrillic);
   if (loaded) drawScrolling(artist.length() ? title + " - " + artist : title, 62, 51, 63);
   else {
