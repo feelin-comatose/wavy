@@ -1,0 +1,7 @@
+{
+  "name": "ESP32 display",
+  "description": "Now playing on a small ESP32 screen next to your PC, with play/pause, next, previous, like and volume buttons. The ESP32 sketch and setup guide are in this folder (README.md).",
+  "version": "1.0",
+  "author": "Wavy",
+  "run": ["python", "main.py"]
+}

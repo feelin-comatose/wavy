@@ -10,7 +10,7 @@ An addon is a separate program that talks to Wavy through a small local HTTP API
 
 Each addon writes its output to `addon.log` in its folder (the **log** link). If it crashes, Settings shows the exit code.
 
-The examples in this repository (`addons/track-log`, `addons/discord-webhook`) are Python scripts that use only the standard library. They need Python installed and available as `python`. On Windows, if only the `py` launcher is installed, change `"run"` to `["py", "main.py"]`.
+The examples in this repository (`addons/track-log`, `addons/discord-webhook`, `addons/esp32-display`) are Python scripts that use only the standard library. `esp32-display` also comes with an Arduino sketch for a small ESP32 screen with buttons; its `README.md` explains the hardware and setup. They need Python installed and available as `python`. On Windows, if only the `py` launcher is installed, change `"run"` to `["py", "main.py"]`.
 
 ## Writing an addon
 
