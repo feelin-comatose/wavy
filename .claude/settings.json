@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arduino-cli *)",
+      "Bash(*/arduino-cli *)",
+      "Bash(curl -sL https://downloads.arduino.cc/arduino-cli/*)"
+    ]
+  }
+}
