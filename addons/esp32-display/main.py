@@ -119,7 +119,7 @@ def change_volume(percent):
 
 def command(cmd):
     global muted_from
-    if cmd in ("toggle", "next", "prev", "like"):
+    if cmd in ("toggle", "play", "next", "prev", "like"):
         api_cmd({"cmd": cmd})
     elif cmd in ("vol+", "vol-"):
         change_volume(5 if cmd == "vol+" else -5)

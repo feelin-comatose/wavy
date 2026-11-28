@@ -6,16 +6,19 @@
 //         or ESP8266 ("NodeMCU 1.0"). Pins are picked automatically for each; see README.md.
 //
 // Wiring: OLED VCC → 3V3, GND → GND; each button between its pin and GND (no resistors needed).
-//              SDA  SCL   PREV  PLAY  NEXT  SCREEN   KNOB CLK  DT  SW
-//   ESP32      21   22    32    33    25    26       27        14  13
-//   ESP32-C3   5    6     3     4     10    7        0         1   20
-//   ESP8266    D2   D1    D5    D6    D7    (none)   (none)
+//              SDA  SCL   PREV  PLAY  NEXT  SCREEN   KNOB CLK  DT  SW   BUZZER
+//   ESP32      21   22    32    33    25    26       27        14  13   4
+//   ESP32-C3   5    6     3     4     10    7        0         1   20   21
+//   ESP8266    D2   D1    D5    D6    D7    (none)   (none)             (none)
 // The volume knob is a rotary encoder module such as the KY-040 (its + pin to 3V3).
+// The buzzer must be a passive one (it plays any note); its other pin goes to GND.
 //
 // Buttons: short press = previous / play-pause / next / switch screen.
 //          hold PLAY = like, hold PREV / NEXT = volume down / up (repeats), hold SCREEN = back to "Now playing".
 // Knob: turn = volume, press = mute / unmute (on "Up next": turn = pick a track, press = play it).
-// Screens: Now playing, Up next (PREV/NEXT pick a track, PLAY plays it) and Clock.
+// Screens: Now playing, Up next (PREV/NEXT pick a track, PLAY plays it), Clock (PLAY sets the alarm:
+// hour → minutes → on/off, PREV/NEXT or the knob change it) and, with a buzzer, Tunes (PLAY plays or stops;
+// the last tune played is the alarm's). When the alarm rings, any button stops it and starts the music.
 #ifdef ESP8266
 #include <ESP8266WiFi.h>
 #else
@@ -37,14 +40,17 @@ const uint16_t DISCOVERY_PORT = 3740;          // "discovery_port" in config.jso
 const int PIN_PREV = 14, PIN_PLAY = 12, PIN_NEXT = 13;   // D5, D6, D7
 const int PIN_VIEW = -1;                                  // no spare safe pin: no screen button
 const int PIN_ENC_A = -1, PIN_ENC_B = -1, PIN_ENC_SW = -1;   // ...and no volume knob
+const int PIN_BUZZER = -1;                                    // ...and no buzzer
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
 // ESP32-C3: OLED SDA → GPIO 5, SCL → GPIO 6. Avoids the boot pins 2, 8 and 9.
 const int PIN_SDA = 5, PIN_SCL = 6;
 const int PIN_PREV = 3, PIN_PLAY = 4, PIN_NEXT = 10, PIN_VIEW = 7;
 const int PIN_ENC_A = 0, PIN_ENC_B = 1, PIN_ENC_SW = 20;    // volume knob: CLK, DT, SW
+const int PIN_BUZZER = 21;                                    // passive buzzer
 #else
 const int PIN_PREV = 32, PIN_PLAY = 33, PIN_NEXT = 25, PIN_VIEW = 26;
 const int PIN_ENC_A = 27, PIN_ENC_B = 14, PIN_ENC_SW = 13;  // volume knob: CLK, DT, SW
+const int PIN_BUZZER = 4;                                     // passive buzzer
 #endif
 
 // Volume knob (a rotary encoder such as the KY-040). If one click moves the volume by two steps,
@@ -85,9 +91,11 @@ QueueItem upNext[UP_NEXT_MAX];
 int upNextCount = 0;
 int listTop = 0;                   // first row shown on the "Up next" screen (it shows three)
 
-// Screens, switched with the fourth button.
-enum View { NOW_PLAYING, UP_NEXT, CLOCK, VIEW_COUNT };
+// Screens, switched with the fourth button. The tunes screen is there only with a buzzer.
+enum View { NOW_PLAYING, UP_NEXT, CLOCK, TUNE_LIST };
+const int VIEW_COUNT = PIN_BUZZER >= 0 ? 4 : 3;
 int view = NOW_PLAYING;
+int tuneSel = 0, tuneTop = 0;      // highlighted and first shown row on the tunes screen
 int selected = 0;                  // highlighted row on the "Up next" screen
 unsigned long lastPress = 0;       // "Up next" returns to "Now playing" after a while
 unsigned long selectedSince = 0;   // for scrolling the highlighted row
@@ -110,10 +118,210 @@ void send(const String& cmd) {
   }
 }
 
+// ---------- tunes (ringtone format, RTTTL) ----------
+// Any RTTTL ringtone string can be added here: name, then "d=" default note length, "o=" octave, "b=" tempo.
+struct Tune { const char* name; const char* rtttl; };
+const Tune TUNES[] = {
+  {"Gran Vals (Nokia)", "Nokia:d=4,o=5,b=225:8e6,8d6,f#,g#,8c#6,8b,d,e,8b,8a,c#,e,2a"},
+  {"Korobeiniki (Tetris)", "Korobeiniki:d=4,o=5,b=160:e6,8b,8c6,d6,8c6,8b,a,8a,8c6,e6,8d6,8c6,b,8b,8c6,d6,e6,c6,a,2a,8p,d6,8f6,a6,8g6,8f6,e6,8e6,8c6,e6,8d6,8c6,b,8b,8c6,d6,e6,c6,a,2a"},
+  {"Fur Elise", "FurElise:d=8,o=5,b=125:e6,d#6,e6,d#6,e6,b,d6,c6,4a,p,c,e,a,4b,p,e,g#,b,4c6,p,e,e6,d#6,e6,d#6,e6,b,d6,c6,4a,p,c,e,a,4b,p,e,c6,b,2a"},
+  {"Ode to Joy", "OdeToJoy:d=4,o=5,b=140:e,e,f,g,g,f,e,d,c,c,d,e,e.,8d,2d,e,e,f,g,g,f,e,d,c,c,d,e,d.,8c,2c"},
+  {"Mountain King", "MountainKing:d=8,o=5,b=180:a4,b4,c,d,e,c,4e,d#,b4,4d#,d,a#4,4d,a4,b4,c,d,e,c,e,a,g,e,c,e,2g"},
+  {"Happy Birthday", "Birthday:d=4,o=5,b=125:8g.,16g,a,g,c6,2b,8g.,16g,a,g,d6,2c6,8g.,16g,g6,e6,c6,b,a,8f6.,16f6,e6,c6,d6,2c6"},
+};
+const int TUNE_COUNT = sizeof(TUNES) / sizeof(TUNES[0]);
+
+int playingTune = -1;              // index of the tune playing, or -1
+bool tuneRepeat = false;
+const char* tuneStart = nullptr;   // first note
+const char* tunePos = nullptr;     // next note
+int tuneDur = 4, tuneOct = 6, tuneBpm = 63;
+unsigned long noteEnd = 0, noteOffAt = 0;
+
+void stopTune() {
+  if (PIN_BUZZER >= 0) noTone(PIN_BUZZER);
+  playingTune = -1;
+  tunePos = nullptr;
+  noteOffAt = 0;
+}
+
+void playTune(int i, bool repeat) {
+  if (PIN_BUZZER < 0) return;
+  stopTune();
+  const char* p = strchr(TUNES[i].rtttl, ':');
+  if (!p) return;
+  p++;
+  tuneDur = 4; tuneOct = 6; tuneBpm = 63;
+  while (*p && *p != ':') {                    // defaults: d=4,o=5,b=140
+    char key = *p;
+    while (*p && *p != '=' && *p != ':') p++;
+    if (*p == '=') p++;
+    int v = atoi(p);
+    if (key == 'd' && v > 0) tuneDur = v;
+    if (key == 'o' && v > 0) tuneOct = v;
+    if (key == 'b' && v > 0) tuneBpm = v;
+    while (*p && *p != ',' && *p != ':') p++;
+    if (*p == ',') p++;
+  }
+  if (*p != ':') return;
+  tuneStart = tunePos = p + 1;
+  playingTune = i;
+  tuneRepeat = repeat;
+  noteEnd = millis();
+}
+
+// Plays the tune note by note without blocking: the screen and buttons keep working.
+void pollTune() {
+  if (!tunePos) return;
+  unsigned long now = millis();
+  if (noteOffAt && now >= noteOffAt) { noTone(PIN_BUZZER); noteOffAt = 0; }   // short gap between notes
+  if (now < noteEnd) return;
+  if (!*tunePos) {
+    if (!tuneRepeat) { stopTune(); return; }
+    tunePos = tuneStart;
+    noteEnd = now + 1000;                      // a pause before playing it again
+    return;
+  }
+  int dur = 0;
+  while (isdigit(*tunePos)) dur = dur * 10 + (*tunePos++ - '0');
+  if (dur <= 0) dur = tuneDur;
+  int semitone = -1;                           // from C; -1 = rest
+  switch (tolower(*tunePos)) {
+    case 'c': semitone = 0; break;
+    case 'd': semitone = 2; break;
+    case 'e': semitone = 4; break;
+    case 'f': semitone = 5; break;
+    case 'g': semitone = 7; break;
+    case 'a': semitone = 9; break;
+    case 'b': case 'h': semitone = 11; break;
+  }
+  if (*tunePos) tunePos++;
+  if (*tunePos == '#') { semitone++; tunePos++; }
+  bool dotted = false;
+  if (*tunePos == '.') { dotted = true; tunePos++; }
+  int octave = tuneOct;
+  if (isdigit(*tunePos)) octave = *tunePos++ - '0';
+  if (*tunePos == '.') { dotted = true; tunePos++; }
+  while (*tunePos && *tunePos != ',') tunePos++;   // skip anything unexpected
+  if (*tunePos == ',') tunePos++;
+
+  unsigned long ms = 240000UL / tuneBpm / dur;     // a whole note is four beats
+  if (dotted) ms += ms / 2;
+  if (semitone >= 0) {
+    float freq = 440.0f * powf(2.0f, (octave - 4) + (semitone - 9) / 12.0f);   // a4 = 440 Hz
+    tone(PIN_BUZZER, (unsigned int)freq);
+    noteOffAt = now + ms * 9 / 10;
+  } else {
+    noTone(PIN_BUZZER);
+    noteOffAt = 0;
+  }
+  noteEnd = now + ms;
+}
+
+// ---------- alarm clock ----------
+// Set on the clock screen: button 2 (or the knob) steps through hour → minutes → on/off,
+// buttons 1/3 (or turning the knob) change the value. When it rings, any button stops it and starts the music.
+enum AlarmEdit { EDIT_NONE, EDIT_HOUR, EDIT_MIN, EDIT_ON };
+int alarmEdit = EDIT_NONE;
+bool alarmOn = false;
+int alarmHour = 7, alarmMin = 0, alarmTune = 0;   // alarmTune: the last tune played on the tunes screen
+bool ringing = false;
+unsigned long ringingSince = 0;
+int alarmDoneDay = -1;             // day of the year it last rang, so it rings once a day
+
+#ifndef ESP8266
+#include <Preferences.h>
+Preferences prefs;
+#endif
+
+void loadAlarm() {
+#ifndef ESP8266
+  prefs.begin("wavy", true);
+  alarmOn = prefs.getBool("alarmOn", false);
+  alarmHour = prefs.getInt("alarmH", 7);
+  alarmMin = prefs.getInt("alarmM", 0);
+  alarmTune = constrain(prefs.getInt("alarmTune", 0), 0, TUNE_COUNT - 1);
+  prefs.end();
+#endif
+}
+
+void saveAlarm() {
+#ifndef ESP8266
+  prefs.begin("wavy", false);
+  prefs.putBool("alarmOn", alarmOn);
+  prefs.putInt("alarmH", alarmHour);
+  prefs.putInt("alarmM", alarmMin);
+  prefs.putInt("alarmTune", alarmTune);
+  prefs.end();
+#endif
+}
+
+void adjustAlarm(int by) {
+  if (alarmEdit == EDIT_HOUR) alarmHour = ((alarmHour + by) % 24 + 24) % 24;
+  if (alarmEdit == EDIT_MIN) alarmMin = ((alarmMin + by) % 60 + 60) % 60;
+  if (alarmEdit == EDIT_ON && by % 2) alarmOn = !alarmOn;
+}
+
+void finishAlarmEdit() {
+  if (alarmEdit == EDIT_NONE) return;
+  alarmEdit = EDIT_NONE;
+  saveAlarm();
+}
+
+void stopRinging() {
+  ringing = false;
+  stopTune();
+  send("play");                    // wake up to your music
+}
+
+void checkAlarm() {
+  if (ringing) {
+    if (millis() - ringingSince > 120000) { ringing = false; stopTune(); }   // gives up after 2 minutes
+    return;
+  }
+  if (!alarmOn || alarmEdit != EDIT_NONE) return;
+  time_t now = time(nullptr);
+  if (now < 1700000000) return;    // the clock isn't set yet
+  struct tm t;
+  localtime_r(&now, &t);
+  if (t.tm_hour == alarmHour && t.tm_min == alarmMin && t.tm_yday != alarmDoneDay) {
+    alarmDoneDay = t.tm_yday;
+    ringing = true;
+    ringingSince = millis();
+    view = CLOCK;
+    if (PIN_BUZZER >= 0) playTune(alarmTune, true);
+    else send("play");             // no buzzer: just start the music
+  }
+}
+
 void onTap(int b) {
+  if (ringing) { stopRinging(); return; }
   if (b == B_VIEW) {
+    finishAlarmEdit();
     view = (view + 1) % VIEW_COUNT;
     selected = 0;
+    selectedSince = millis();
+    return;
+  }
+  if (view == CLOCK && (b == B_PLAY || b == B_KNOB)) {   // next step of setting the alarm
+    alarmEdit = (alarmEdit + 1) % 4;
+    if (alarmEdit == EDIT_NONE) saveAlarm();
+    return;
+  }
+  if (view == CLOCK && alarmEdit != EDIT_NONE) {
+    adjustAlarm(b == B_NEXT ? 1 : -1);
+    return;
+  }
+  if (view == TUNE_LIST) {                       // pick a tune, play or stop it
+    if (b == B_PREV) tuneSel = (tuneSel + TUNE_COUNT - 1) % TUNE_COUNT;
+    if (b == B_NEXT) tuneSel = (tuneSel + 1) % TUNE_COUNT;
+    if (b == B_PLAY || b == B_KNOB) {
+      if (playingTune == tuneSel) stopTune();
+      else {
+        playTune(tuneSel, false);
+        if (alarmTune != tuneSel) { alarmTune = tuneSel; saveAlarm(); }
+      }
+    }
     selectedSince = millis();
     return;
   }
@@ -156,7 +364,14 @@ void pollEncoder() {
   unsigned long now = millis();
   if (clicks) {
     lastPress = now;
-    if (view == UP_NEXT && upNextCount > 0) {   // on "Up next" the knob scrolls the list
+    if (ringing) {
+      stopRinging();
+    } else if (view == CLOCK && alarmEdit != EDIT_NONE) {   // setting the alarm
+      adjustAlarm(clicks);
+    } else if (view == TUNE_LIST) {
+      tuneSel = constrain(tuneSel + clicks, 0, TUNE_COUNT - 1);
+      selectedSince = now;
+    } else if (view == UP_NEXT && upNextCount > 0) {   // on "Up next" the knob scrolls the list
       selected = constrain(selected + clicks, 0, upNextCount - 1);
       selectedSince = now;
     } else {
@@ -175,10 +390,15 @@ void pollEncoder() {
 }
 
 void onHold(int b) {
+  if (ringing) { stopRinging(); return; }
+  if (view == CLOCK && alarmEdit != EDIT_NONE && (b == B_PREV || b == B_NEXT)) {   // hold to change it quickly
+    adjustAlarm(b == B_NEXT ? 1 : -1);
+    return;
+  }
   if (b == B_PREV) send("vol-");
   if (b == B_NEXT) send("vol+");
   if (b == B_PLAY) send("like");
-  if (b == B_VIEW) view = NOW_PLAYING;   // hold the screen button: straight back to "Now playing"
+  if (b == B_VIEW) { finishAlarmEdit(); view = NOW_PLAYING; }   // hold the screen button: back to "Now playing"
 }
 
 void pollButtons() {
@@ -207,6 +427,7 @@ void pollButtons() {
     }
   }
   if (view == UP_NEXT && now - lastPress > 20000) view = NOW_PLAYING;
+  if (alarmEdit != EDIT_NONE && now - lastPress > 20000) finishAlarmEdit();   // forgot to finish: keep what was set
 }
 
 // ---------- link to the PC ----------
@@ -356,7 +577,7 @@ unsigned long eqNext = 0;
 
 void drawEq() {
   unsigned long now = millis();
-  bool dancing = loaded && playing;
+  bool dancing = (loaded && playing) || playingTune >= 0;
   if (dancing && now >= eqNext) {
     eqNext = now + 110;
     for (int i = 0; i < 4; i++) eqTarget[i] = 2 + random(9);                 // 2..10 px
@@ -400,36 +621,51 @@ void drawRow(const String& text, int top, bool highlighted, int width) {
   oled.setDrawColor(1);
 }
 
+// A list with a heading ("Name 2/15"), three rows at a time, and a scrollbar when it's longer.
+void drawList(const char* name, int count, int sel, int& top, String (*rowText)(int)) {
+  String head = String(name) + " " + String(sel + 1) + "/" + String(count);
+  oled.drawUTF8(0, 10, head.c_str());
+
+  // The window follows the highlight, keeping one row of context where it can.
+  const int ROWS = 3;
+  if (sel < top + 1) top = sel - 1;
+  if (sel > top + ROWS - 2) top = sel - ROWS + 2;
+  top = constrain(top, 0, max(0, count - ROWS));
+
+  bool scrollbar = count > ROWS;
+  int width = scrollbar ? 124 : 128;
+  for (int r = 0; r < ROWS && top + r < count; r++) drawRow(rowText(top + r), 15 + r * 16, top + r == sel, width);
+  if (scrollbar) {   // thin track on the right, with a thumb showing where the three rows are
+    const int y0 = 15, height = 47;
+    oled.drawVLine(126, y0, height);
+    int thumb = max(5, height * ROWS / count);
+    oled.drawBox(125, y0 + (height - thumb) * top / (count - ROWS), 3, thumb);
+  }
+}
+
+String upNextRow(int i) {
+  return upNext[i].artist.length() ? upNext[i].title + " - " + upNext[i].artist : upNext[i].title;
+}
+
+String tuneRow(int i) {
+  String mark = i == playingTune ? "> " : "";   // the one playing now
+  return mark + TUNES[i].name;
+}
+
 void drawUpNext() {
   if (upNextCount == 0) {
     oled.drawUTF8(0, 10, "Up next");
     oled.drawUTF8((128 - oled.getUTF8Width("Queue is empty")) / 2, 40, "Queue is empty");
     return;
   }
-  String head = "Up next " + String(selected + 1) + "/" + String(upNextCount);
-  oled.drawUTF8(0, 10, head.c_str());
+  drawList("Up next", upNextCount, selected, listTop, upNextRow);
+}
 
-  // Show three rows; the window follows the highlight, keeping one row of context where it can.
-  const int ROWS = 3;
-  if (selected < listTop + 1) listTop = selected - 1;
-  if (selected > listTop + ROWS - 2) listTop = selected - ROWS + 2;
-  listTop = constrain(listTop, 0, max(0, upNextCount - ROWS));
-
-  bool scrollbar = upNextCount > ROWS;
-  int width = scrollbar ? 124 : 128;
-  for (int r = 0; r < ROWS && listTop + r < upNextCount; r++) {
-    int i = listTop + r;
-    String text = upNext[i].title;
-    if (upNext[i].artist.length()) text += " - " + upNext[i].artist;
-    drawRow(text, 15 + r * 16, i == selected, width);
-  }
-  if (scrollbar) {   // thin track on the right, with a thumb showing where the three rows are
-    const int top = 15, height = 47;
-    oled.drawVLine(126, top, height);
-    int thumb = max(5, height * ROWS / upNextCount);
-    int y = top + (height - thumb) * listTop / (upNextCount - ROWS);
-    oled.drawBox(125, y, 3, thumb);
-  }
+void drawBell(int x, int y) {   // 9x9, top-left at x,y: shown on the clock while the alarm is on
+  oled.drawDisc(x + 4, y + 4, 3, U8G2_DRAW_UPPER_LEFT | U8G2_DRAW_UPPER_RIGHT);
+  oled.drawBox(x + 1, y + 4, 7, 3);
+  oled.drawHLine(x, y + 7, 9);
+  oled.drawPixel(x + 4, y + 8);
 }
 
 void drawClock() {
@@ -438,21 +674,33 @@ void drawClock() {
   localtime_r(&now, &t);
   char hh[4] = "--", mm[4] = "--", date[20] = "";
   bool synced = now > 1700000000;              // the clock has been set from the internet
-  if (synced) {
+  bool editing = alarmEdit != EDIT_NONE;
+  bool blinkOff = (millis() / 300) % 2;        // the value being set blinks
+  if (editing) {
+    snprintf(hh, sizeof(hh), "%02d", alarmHour);
+    snprintf(mm, sizeof(mm), "%02d", alarmMin);
+  } else if (synced) {
     strftime(hh, sizeof(hh), "%H", &t);
     strftime(mm, sizeof(mm), "%M", &t);
     strftime(date, sizeof(date), "%a %d %b", &t);
   }
-  oled.drawUTF8(0, 10, date);
+  oled.drawUTF8(0, 10, editing ? "Set alarm" : date);
+  if (alarmOn && !editing) drawBell(64, 1);
   // Hours, colon and minutes at fixed positions, so the blinking colon never moves the digits.
   oled.setFont(u8g2_font_logisoso28_tn);
   int x = (128 - oled.getStrWidth("00:00")) / 2;
   int colonX = x + oled.getStrWidth("00");
-  oled.drawStr(x, 46, hh);
-  if (!synced || now % 2) oled.drawStr(colonX, 46, ":");
-  oled.drawStr(colonX + oled.getStrWidth(":"), 46, mm);
+  if (!(alarmEdit == EDIT_HOUR && blinkOff)) oled.drawStr(x, 46, hh);
+  if (editing || !synced || now % 2) oled.drawStr(colonX, 46, ":");
+  if (!(alarmEdit == EDIT_MIN && blinkOff)) oled.drawStr(colonX + oled.getStrWidth(":"), 46, mm);
   oled.setFont(u8g2_font_6x13_t_cyrillic);
-  if (loaded) drawScrolling(artist.length() ? title + " - " + artist : title, 62, 51, 63);
+  const char* line = nullptr;
+  if (ringing) line = "Press any button";
+  else if (alarmEdit == EDIT_HOUR) line = "Set the hour";
+  else if (alarmEdit == EDIT_MIN) line = "Set the minutes";
+  else if (alarmEdit == EDIT_ON) line = blinkOff ? "" : (alarmOn ? "Alarm ON" : "Alarm OFF");
+  if (line) oled.drawUTF8((128 - oled.getUTF8Width(line)) / 2, 62, line);
+  else if (loaded) drawScrolling(artist.length() ? title + " - " + artist : title, 62, 51, 63);
   else {
     String s = client.connected() ? "Nothing playing" : status;
     oled.drawUTF8((128 - oled.getUTF8Width(s.c_str())) / 2, 62, s.c_str());
@@ -464,6 +712,17 @@ void draw() {
   oled.setFont(u8g2_font_6x13_t_cyrillic);
   if (view == CLOCK) {
     drawClock();
+    drawTopBar();
+    if (ringing && (millis() / 500) % 2) {   // ringing: the whole screen flashes
+      oled.setDrawColor(2);
+      oled.drawBox(0, 0, 128, 64);
+      oled.setDrawColor(1);
+    }
+    oled.sendBuffer();
+    return;
+  }
+  if (view == TUNE_LIST) {
+    drawList("Tunes", TUNE_COUNT, tuneSel, tuneTop, tuneRow);
     drawTopBar();
     oled.sendBuffer();
     return;
@@ -512,6 +771,7 @@ void draw() {
 void setup() {
   Serial.begin(115200);
   for (auto& b : buttons) if (b.pin >= 0) pinMode(b.pin, INPUT_PULLUP);
+  loadAlarm();
   if (PIN_ENC_A >= 0) {
     pinMode(PIN_ENC_A, INPUT_PULLUP);
     pinMode(PIN_ENC_B, INPUT_PULLUP);
@@ -541,6 +801,8 @@ String lastStatus;
 void loop() {
   pollButtons();
   pollEncoder();
+  pollTune();
+  checkAlarm();
   keepConnected();
   readLines();
   if (status != lastStatus) { Serial.println(status); lastStatus = status; }
