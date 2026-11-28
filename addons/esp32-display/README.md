@@ -13,7 +13,7 @@ A small screen next to your PC showing what Wavy is playing: title, artist, prog
 The fourth button switches between three screens:
 
 - **Now playing:** title, artist, progress bar and times.
-- **Up next:** the next three tracks in the queue. Buttons 1 and 3 (or turning the knob) move the highlight, button 2 (or pressing the knob) plays the highlighted track. It returns to "Now playing" after 20 s.
+- **Up next:** the next 20 tracks in the queue, three at a time with a scrollbar. Buttons 1 and 3 (or turning the knob) move the highlight and scroll, button 2 (or pressing the knob) plays the highlighted track. It returns to "Now playing" after 20 s.
 - **Clock:** the time (set from the internet), the date, and the current track along the bottom.
 
 It has two parts:
@@ -104,4 +104,4 @@ Japanese and other scripts the screen's font can't draw are left out of titles. 
 
 ## How it works
 
-The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded, followed by `Q` and then index, title and artist for each of the next three tracks. It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+`, `vol-`, `vol <change in %>`, `mute` or `jump <queue index>`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.
+The PC sends one line per change, fields separated by tabs: `S playing liked volume position duration title artist`, or `N` when nothing is loaded, followed by `Q` and then index, title and artist for each of the next tracks (up to 20). It sends at least every 5 s, so the ESP32 notices a lost link. The ESP32 sends `toggle`, `next`, `prev`, `like`, `vol+`, `vol-`, `vol <change in %>`, `mute` or `jump <queue index>`. The key keeps other devices on the network from controlling your player. It's a simple shared secret, not encryption, so use it on a home network you trust.

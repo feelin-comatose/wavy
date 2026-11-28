@@ -80,8 +80,10 @@ String rx;
 
 // The next tracks in Wavy's queue (sent by the addon as a "Q" line).
 struct QueueItem { int index; String title, artist; };
-QueueItem upNext[3];
+const int UP_NEXT_MAX = 20;
+QueueItem upNext[UP_NEXT_MAX];
 int upNextCount = 0;
+int listTop = 0;                   // first row shown on the "Up next" screen (it shows three)
 
 // Screens, switched with the fourth button.
 enum View { NOW_PLAYING, UP_NEXT, CLOCK, VIEW_COUNT };
@@ -225,8 +227,8 @@ void handleLine(const String& line) {
   if (line == "N") { loaded = false; upNextCount = 0; return; }
   if (line.startsWith("E")) { status = "Wrong key!"; client.stop(); return; }
   if (line[0] == 'Q') {
-    String q[10];
-    int n = (splitTabs(line, q, 10) - 1) / 3;
+    static String q[1 + 3 * UP_NEXT_MAX];
+    int n = (splitTabs(line, q, 1 + 3 * UP_NEXT_MAX) - 1) / 3;
     for (int i = 0; i < n; i++) {
       QueueItem item = {q[1 + i * 3].toInt(), q[2 + i * 3], q[3 + i * 3]};
       upNext[i] = item;
@@ -312,7 +314,7 @@ void readLines() {
   while (client.available()) {
     char c = client.read();
     if (c == '\n') { handleLine(rx); rx = ""; }
-    else if (c != '\r' && rx.length() < 400) rx += c;
+    else if (c != '\r' && rx.length() < 2000) rx += c;   // the queue line can be long
   }
 }
 
@@ -383,12 +385,12 @@ void drawTopBar() {
 }
 
 // One row of the "Up next" list; the highlighted row is inverted and scrolls if too long.
-void drawRow(const String& text, int top, bool highlighted) {
-  if (highlighted) { oled.drawBox(0, top, 128, 15); oled.setDrawColor(0); }
-  oled.setClipWindow(0, top, 127, top + 14);
+void drawRow(const String& text, int top, bool highlighted, int width) {
+  if (highlighted) { oled.drawBox(0, top, width, 15); oled.setDrawColor(0); }
+  oled.setClipWindow(0, top, width - 1, top + 14);
   int w = oled.getUTF8Width(text.c_str());
   int offset = 0;
-  if (highlighted && w > 124) {
+  if (highlighted && w > width - 4) {
     unsigned long t = millis() - selectedSince;
     offset = t < 1000 ? 0 : ((t - 1000) / 30) % (w + 30);
     oled.drawUTF8(2 - offset + w + 30, top + 12, text.c_str());
@@ -399,15 +401,34 @@ void drawRow(const String& text, int top, bool highlighted) {
 }
 
 void drawUpNext() {
-  oled.drawUTF8(0, 10, "Up next");
   if (upNextCount == 0) {
+    oled.drawUTF8(0, 10, "Up next");
     oled.drawUTF8((128 - oled.getUTF8Width("Queue is empty")) / 2, 40, "Queue is empty");
     return;
   }
-  for (int i = 0; i < upNextCount; i++) {
+  String head = "Up next " + String(selected + 1) + "/" + String(upNextCount);
+  oled.drawUTF8(0, 10, head.c_str());
+
+  // Show three rows; the window follows the highlight, keeping one row of context where it can.
+  const int ROWS = 3;
+  if (selected < listTop + 1) listTop = selected - 1;
+  if (selected > listTop + ROWS - 2) listTop = selected - ROWS + 2;
+  listTop = constrain(listTop, 0, max(0, upNextCount - ROWS));
+
+  bool scrollbar = upNextCount > ROWS;
+  int width = scrollbar ? 124 : 128;
+  for (int r = 0; r < ROWS && listTop + r < upNextCount; r++) {
+    int i = listTop + r;
     String text = upNext[i].title;
     if (upNext[i].artist.length()) text += " - " + upNext[i].artist;
-    drawRow(text, 15 + i * 16, i == selected);
+    drawRow(text, 15 + r * 16, i == selected, width);
+  }
+  if (scrollbar) {   // thin track on the right, with a thumb showing where the three rows are
+    const int top = 15, height = 47;
+    oled.drawVLine(126, top, height);
+    int thumb = max(5, height * ROWS / upNextCount);
+    int y = top + (height - thumb) * listTop / (upNextCount - ROWS);
+    oled.drawBox(125, y, 3, thumb);
   }
 }
 

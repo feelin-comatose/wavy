@@ -74,11 +74,12 @@ def line_from(st):
 
 
 def queue_from(st):
-    """The next three tracks: "Q", then index, title and artist for each (older sketches ignore this line)."""
+    """The next tracks (up to 20): "Q", then index, title and artist for each. Sketches without
+    an "Up next" screen ignore this line; older ones with it show the first three."""
     fields = ["Q"]
     if st.get("track"):
-        for q in (st.get("queue") or [])[1:4]:
-            fields += [q.get("index", 0), clean(q.get("title"), 80) or "?", clean(q.get("artist"), 60)]
+        for q in (st.get("queue") or [])[1:21]:
+            fields += [q.get("index", 0), clean(q.get("title"), 40) or "?", clean(q.get("artist"), 30)]
     return "\t".join(map(str, fields)) + "\n"
 
 
